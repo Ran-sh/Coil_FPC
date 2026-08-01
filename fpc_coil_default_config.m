@@ -83,6 +83,7 @@ cfg.manufacturingTolerance = 0.05;
 cfg.minCopperInteriorAngleDeg = 90.0;
 cfg.minBoardInteriorAngleDeg = 90.0;
 cfg.angleToleranceDeg = 0.1;
+cfg.requireSmoothEscapeArcs = true;
 cfg.geometryTolerance = 1e-6;
 cfg.connectionTolerance = 1e-5;
 cfg.clearanceTolerance = 0.002;
@@ -126,11 +127,13 @@ end
 function turns = recommendedTurns(layerCount)
 
 if layerCount == 2
-    turns = 10;
-else
-    % Six and more layers must ultimately be selected by a geometry scan;
-    % six is a conservative starting value shared with the four-layer case.
+    turns = 9;
+elseif layerCount == 4
     turns = 6;
+else
+    % The generator still recomputes this value with a complete geometry
+    % scan; five is the current strict-arc starting value for 6/8 layers.
+    turns = 5;
 end
 
 end

@@ -10,3 +10,4 @@
 - Added width-based, fully validated, and safe recommended turn counts.
 - Added turn-scan CSV with candidate-specific failure reasons.
 - Added behavior-level MATLAB regression tests and multi-layer examples.
+- Changed copper-angle acceptance to strictly greater than 90 degrees and reject sharp-corner escape fallbacks by default.

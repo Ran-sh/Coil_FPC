@@ -159,9 +159,9 @@ result = generatedEightLayerValidated(testCase.TestData.outputRoot);
 
 verifyTrue(testCase, result.passed);
 verifyEqual(testCase, result.layerCount, 8);
-verifyEqual(testCase, result.turnsPerLayer, 6);
-verifyEqual(testCase, result.fullyValidatedMaximumTurns, 7);
-verifyEqual(testCase, result.recommendedTurns, 6);
+verifyEqual(testCase, result.turnsPerLayer, 5);
+verifyEqual(testCase, result.fullyValidatedMaximumTurns, 6);
+verifyEqual(testCase, result.recommendedTurns, 5);
 verifyTrue(testCase, isfinite(result.totalLengthMm));
 verifyGreaterThan(testCase, result.totalResistanceOhm, 0);
 
@@ -201,6 +201,19 @@ verifyTrue(testCase, result.passed);
 
 end
 
+function testRecommendedFourLayerDesignUsesAnglesStrictlyAboveNinety(testCase)
+
+result = generatedFourLayerValidated(testCase.TestData.outputRoot);
+cfg = fpc_coil_default_config();
+
+verifyGreaterThan(testCase, result.minCopperAngle, ...
+    cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg);
+reportText = fileread(result.validationReport);
+verifyEmpty(testCase, regexp(reportText, ...
+    'FALLBACK_TO_SHARP_CORNER', 'once'));
+
+end
+
 function cfg = fastConfig(layerCount, outputRoot)
 
 cfg = fpc_coil_default_config(struct( ...
@@ -212,6 +225,7 @@ cfg = fpc_coil_default_config(struct( ...
     'boardArcPointCount', 8, ...
     'leadArcPointCount', 8, ...
     'enablePreview', false, ...
+    'requireSmoothEscapeArcs', false, ...
     'enableDxfReadbackCheck', false, ...
     'enableExactSelfIntersectionCheck', false, ...
     'enableCopperClearanceCheck', false, ...
@@ -246,6 +260,23 @@ if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
         'layerCount', 8, ...
         'outputRoot', outputRoot, ...
         'designName', 'validated_8layer', ...
+        'enablePreview', false));
+    cachedResult = fpc_coil_generate(cfg);
+    cachedOutputRoot = outputRoot;
+end
+result = cachedResult;
+
+end
+
+function result = generatedFourLayerValidated(outputRoot)
+
+persistent cachedOutputRoot cachedResult
+
+if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
+    cfg = fpc_coil_default_config(struct( ...
+        'layerCount', 4, ...
+        'outputRoot', outputRoot, ...
+        'designName', 'validated_4layer_strict_angle', ...
         'enablePreview', false));
     cachedResult = fpc_coil_generate(cfg);
     cachedOutputRoot = outputRoot;

@@ -126,6 +126,11 @@ failures = {};
 nanInfPass = true;
 zeroLengthPass = true;
 
+if cfg.requireSmoothEscapeArcs && escapeArcFallback
+    failures{end+1} = ...
+        '逃逸引线圆弧生成失败，不允许回退为90度尖角';
+end
+
 allPaths = flattenLayerPaths(layerPaths);
 if any(~isfinite(boardXY), 'all') || ...
         any(cellfun(@(c) any(~isfinite(c), 'all'), allPaths))
@@ -157,10 +162,12 @@ if cfg.enableCopperAngleCheck
         pathAngles = cellfun(@(path) ...
             minimumOpenPolylineInteriorAngle(path, tol), layerPaths{k});
         copperMinAngles(k) = min(pathAngles);
-        if copperMinAngles(k) < cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
+        if copperMinAngles(k) <= ...
+                cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg
             failures{end+1} = sprintf( ...
-                'L%d最小铜线内角%.3f度，低于%.3f度', ...
-                k, copperMinAngles(k), cfg.minCopperInteriorAngleDeg);
+                'L%d最小铜线内角%.3f度，必须严格大于%.3f度', ...
+                k, copperMinAngles(k), ...
+                cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg);
         end
     end
 end
@@ -1127,10 +1134,16 @@ reason = '';
 tol = cfg.geometryTolerance;
 
 try
-    [~, layerPaths, vias, connectionErrors] = buildLayerGeometry(cfg, d);
+    [~, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
+        buildLayerGeometry(cfg, d);
     viaXY = vertcat(vias.xy);
 catch ME
     reason = ME.message;
+    return;
+end
+
+if cfg.requireSmoothEscapeArcs && escapeArcFallback
+    reason = '逃逸引线无法生成平滑圆弧，将回退为90度尖角';
     return;
 end
 
@@ -1148,8 +1161,8 @@ for k = 1:cfg.layerCount
     for pathIndex = 1:numel(layerPaths{k})
         path = layerPaths{k}{pathIndex};
         if cfg.enableCopperAngleCheck && ...
-                minimumOpenPolylineInteriorAngle(path, tol) < ...
-                cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
+                minimumOpenPolylineInteriorAngle(path, tol) <= ...
+                cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg
             reason = sprintf('L%d路径%d铜线角度不足', k, pathIndex);
             return;
         end
