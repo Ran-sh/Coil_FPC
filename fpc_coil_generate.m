@@ -17,7 +17,7 @@ try
 % 1. cfg字段完整性和参数合法性检查
 %% =========================================================
 
-validateConfiguration(cfg);
+cfg = fpc_coil_validate_config(cfg);
 
 %% =========================================================
 % 2. 派生参数计算
@@ -76,8 +76,9 @@ end
 % 4. 各层螺旋生成
 %% =========================================================
 
-[layerXY, viaXY, connectionErrors, escapeArcFallback] = ...
+[layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
     buildLayerGeometry(cfg, d);
+viaXY = vertcat(vias.xy);
 
 %% =========================================================
 % 6. 平滑板框生成
@@ -337,20 +338,18 @@ copperLayerNames = cell(cfg.layerCount, 1);
 dxfValidationPass = true;
 dxfFailReason = '';
 
-if cfg.layerCount == 2
-    copperFileNames{1} = '01_copper_l1_top.dxf';
-    copperFileNames{2} = '02_copper_l2_bottom.dxf';
-    copperLayerNames{1} = 'COPPER_L1_TOP';
-    copperLayerNames{2} = 'COPPER_L2_BOTTOM';
-else
-    copperFileNames{1} = '01_copper_l1_top.dxf';
-    copperFileNames{2} = '02_copper_l2_inner1.dxf';
-    copperFileNames{3} = '03_copper_l3_inner2.dxf';
-    copperFileNames{4} = '04_copper_l4_bottom.dxf';
-    copperLayerNames{1} = 'COPPER_L1_TOP';
-    copperLayerNames{2} = 'COPPER_L2_INNER1';
-    copperLayerNames{3} = 'COPPER_L3_INNER2';
-    copperLayerNames{4} = 'COPPER_L4_BOTTOM';
+for k = 1:cfg.layerCount
+    if k == 1
+        suffix = 'top';
+        copperLayerNames{k} = 'COPPER_L1_TOP';
+    elseif k == cfg.layerCount
+        suffix = 'bottom';
+        copperLayerNames{k} = sprintf('COPPER_L%d_BOTTOM', k);
+    else
+        suffix = sprintf('inner%d', k-1);
+        copperLayerNames{k} = sprintf('COPPER_L%d_INNER%d', k, k-1);
+    end
+    copperFileNames{k} = sprintf('%02d_copper_l%d_%s.dxf', k, k, suffix);
 end
 
 for k = 1:cfg.layerCount
@@ -361,13 +360,19 @@ for k = 1:cfg.layerCount
     dxfFile = fullfile(layerDxfFolder, copperFileNames{k});
     writeDxfFile( ...
         dxfFile, ...
-        layerXY{k}, copperLayerNames{k}, false, ...
+        layerPaths{k}, copperLayerNames{k}, false, ...
         cfg.maxVerticesPerDxfEntity);
 
-    expectedDxfVertices = size(layerXY{k},1) + max(0, ...
-        ceil((size(layerXY{k},1)-1)/(cfg.maxVerticesPerDxfEntity-1)) - 1);
-    expectedDxfEntities = max(1, ...
-        ceil((size(layerXY{k},1)-1)/(cfg.maxVerticesPerDxfEntity-1)));
+    expectedDxfVertices = 0;
+    expectedDxfEntities = 0;
+    for pathIndex = 1:numel(layerPaths{k})
+        pathVertexCount = size(layerPaths{k}{pathIndex},1);
+        pathEntityCount = max(1, ceil( ...
+            (pathVertexCount-1)/(cfg.maxVerticesPerDxfEntity-1)));
+        expectedDxfVertices = expectedDxfVertices + ...
+            pathVertexCount + max(0, pathEntityCount-1);
+        expectedDxfEntities = expectedDxfEntities + pathEntityCount;
+    end
     if cfg.enableDxfReadbackCheck
         [dxfOk, dxfReason] = validateWrittenDxfFile( ...
             dxfFile, expectedDxfVertices, expectedDxfEntities, ...
@@ -417,7 +422,7 @@ end
 %% =========================================================
 
 csvFile = fullfile(tempOutputFolder, 'reports', '01_pad_via_coordinates.csv');
-writeCoordinateCsv(csvFile, cfg, d, viaXY);
+writeCoordinateCsv(csvFile, cfg, d, vias);
 
 %% =========================================================
 % 12. 输出设计摘要
@@ -549,9 +554,35 @@ catch ME
     rethrow(ME);
 end
 
+layers = repmat(struct( ...
+    'index', 0, 'name', '', 'paths', {{}}, 'dxfFile', ''), ...
+    cfg.layerCount, 1);
+for k = 1:cfg.layerCount
+    layers(k).index = k;
+    layers(k).name = copperLayerNames{k};
+    layers(k).paths = layerPaths{k};
+    layers(k).dxfFile = fullfile( ...
+        outputFolder, 'dxf', sprintf('L%d', k), copperFileNames{k});
+end
+
+pads = struct( ...
+    'name', {'PAD_A', 'PAD_B'}, ...
+    'xy', {d.padA, d.padB}, ...
+    'layer', {1, 1}, ...
+    'type', {'external_pad', 'external_pad'});
+
 result = struct( ...
     'passed', true, ...
     'outputFolder', outputFolder, ...
+    'layers', layers, ...
+    'vias', vias, ...
+    'pads', pads, ...
+    'coordinateCsv', fullfile(outputFolder, 'reports', ...
+        '01_pad_via_coordinates.csv'), ...
+    'summaryFile', fullfile(outputFolder, 'reports', ...
+        '02_design_summary.txt'), ...
+    'validationReport', fullfile(outputFolder, 'reports', ...
+        '03_validation_report.txt'), ...
     'widthBasedMaximumTurns', widthBasedMaxTurns, ...
     'fullyValidatedMaximumTurns', fullyValidatedMaxTurns, ...
     'minBoardAngle', boardMinAngle, ...
@@ -640,8 +671,11 @@ if ~ischar(cfg.outputRoot) || ~ischar(cfg.designName)
     error('cfg.outputRoot和cfg.designName必须是字符数组。');
 end
 
-if ~(cfg.layerCount == 2 || cfg.layerCount == 4)
-    error('cfg.layerCount必须为2或4。');
+if cfg.layerCount < 2 || cfg.layerCount ~= floor(cfg.layerCount) || ...
+        mod(cfg.layerCount, 2) ~= 0
+    error('FPC_Coil:InvalidLayerCount', ...
+        'cfg.layerCount=%g无效；当前右侧输出拓扑只支持大于等于2的偶数层。', ...
+        cfg.layerCount);
 end
 
 if cfg.turnsPerLayer < 1 || cfg.turnsPerLayer ~= floor(cfg.turnsPerLayer)
@@ -838,10 +872,8 @@ d.totalExitDelta = forwardPhaseDelta( ...
     d.padAPhase, d.padBPhase, cfg.geometryTolerance);
 routingDelta = d.totalExitDelta;
 
-% 四层额外增加一整圈相位，使V23落在右侧中部
-if cfg.layerCount == 4
-    routingDelta = routingDelta + 1;
-end
+% 每增加两层补偿一整圈，使所有外-外连接保持在右侧逃逸区域附近。
+routingDelta = routingDelta + cfg.layerCount/2 - 1;
 
 d.phaseStep = routingDelta / cfg.layerCount;
 
@@ -853,6 +885,7 @@ d.requiredHalfWidth = abs(cfg.leadYOffset) + ...
 
 d.padA = [d.tabTipX - cfg.padTipInset, +cfg.leadYOffset];
 d.padB = [d.tabTipX - cfg.padTipInset, -cfg.leadYOffset];
+d.outputVia = [d.tabTipX - cfg.outputViaTipInset, -cfg.leadYOffset];
 
 end
 
@@ -868,7 +901,7 @@ maxTurns = max(maxTurns, 0);
 end
 
 %% =========================================================
-function [layerXY, viaXY, connectionErrors, escapeArcFallback] = ...
+function [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
     buildLayerGeometry(cfg, d)
 
 tol = cfg.geometryTolerance;
@@ -892,11 +925,17 @@ layerXY = rawLayerXY;
     cfg.leadYOffset, cfg.leadBendRadius, cfg.leadArcPointCount, ...
     'prepend', tol);
 [layerXY{cfg.layerCount}, ~] = generateTangentLead( ...
-    layerXY{cfg.layerCount}, d.padB, d.outerRightCenterX, ...
+    layerXY{cfg.layerCount}, d.outputVia, d.outerRightCenterX, ...
     -cfg.leadYOffset, cfg.leadBendRadius, cfg.leadArcPointCount, ...
     'append', tol);
 
-viaXY = zeros(cfg.layerCount-1, 2);
+viaTemplate = struct( ...
+    'name', '', 'xy', [0, 0], 'fromLayer', 0, 'toLayer', 0, ...
+    'connectedLayers', [], 'type', '', 'role', '', ...
+    'drillDiameter', cfg.viaDrillDiameter, ...
+    'padDiameter', cfg.viaPadDiameter, ...
+    'antipadDiameter', cfg.outputViaAntiPadDiameter);
+vias = repmat(viaTemplate, cfg.layerCount, 1);
 escapeArcFallback = false;
 
 for k = 1:cfg.layerCount-1
@@ -941,18 +980,47 @@ for k = 1:cfg.layerCount-1
     [layerXY{k+1}, usedArc] = prependEscapeLead( ...
         layerXY{k+1}, landing, tol, cfg.leadArcPointCount, bendRadius);
     escapeArcFallback = escapeArcFallback || ~usedArc;
-    viaXY(k,:) = landing;
+    vias(k).name = sprintf('V%d%d', k, k+1);
+    vias(k).xy = landing;
+    vias(k).fromLayer = k;
+    vias(k).toLayer = k+1;
+    vias(k).connectedLayers = [k, k+1];
+    if cfg.layerCount == 2
+        vias(k).type = 'through_via';
+    else
+        vias(k).type = 'adjacent_layer_via';
+    end
+    vias(k).role = 'series_interconnect';
 end
+
+vias(end).name = 'VOUT';
+vias(end).xy = d.outputVia;
+vias(end).fromLayer = cfg.layerCount;
+vias(end).toLayer = 1;
+vias(end).connectedLayers = [cfg.layerCount, 1];
+vias(end).type = cfg.outputViaType;
+vias(end).role = 'output_return';
+
+topOutputLeadXY = [d.outputVia; d.padB];
 
 for k = 1:cfg.layerCount
     layerXY{k} = removeDuplicatePoints(layerXY{k}, tol);
     layerXY{k} = removeZeroLengthSegments(layerXY{k}, tol);
 end
 
-connectionErrors = zeros(cfg.layerCount-1, 1);
+layerPaths = cell(cfg.layerCount, 1);
+for k = 1:cfg.layerCount
+    layerPaths{k} = {layerXY{k}};
+end
+layerPaths{1}{end+1} = topOutputLeadXY;
+
+connectionErrors = zeros(cfg.layerCount+1, 1);
 for k = 1:cfg.layerCount-1
     connectionErrors(k) = norm(layerXY{k}(end,:) - layerXY{k+1}(1,:));
 end
+connectionErrors(cfg.layerCount) = ...
+    norm(layerXY{cfg.layerCount}(end,:) - d.outputVia);
+connectionErrors(cfg.layerCount+1) = norm(topOutputLeadXY(1,:) - d.outputVia);
 
 end
 
@@ -979,7 +1047,8 @@ pass = false;
 tol = cfg.geometryTolerance;
 
 try
-    [layerXY, viaXY, connectionErrors] = buildLayerGeometry(cfg, d);
+    [layerXY, layerPaths, vias, connectionErrors] = buildLayerGeometry(cfg, d);
+    viaXY = vertcat(vias.xy);
 catch
     return;
 end
@@ -1015,7 +1084,7 @@ padConnectionLength = ...
 if ~validatePadToBoard(d.padA, d.padB, boardXY, cfg, tol) || ...
         ~validatePadToPad(d.padA, d.padB, cfg, tol) || ...
         ~validatePadToCopper( ...
-            d.padA, d.padB, layerXY, cfg, tol, padConnectionLength) || ...
+            d.padA, d.padB, layerPaths, cfg, tol, padConnectionLength) || ...
         ~validateViaToVia(viaXY, cfg, tol) || ...
         ~validateViaToBoard(viaXY, boardXY, cfg, tol) || ...
         ~validateViaToPad(viaXY, d.padA, d.padB, cfg, tol)
@@ -2626,7 +2695,13 @@ dxfPair(fid, 2, 'ENTITIES');
 if isClosed
     writeClosedPolylineEntity(fid, xy, layerName);
 else
-    writeOpenPolylineEntities(fid, xy, layerName, maxVertices);
+    if ~iscell(xy)
+        xy = {xy};
+    end
+    for pathIndex = 1:numel(xy)
+        writeOpenPolylineEntities( ...
+            fid, xy{pathIndex}, layerName, maxVertices);
+    end
 end
 
 dxfPair(fid, 0, 'ENDSEC');
@@ -2702,7 +2777,7 @@ end
 end
 
 %% =========================================================
-function writeCoordinateCsv(filename, cfg, d, viaXY)
+function writeCoordinateCsv(filename, cfg, d, vias)
 
 fid = fopen(filename, 'w', 'n', 'UTF-8');
 if fid == -1
@@ -2711,28 +2786,26 @@ end
 cleanupCSV = onCleanup(@() fclose(fid));
 
 fprintf(fid, ...
-    'name,x_mm,y_mm,from_layer,to_layer,object_type,pad_diameter_mm,drill_diameter_mm,description\n');
+    ['name,x_mm,y_mm,from_layer,to_layer,object_type,pad_diameter_mm,' ...
+    'drill_diameter_mm,annular_ring_mm,antipad_diameter_mm,description\n']);
 
 fprintf(fid, ...
-    'PAD_A,%.6f,%.6f,L1,external,pad,%.3f,0,Top-layer input terminal\n', ...
+    'PAD_A,%.6f,%.6f,L1,external,pad,%.3f,0,0,0,Top-layer input terminal\n', ...
     d.padA(1), d.padA(2), cfg.padDiameter);
 
-for k = 1:cfg.layerCount-1
-    if cfg.layerCount == 2
-        objectType = 'through_via';
-    else
-        objectType = 'adjacent_layer_via';
-    end
-
+for k = 1:numel(vias)
+    annularRing = (vias(k).padDiameter - vias(k).drillDiameter)/2;
     fprintf(fid, ...
-        'V%d%d,%.6f,%.6f,L%d,L%d,%s,%.3f,%.3f,Layer-to-layer series connection\n', ...
-        k, k+1, viaXY(k,1), viaXY(k,2), k, k+1, ...
-        objectType, cfg.viaPadDiameter, cfg.viaDrillDiameter);
+        '%s,%.6f,%.6f,L%d,L%d,%s,%.3f,%.3f,%.3f,%.3f,%s\n', ...
+        vias(k).name, vias(k).xy(1), vias(k).xy(2), ...
+        vias(k).fromLayer, vias(k).toLayer, vias(k).type, ...
+        vias(k).padDiameter, vias(k).drillDiameter, annularRing, ...
+        vias(k).antipadDiameter, vias(k).role);
 end
 
 fprintf(fid, ...
-    'PAD_B,%.6f,%.6f,L%d,external,pad,%.3f,0,Last-layer output terminal\n', ...
-    d.padB(1), d.padB(2), cfg.layerCount, cfg.padDiameter);
+    'PAD_B,%.6f,%.6f,L1,external,pad,%.3f,0,0,0,Top-layer output terminal\n', ...
+    d.padB(1), d.padB(2), cfg.padDiameter);
 
 clear cleanupCSV;
 
