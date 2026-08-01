@@ -53,6 +53,30 @@ end
 
 widthBasedMaxTurns = calculateMaximumTurns(cfg, d);
 
+boardXY = generateSmoothBoardOutline(cfg);
+boardXY = removeDuplicatePoints(boardXY, tol);
+boardXY = removeZeroLengthSegments(boardXY, tol);
+if size(boardXY,1) > 1 && norm(boardXY(end,:)-boardXY(1,:)) < tol
+    boardXY(end,:) = [];
+end
+
+[fullyValidatedMaxTurns, turnScan] = calculateFullyValidatedMaximumTurns( ...
+    cfg, d, boardXY, widthBasedMaxTurns);
+if fullyValidatedMaxTurns < 1
+    if isempty(turnScan)
+        scanReason = '未生成候选结果';
+    else
+        scanReason = turnScan(end).failureReason;
+    end
+    error('FPC_Coil:NoValidTurnCount', ...
+        '当前层数与制造约束下没有能够通过全部几何检查的匝数。最后失败原因：%s', ...
+        scanReason);
+end
+
+if cfg.useRecommendedTurns
+    cfg.turnsPerLayer = max(1, fullyValidatedMaxTurns - 1);
+end
+
 if cfg.turnsPerLayer > widthBasedMaxTurns
     error(['当前主体宽度%.2f mm无法容纳每层%d匝。\n' ...
         '当前线宽/线距为%.2f/%.2f mm。\n' ...
@@ -81,29 +105,18 @@ end
 viaXY = vertcat(vias.xy);
 
 %% =========================================================
-% 6. 平滑板框生成
-%% =========================================================
-
-boardXY = generateSmoothBoardOutline(cfg);
-
-%% =========================================================
 % 7. 去除重复点和零长度线段
 %% =========================================================
 
 for k = 1:cfg.layerCount
-    [layerXY{k}, ~] = removeDuplicatePoints(layerXY{k}, tol);
-    [layerXY{k}, ~] = removeZeroLengthSegments(layerXY{k}, tol);
+    for pathIndex = 1:numel(layerPaths{k})
+        [layerPaths{k}{pathIndex}, ~] = ...
+            removeDuplicatePoints(layerPaths{k}{pathIndex}, tol);
+        [layerPaths{k}{pathIndex}, ~] = ...
+            removeZeroLengthSegments(layerPaths{k}{pathIndex}, tol);
+    end
+    layerXY{k} = layerPaths{k}{1};
 end
-
-boardXY = removeDuplicatePoints(boardXY, tol);
-boardXY = removeZeroLengthSegments(boardXY, tol);
-
-if size(boardXY,1) > 1 && norm(boardXY(end,:)-boardXY(1,:)) < tol
-    boardXY(end,:) = [];
-end
-
-fullyValidatedMaxTurns = calculateFullyValidatedMaximumTurns( ...
-    cfg, d, boardXY, widthBasedMaxTurns);
 
 %% =========================================================
 % 8. 闭合角、铜线角度、自交、线距、连接和尺寸检查
@@ -113,14 +126,15 @@ failures = {};
 nanInfPass = true;
 zeroLengthPass = true;
 
+allPaths = flattenLayerPaths(layerPaths);
 if any(~isfinite(boardXY), 'all') || ...
-        any(cellfun(@(c) any(~isfinite(c), 'all'), layerXY))
+        any(cellfun(@(c) any(~isfinite(c), 'all'), allPaths))
     nanInfPass = false;
     failures{end+1} = '存在NaN或Inf坐标';
 end
 
 if anyZeroLengthSegments(boardXY, tol) || ...
-        any(cellfun(@(c) anyZeroLengthSegments(c, tol), layerXY))
+        any(cellfun(@(c) anyZeroLengthSegments(c, tol), allPaths))
     zeroLengthPass = false;
     failures{end+1} = '存在零长度线段';
 end
@@ -140,7 +154,9 @@ end
 copperMinAngles = NaN(cfg.layerCount, 1);
 if cfg.enableCopperAngleCheck
     for k = 1:cfg.layerCount
-        copperMinAngles(k) = minimumOpenPolylineInteriorAngle(layerXY{k}, tol);
+        pathAngles = cellfun(@(path) ...
+            minimumOpenPolylineInteriorAngle(path, tol), layerPaths{k});
+        copperMinAngles(k) = min(pathAngles);
         if copperMinAngles(k) < cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
             failures{end+1} = sprintf( ...
                 'L%d最小铜线内角%.3f度，低于%.3f度', ...
@@ -159,9 +175,23 @@ if cfg.enableExactSelfIntersectionCheck
     end
 
     for k = 1:cfg.layerCount
-        if checkPolylineSelfIntersectionExact(layerXY{k}, false, cfg)
-            copperSelfIntersectionPass = false;
-            failures{end+1} = sprintf('L%d线圈存在自相交', k);
+        for pathIndex = 1:numel(layerPaths{k})
+            if checkPolylineSelfIntersectionExact( ...
+                    layerPaths{k}{pathIndex}, false, cfg)
+                copperSelfIntersectionPass = false;
+                failures{end+1} = sprintf( ...
+                    'L%d路径%d存在自相交', k, pathIndex);
+            end
+        end
+        for pathA = 1:numel(layerPaths{k})-1
+            for pathB = pathA+1:numel(layerPaths{k})
+                if minimumDistanceBetweenPolylines( ...
+                        layerPaths{k}{pathA}, layerPaths{k}{pathB}) <= tol
+                    copperSelfIntersectionPass = false;
+                    failures{end+1} = sprintf( ...
+                        'L%d路径%d与路径%d相交', k, pathA, pathB);
+                end
+            end
         end
     end
 end
@@ -175,9 +205,24 @@ if cfg.enableCopperClearanceCheck
     minCenterline = Inf;
 
     for k = 1:cfg.layerCount
-        [layerMinDist, ok] = calculateMinimumNonAdjacentDistance( ...
-            layerXY{k}, targetCenterline, ...
-            cfg.clearanceTolerance, minIndexSeparation, tol);
+        layerMinDist = Inf;
+        ok = true;
+        for pathIndex = 1:numel(layerPaths{k})
+            [pathMinDist, pathOk] = calculateMinimumNonAdjacentDistance( ...
+                layerPaths{k}{pathIndex}, targetCenterline, ...
+                cfg.clearanceTolerance, minIndexSeparation, tol);
+            layerMinDist = min(layerMinDist, pathMinDist);
+            ok = ok && pathOk;
+        end
+        for pathA = 1:numel(layerPaths{k})-1
+            for pathB = pathA+1:numel(layerPaths{k})
+                pathDistance = minimumDistanceBetweenPolylines( ...
+                    layerPaths{k}{pathA}, layerPaths{k}{pathB});
+                layerMinDist = min(layerMinDist, pathDistance);
+                ok = ok && pathDistance >= ...
+                    targetCenterline - cfg.clearanceTolerance;
+            end
+        end
 
         if ~ok
             copperClearancePass = false;
@@ -251,7 +296,7 @@ if cfg.enablePadClearanceCheck
     end
 
     padCopperPass = validatePadToCopper( ...
-        d.padA, d.padB, layerXY, cfg, tol, padConnectionLength);
+        d.padA, d.padB, layerPaths, cfg, tol, padConnectionLength);
     if ~padCopperPass
         failures{end+1} = '焊盘到非连接铜线间距不足';
     end
@@ -263,12 +308,14 @@ viaToBoardPass = true;
 viaToPadPass = true;
 viaConnectedPass = true;
 viaNonConnectedPass = true;
-viaEscapeLengths = zeros(cfg.layerCount-1, 1);
+viaEscapeLengths = zeros(numel(vias), 1);
 viaEscapeLengths(1:2:end) = cfg.viaLandingLeadLength;
-viaEscapeLengths(2:2:end) = cfg.viaOuterLandingLeadLength;
-viaConnectedClearances = zeros(cfg.layerCount-1, 1);
+viaEscapeLengths(2:2:cfg.layerCount-1) = cfg.viaOuterLandingLeadLength;
+viaEscapeLengths(end) = norm(d.padB - d.outputVia);
+viaConnectedClearances = zeros(numel(vias), 1);
 viaConnectedClearances(1:2:end) = cfg.viaLandingClearance;
-viaConnectedClearances(2:2:end) = cfg.viaOuterLandingClearance;
+viaConnectedClearances(2:2:cfg.layerCount-1) = cfg.viaOuterLandingClearance;
+viaConnectedClearances(end) = cfg.outputViaToCopperClearance;
 
 if cfg.enableViaClearanceCheck
     viaToViaPass = validateViaToVia(viaXY, cfg, tol);
@@ -276,7 +323,7 @@ if cfg.enableViaClearanceCheck
         failures{end+1} = '过孔焊盘之间间距不足';
     end
 
-    viaToBoardPass = validateViaToBoard(viaXY, boardXY, cfg, tol);
+    viaToBoardPass = validateViaToBoard(vias, boardXY, cfg, tol);
     if ~viaToBoardPass
         failures{end+1} = '过孔焊盘或钻孔距板框过近';
     end
@@ -287,12 +334,12 @@ if cfg.enableViaClearanceCheck
         failures{end+1} = '过孔焊盘与PAD_A或PAD_B间距不足';
     end
 
-    [viaConnectedPass, viaNonConnectedPass] = validateViaToCopper( ...
-        viaXY, layerXY, cfg, tol, viaEscapeLengths, ...
+    [viaConnectedPass, viaNonConnectedPass, viaCopperIssues] = validateViaToCopper( ...
+        vias, layerPaths, cfg, tol, viaEscapeLengths, ...
         viaConnectedClearances);
 
     if ~viaConnectedPass
-        failures{end+1} = '过孔焊盘与连接层相邻匝冲突';
+        failures = [failures, viaCopperIssues]; %#ok<AGROW>
     end
 
     if ~viaNonConnectedPass && strcmp(cfg.viaClearanceSeverity, 'error')
@@ -365,6 +412,7 @@ for k = 1:cfg.layerCount
 
     expectedDxfVertices = 0;
     expectedDxfEntities = 0;
+    expectedPathEntityCounts = zeros(1, numel(layerPaths{k}));
     for pathIndex = 1:numel(layerPaths{k})
         pathVertexCount = size(layerPaths{k}{pathIndex},1);
         pathEntityCount = max(1, ceil( ...
@@ -372,11 +420,12 @@ for k = 1:cfg.layerCount
         expectedDxfVertices = expectedDxfVertices + ...
             pathVertexCount + max(0, pathEntityCount-1);
         expectedDxfEntities = expectedDxfEntities + pathEntityCount;
+        expectedPathEntityCounts(pathIndex) = pathEntityCount;
     end
     if cfg.enableDxfReadbackCheck
         [dxfOk, dxfReason] = validateWrittenDxfFile( ...
             dxfFile, expectedDxfVertices, expectedDxfEntities, ...
-            copperLayerNames{k}, false);
+            copperLayerNames{k}, false, expectedPathEntityCounts);
     else
         dxfOk = true;
         dxfReason = 'SKIP';
@@ -423,6 +472,8 @@ end
 
 csvFile = fullfile(tempOutputFolder, 'reports', '01_pad_via_coordinates.csv');
 writeCoordinateCsv(csvFile, cfg, d, vias);
+turnScanFile = fullfile(tempOutputFolder, 'reports', '04_turn_scan.csv');
+writeTurnScanCsv(turnScanFile, turnScan, fullyValidatedMaxTurns);
 
 %% =========================================================
 % 12. 输出设计摘要
@@ -432,9 +483,9 @@ summaryFile = fullfile(tempOutputFolder, 'reports', '02_design_summary.txt');
 writeDesignSummary(summaryFile, cfg, d, ...
     widthBasedMaxTurns, fullyValidatedMaxTurns, ...
     effectiveTurnsPerLayer, innerLength, innerWidth, ...
-    layerXY, copperFileNames, boardFileName, ...
+    layerPaths, copperFileNames, boardFileName, ...
     boardMinAngle, copperMinAngles, minCopperSpacing, ...
-    viaXY, connectionErrors);
+    vias, connectionErrors);
 
 %% =========================================================
 % 13. 输出完整预览图
@@ -444,7 +495,7 @@ previewWritePass = true;
 
 if cfg.enablePreview
     previewFolder = fullfile(tempOutputFolder, 'previews');
-    fig = plotFullPreview(cfg, boardXY, layerXY, d.padA, d.padB, viaXY);
+    fig = plotFullPreview(cfg, boardXY, layerPaths, d.padA, d.padB, vias);
     print(fig, fullfile(previewFolder, '01_preview_full.png'), '-dpng', ...
         sprintf('-r%d', cfg.previewDpi));
 
@@ -453,7 +504,7 @@ if cfg.enablePreview
     %% =========================================================
 
     figDetail = plotRightTabPreview( ...
-        cfg, boardXY, layerXY, d.padA, d.padB, viaXY);
+        cfg, boardXY, layerPaths, d.padA, d.padB, vias);
     print(figDetail, fullfile(previewFolder, '02_preview_right_tab.png'), ...
         '-dpng', sprintf('-r%d', cfg.previewDpi));
 else
@@ -512,6 +563,8 @@ fprintf('Trace width / spacing  : %.2f / %.2f mm\n', ...
 fprintf('Turns per layer        : %d\n', cfg.turnsPerLayer);
 fprintf('Width-based maximum turns     : %d\n', widthBasedMaxTurns);
 fprintf('Fully validated maximum turns : %d\n', fullyValidatedMaxTurns);
+fprintf('Recommended turns (max - 1)   : %d\n', ...
+    max(1, fullyValidatedMaxTurns - 1));
 fprintf('Minimum board angle    : %.3f deg\n', boardMinAngle);
 fprintf('Minimum copper angle   : %.3f deg\n', min(copperMinAngles));
 fprintf('Minimum copper spacing : %.3f mm\n', minCopperSpacing);
@@ -571,8 +624,19 @@ pads = struct( ...
     'layer', {1, 1}, ...
     'type', {'external_pad', 'external_pad'});
 
+layerLengthMm = zeros(cfg.layerCount, 1);
+for k = 1:cfg.layerCount
+    layerLengthMm(k) = sum(cellfun(@calculatePathLength, layerPaths{k}));
+end
+totalLengthMm = sum(layerLengthMm);
+crossSectionM2 = (cfg.traceWidth/1000)*(cfg.copperThickness/1000);
+totalResistanceOhm = cfg.copperResistivity* ...
+    (totalLengthMm/1000)/crossSectionM2;
+
 result = struct( ...
     'passed', true, ...
+    'layerCount', cfg.layerCount, ...
+    'turnsPerLayer', cfg.turnsPerLayer, ...
     'outputFolder', outputFolder, ...
     'layers', layers, ...
     'vias', vias, ...
@@ -583,11 +647,17 @@ result = struct( ...
         '02_design_summary.txt'), ...
     'validationReport', fullfile(outputFolder, 'reports', ...
         '03_validation_report.txt'), ...
+    'turnScanFile', fullfile(outputFolder, 'reports', ...
+        '04_turn_scan.csv'), ...
+    'recommendedTurns', max(1, fullyValidatedMaxTurns - 1), ...
     'widthBasedMaximumTurns', widthBasedMaxTurns, ...
     'fullyValidatedMaximumTurns', fullyValidatedMaxTurns, ...
     'minBoardAngle', boardMinAngle, ...
     'minCopperAngle', min(copperMinAngles), ...
-    'minCopperSpacing', minCopperSpacing);
+    'minCopperSpacing', minCopperSpacing, ...
+    'layerLengthMm', layerLengthMm, ...
+    'totalLengthMm', totalLengthMm, ...
+    'totalResistanceOhm', totalResistanceOhm);
 
 end
 
@@ -991,6 +1061,7 @@ for k = 1:cfg.layerCount-1
         vias(k).type = 'adjacent_layer_via';
     end
     vias(k).role = 'series_interconnect';
+    vias(k).antipadDiameter = 0;
 end
 
 vias(end).name = 'VOUT';
@@ -1000,6 +1071,7 @@ vias(end).toLayer = 1;
 vias(end).connectedLayers = [cfg.layerCount, 1];
 vias(end).type = cfg.outputViaType;
 vias(end).role = 'output_return';
+vias(end).antipadDiameter = cfg.outputViaAntiPadDiameter;
 
 topOutputLeadXY = [d.outputVia; d.padB];
 
@@ -1025,14 +1097,21 @@ connectionErrors(cfg.layerCount+1) = norm(topOutputLeadXY(1,:) - d.outputVia);
 end
 
 %% =========================================================
-function maxTurns = calculateFullyValidatedMaximumTurns( ...
+function [maxTurns, scan] = calculateFullyValidatedMaximumTurns( ...
     cfg, d, boardXY, widthBasedMaxTurns)
 
 maxTurns = 0;
+scan = repmat(struct('turns', 0, 'passed', false, ...
+    'failureReason', ''), 0, 1);
 for turns = widthBasedMaxTurns:-1:1
     candidateCfg = cfg;
     candidateCfg.turnsPerLayer = turns;
-    if isCandidateGeometryValid(candidateCfg, d, boardXY)
+    [candidatePass, failureReason] = ...
+        isCandidateGeometryValid(candidateCfg, d, boardXY);
+    scan(end+1,1) = struct( ... %#ok<AGROW>
+        'turns', turns, 'passed', candidatePass, ...
+        'failureReason', failureReason);
+    if candidatePass
         maxTurns = turns;
         return;
     end
@@ -1041,66 +1120,131 @@ end
 end
 
 %% =========================================================
-function pass = isCandidateGeometryValid(cfg, d, boardXY)
+function [pass, reason] = isCandidateGeometryValid(cfg, d, boardXY)
 
 pass = false;
+reason = '';
 tol = cfg.geometryTolerance;
 
 try
-    [layerXY, layerPaths, vias, connectionErrors] = buildLayerGeometry(cfg, d);
+    [~, layerPaths, vias, connectionErrors] = buildLayerGeometry(cfg, d);
     viaXY = vertcat(vias.xy);
-catch
+catch ME
+    reason = ME.message;
     return;
 end
 
+candidatePaths = flattenLayerPaths(layerPaths);
 if any(~isfinite(boardXY), 'all') || ...
-        any(cellfun(@(xy) any(~isfinite(xy), 'all'), layerXY)) || ...
-        any(cellfun(@(xy) anyZeroLengthSegments(xy, tol), layerXY)) || ...
+        any(cellfun(@(xy) any(~isfinite(xy), 'all'), candidatePaths)) || ...
+        any(cellfun(@(xy) anyZeroLengthSegments(xy, tol), candidatePaths)) || ...
         any(connectionErrors > cfg.connectionTolerance)
+    reason = '存在无效坐标、零长度线段或连接误差';
     return;
 end
 
 for k = 1:cfg.layerCount
-    if minimumOpenPolylineInteriorAngle(layerXY{k}, tol) < ...
-            cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
-        return;
-    end
-    if checkPolylineSelfIntersectionExact(layerXY{k}, false, cfg)
-        return;
-    end
-
     minIndexSeparation = max(16, ceil(cfg.pointsPerTurn/4));
-    [~, spacingPass] = calculateMinimumNonAdjacentDistance( ...
-        layerXY{k}, cfg.traceWidth + cfg.traceSpacing, ...
-        cfg.clearanceTolerance, minIndexSeparation, tol);
-    if ~spacingPass
-        return;
+    for pathIndex = 1:numel(layerPaths{k})
+        path = layerPaths{k}{pathIndex};
+        if cfg.enableCopperAngleCheck && ...
+                minimumOpenPolylineInteriorAngle(path, tol) < ...
+                cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
+            reason = sprintf('L%d路径%d铜线角度不足', k, pathIndex);
+            return;
+        end
+        if cfg.enableExactSelfIntersectionCheck && ...
+                checkPolylineSelfIntersectionExact(path, false, cfg)
+            reason = sprintf('L%d路径%d存在自相交', k, pathIndex);
+            return;
+        end
+        if cfg.enableCopperClearanceCheck
+            [~, spacingPass] = calculateMinimumNonAdjacentDistance( ...
+                path, cfg.traceWidth + cfg.traceSpacing, ...
+                cfg.clearanceTolerance, minIndexSeparation, tol);
+            if ~spacingPass
+                reason = sprintf('L%d路径%d铜线间距不足', k, pathIndex);
+                return;
+            end
+        end
+    end
+    if cfg.enableCopperClearanceCheck || cfg.enableExactSelfIntersectionCheck
+    for pathA = 1:numel(layerPaths{k})-1
+        for pathB = pathA+1:numel(layerPaths{k})
+                pathDistance = minimumDistanceBetweenPolylines( ...
+                    layerPaths{k}{pathA}, layerPaths{k}{pathB});
+                if cfg.enableExactSelfIntersectionCheck && pathDistance <= tol
+                    reason = sprintf('L%d路径%d与路径%d相交', ...
+                        k, pathA, pathB);
+                    return;
+                end
+                if cfg.enableCopperClearanceCheck && pathDistance < ...
+                        cfg.traceWidth + cfg.traceSpacing - cfg.clearanceTolerance
+                    reason = sprintf('L%d路径%d与路径%d间距不足', ...
+                        k, pathA, pathB);
+                    return;
+                end
+            end
+        end
     end
 end
 
 padConnectionLength = ...
     (d.padA(1) - (d.outerRightCenterX + cfg.leadBendRadius)) + ...
     (pi/2)*cfg.leadBendRadius;
-if ~validatePadToBoard(d.padA, d.padB, boardXY, cfg, tol) || ...
-        ~validatePadToPad(d.padA, d.padB, cfg, tol) || ...
-        ~validatePadToCopper( ...
-            d.padA, d.padB, layerPaths, cfg, tol, padConnectionLength) || ...
-        ~validateViaToVia(viaXY, cfg, tol) || ...
-        ~validateViaToBoard(viaXY, boardXY, cfg, tol) || ...
-        ~validateViaToPad(viaXY, d.padA, d.padB, cfg, tol)
-    return;
+if cfg.enablePadClearanceCheck
+    if ~validatePadToBoard(d.padA, d.padB, boardXY, cfg, tol)
+        reason = '焊盘未完整位于板框内';
+        return;
+    end
+    if ~validatePadToPad(d.padA, d.padB, cfg, tol)
+        reason = '焊盘间距不足';
+        return;
+    end
+    if ~validatePadToCopper( ...
+            d.padA, d.padB, layerPaths, cfg, tol, padConnectionLength)
+        reason = '焊盘到顶层非连接铜线间距不足';
+        return;
+    end
 end
+if cfg.enableViaClearanceCheck
+    if ~validateViaToVia(viaXY, cfg, tol)
+        reason = '过孔间距不足';
+        return;
+    end
+    if ~validateViaToBoard(vias, boardXY, cfg, tol)
+        reason = '过孔到板框间距不足';
+        return;
+    end
+    if ~validateViaToPad(viaXY, d.padA, d.padB, cfg, tol)
+        reason = '过孔到焊盘间距不足';
+        return;
+    end
 
-viaEscapeLengths = zeros(cfg.layerCount-1, 1);
-viaEscapeLengths(1:2:end) = cfg.viaLandingLeadLength;
-viaEscapeLengths(2:2:end) = cfg.viaOuterLandingLeadLength;
-viaConnectedClearances = zeros(cfg.layerCount-1, 1);
-viaConnectedClearances(1:2:end) = cfg.viaLandingClearance;
-viaConnectedClearances(2:2:end) = cfg.viaOuterLandingClearance;
-[connectedPass, nonConnectedPass] = validateViaToCopper( ...
-    viaXY, layerXY, cfg, tol, viaEscapeLengths, viaConnectedClearances);
+    viaEscapeLengths = zeros(numel(vias), 1);
+    viaEscapeLengths(1:2:end) = cfg.viaLandingLeadLength;
+    viaEscapeLengths(2:2:cfg.layerCount-1) = cfg.viaOuterLandingLeadLength;
+    viaEscapeLengths(end) = norm(d.padB - d.outputVia);
+    viaConnectedClearances = zeros(numel(vias), 1);
+    viaConnectedClearances(1:2:end) = cfg.viaLandingClearance;
+    viaConnectedClearances(2:2:cfg.layerCount-1) = cfg.viaOuterLandingClearance;
+    viaConnectedClearances(end) = cfg.outputViaToCopperClearance;
+    [connectedPass, nonConnectedPass] = validateViaToCopper( ...
+        vias, layerPaths, cfg, tol, viaEscapeLengths, viaConnectedClearances);
 
-pass = connectedPass && nonConnectedPass;
+    nonConnectedAccepted = nonConnectedPass || ...
+        strcmp(cfg.viaClearanceSeverity, 'warning');
+    pass = connectedPass && nonConnectedAccepted;
+    if ~connectedPass
+        reason = '过孔与连接层其他铜线间距不足';
+    elseif ~nonConnectedPass && ~nonConnectedAccepted
+        reason = '通孔与中间非连接铜层反焊盘间距不足';
+    else
+        reason = '';
+    end
+else
+    pass = true;
+end
 
 end
 
@@ -1898,6 +2042,57 @@ dist = hypot(p(:,1) - proj(:,1), p(:,2) - proj(:,2));
 end
 
 %% =========================================================
+function paths = flattenLayerPaths(layerPaths)
+
+paths = {};
+for layerIndex = 1:numel(layerPaths)
+    paths = horzcat(paths, layerPaths{layerIndex}); %#ok<AGROW>
+end
+
+end
+
+%% =========================================================
+function minDistance = minimumDistanceBetweenPolylines(pathA, pathB)
+
+if size(pathA,1) < 2 || size(pathB,1) < 2
+    minDistance = Inf;
+    return;
+end
+
+b1 = pathB(1:end-1,:);
+b2 = pathB(2:end,:);
+minDistance = Inf;
+
+for indexA = 1:size(pathA,1)-1
+    a1 = pathA(indexA,:);
+    a2 = pathA(indexA+1,:);
+    da = a2 - a1;
+    db = b2 - b1;
+    relative = b1 - a1;
+    denominator = da(1).*db(:,2) - da(2).*db(:,1);
+    numeratorT = relative(:,1).*db(:,2) - relative(:,2).*db(:,1);
+    numeratorU = relative(:,1).*da(2) - relative(:,2).*da(1);
+    nonParallel = abs(denominator) > 1e-12;
+    t = NaN(size(denominator));
+    u = NaN(size(denominator));
+    t(nonParallel) = numeratorT(nonParallel)./denominator(nonParallel);
+    u(nonParallel) = numeratorU(nonParallel)./denominator(nonParallel);
+    if any(nonParallel & t >= 0 & t <= 1 & u >= 0 & u <= 1)
+        minDistance = 0;
+        return;
+    end
+
+    distance = min([ ...
+        pointToSegmentDistance(a1, b1, b2), ...
+        pointToSegmentDistance(a2, b1, b2), ...
+        pointToSegmentDistance(b1, a1, a2), ...
+        pointToSegmentDistance(b2, a1, a2)], [], 2);
+    minDistance = min(minDistance, min(distance));
+end
+
+end
+
+%% =========================================================
 function pass = validateBoardDimensions(boardXY, cfg, tol)
 
 actualMinX = min(boardXY(:,1));
@@ -2019,36 +2214,38 @@ end
 
 %% =========================================================
 function pass = validatePadToCopper( ...
-    padA, padB, layerXY, cfg, tol, padConnectionLength)
+    padA, padB, layerPaths, cfg, tol, padConnectionLength)
 
 pass = true;
 requiredDistance = cfg.padDiameter/2 + cfg.traceWidth/2 + ...
     cfg.padToCopperClearance;
 connectedExcludedLength = padConnectionLength + requiredDistance;
 
-for m = 1:numel(layerXY)
-    if m == 1
-        dA = minimumDistancePointToPolylineExcludingLength( ...
-            padA, layerXY{m}, true, connectedExcludedLength);
-    else
-        dA = minimumDistancePointToPolyline(padA, layerXY{m});
-    end
+for layerIndex = 1:numel(layerPaths)
+    for pathIndex = 1:numel(layerPaths{layerIndex})
+        path = layerPaths{layerIndex}{pathIndex};
+        if layerIndex == 1 && pathIndex == 1
+            dA = minimumDistancePointToPolylineExcludingLength( ...
+                padA, path, true, connectedExcludedLength);
+        else
+            dA = minimumDistancePointToPolyline(padA, path);
+        end
 
-    if dA < requiredDistance - tol
-        pass = false;
-        return;
-    end
+        if dA < requiredDistance - tol
+            pass = false;
+            return;
+        end
 
-    if m == numel(layerXY)
-        dB = minimumDistancePointToPolylineExcludingLength( ...
-            padB, layerXY{m}, false, connectedExcludedLength);
-    else
-        dB = minimumDistancePointToPolyline(padB, layerXY{m});
-    end
+        if layerIndex == 1 && pathIndex == 2
+            dB = Inf;
+        else
+            dB = minimumDistancePointToPolyline(padB, path);
+        end
 
-    if dB < requiredDistance - tol
-        pass = false;
-        return;
+        if dB < requiredDistance - tol
+            pass = false;
+            return;
+        end
     end
 end
 
@@ -2089,16 +2286,21 @@ end
 end
 
 %% =========================================================
-function pass = validateViaToBoard(viaXY, boardXY, cfg, tol)
+function pass = validateViaToBoard(vias, boardXY, cfg, tol)
 
 pass = true;
-requiredPadDistance = cfg.viaPadDiameter/2 + cfg.viaToBoardClearance;
-requiredDrillDistance = cfg.viaDrillDiameter/2 + cfg.viaToBoardClearance;
 
-for k = 1:size(viaXY,1)
+for k = 1:numel(vias)
+    if strcmp(vias(k).role, 'output_return')
+        boardClearance = cfg.outputViaToBoardClearance;
+    else
+        boardClearance = cfg.viaToBoardClearance;
+    end
+    requiredPadDistance = vias(k).padDiameter/2 + boardClearance;
+    requiredDrillDistance = vias(k).drillDiameter/2 + boardClearance;
     [in, on] = inpolygon( ...
-        viaXY(k,1), viaXY(k,2), boardXY(:,1), boardXY(:,2));
-    d = minimumDistancePointToPolyline(viaXY(k,:), boardXY);
+        vias(k).xy(1), vias(k).xy(2), boardXY(:,1), boardXY(:,2));
+    d = minimumDistancePointToPolyline(vias(k).xy, boardXY);
 
     if ~(in || on) || d < requiredPadDistance - tol || ...
             d < requiredDrillDistance - tol
@@ -2110,36 +2312,71 @@ end
 end
 
 %% =========================================================
-function [connectedPass, nonConnectedPass] = validateViaToCopper( ...
-    viaXY, layerXY, cfg, tol, viaEscapeLengths, viaConnectedClearances)
+function [connectedPass, nonConnectedPass, issues] = validateViaToCopper( ...
+    vias, layerPaths, cfg, tol, viaEscapeLengths, viaConnectedClearances)
 
 connectedPass = true;
 nonConnectedPass = true;
-otherRequired = cfg.viaPadDiameter/2 + cfg.traceWidth/2 + ...
-    cfg.viaToCopperClearance;
-
-for k = 1:size(viaXY,1)
+issues = {};
+for k = 1:numel(vias)
     connectedRequired = cfg.viaPadDiameter/2 + cfg.traceWidth/2 + ...
         viaConnectedClearances(k);
     connectedExcludedLength = viaEscapeLengths(k) + connectedRequired;
 
-    for m = 1:numel(layerXY)
-        if m == k
-            d = minimumDistancePointToPolylineExcludingLength( ...
-                viaXY(k,:), layerXY{m}, false, connectedExcludedLength);
-            if d < connectedRequired - tol
-                connectedPass = false;
+    for layerIndex = 1:numel(layerPaths)
+        for pathIndex = 1:numel(layerPaths{layerIndex})
+            path = layerPaths{layerIndex}{pathIndex};
+            isFromPath = layerIndex == vias(k).fromLayer && pathIndex == 1;
+            isToPath = layerIndex == vias(k).toLayer && pathIndex == 1;
+            if strcmp(vias(k).role, 'output_return')
+                isToPath = layerIndex == 1 && pathIndex == 2;
             end
-        elseif m == k+1
-            d = minimumDistancePointToPolylineExcludingLength( ...
-                viaXY(k,:), layerXY{m}, true, connectedExcludedLength);
-            if d < connectedRequired - tol
-                connectedPass = false;
-            end
-        else
-            d = minimumDistancePointToPolyline(viaXY(k,:), layerXY{m});
-            if d < otherRequired - tol
-                nonConnectedPass = false;
+
+            if isFromPath
+                d = minimumDistancePointToPolylineExcludingLength( ...
+                    vias(k).xy, path, false, connectedExcludedLength);
+                if d < connectedRequired - tol
+                    connectedPass = false;
+                    issues{end+1} = sprintf( ...
+                        ['%s与连接层L%d路径%d间距%.6f mm不足%.6f mm' ...
+                        '（排除长度%.6f mm）'], ...
+                        vias(k).name, layerIndex, pathIndex, d, ...
+                        connectedRequired, connectedExcludedLength); %#ok<AGROW>
+                end
+            elseif isToPath
+                if strcmp(vias(k).role, 'output_return')
+                    d = Inf;
+                else
+                    d = minimumDistancePointToPolylineExcludingLength( ...
+                        vias(k).xy, path, true, connectedExcludedLength);
+                end
+                if d < connectedRequired - tol
+                    connectedPass = false;
+                    issues{end+1} = sprintf( ...
+                        ['%s与连接层L%d路径%d间距%.6f mm不足%.6f mm' ...
+                        '（排除长度%.6f mm）'], ...
+                        vias(k).name, layerIndex, pathIndex, d, ...
+                        connectedRequired, connectedExcludedLength); %#ok<AGROW>
+                end
+            else
+                checksThisLayer = strcmp(vias(k).type, 'through_via') || ...
+                    ismember(layerIndex, vias(k).connectedLayers);
+                if checksThisLayer
+                    genericRequired = vias(k).padDiameter/2 + ...
+                        cfg.traceWidth/2 + cfg.viaToCopperClearance;
+                    if strcmp(vias(k).role, 'output_return') && ...
+                            strcmp(vias(k).type, 'through_via')
+                        antipadRequired = vias(k).antipadDiameter/2 + ...
+                            cfg.traceWidth/2;
+                        otherRequired = max(genericRequired, antipadRequired);
+                    else
+                        otherRequired = genericRequired;
+                    end
+                    d = minimumDistancePointToPolyline(vias(k).xy, path);
+                    if d < otherRequired - tol
+                        nonConnectedPass = false;
+                    end
+                end
             end
         end
     end
@@ -2350,6 +2587,12 @@ lines{end+1} = sprintf('Width-based maximum turns     : %d', ...
     widthBasedMaxTurns);
 lines{end+1} = sprintf('Fully validated maximum turns : %d', ...
     fullyValidatedMaxTurns);
+lines{end+1} = sprintf('Recommended turns (max - 1)   : %d', ...
+    max(1, fullyValidatedMaxTurns - 1));
+lines{end+1} = sprintf('Output topology                : L%d -> VOUT -> L1 -> PAD_B', ...
+    cfg.layerCount);
+lines{end+1} = sprintf('VOUT type / antipad            : %s / %.3f mm', ...
+    cfg.outputViaType, cfg.outputViaAntiPadDiameter);
 lines{end+1} = sprintf('参数检查                 : %s', 'PASS');
 lines{end+1} = sprintf('主体尺寸检查             : %s', ...
     passText(bodyDimensionPass));
@@ -2495,7 +2738,11 @@ end
 %% =========================================================
 function [pass, reason] = validateWrittenDxfFile( ...
     filename, expectedVertexCount, expectedEntityCount, ...
-    expectedLayerName, isClosed)
+    expectedLayerName, isClosed, expectedPathEntityCounts)
+
+if nargin < 6
+    expectedPathEntityCounts = expectedEntityCount;
+end
 
 pass = false;
 reason = '';
@@ -2598,11 +2845,17 @@ if ~isClosed
         return;
     end
 
-    for k = 1:numel(entityVertices)-1
-        if norm(entityVertices{k}(end,:) - entityVertices{k+1}(1,:)) > 1e-9
-            reason = 'DXF分段公共端点不一致';
-            return;
+    firstEntity = 1;
+    for pathIndex = 1:numel(expectedPathEntityCounts)
+        lastEntity = firstEntity + expectedPathEntityCounts(pathIndex) - 1;
+        for k = firstEntity:lastEntity-1
+            if norm(entityVertices{k}(end,:) - ...
+                    entityVertices{k+1}(1,:)) > 1e-9
+                reason = sprintf('DXF路径%d分段公共端点不一致', pathIndex);
+                return;
+            end
         end
+        firstEntity = lastEntity + 1;
     end
 end
 
@@ -2777,6 +3030,27 @@ end
 end
 
 %% =========================================================
+function writeTurnScanCsv(filename, scan, fullyValidatedMaxTurns)
+
+fid = fopen(filename, 'w', 'n', 'UTF-8');
+if fid == -1
+    error('无法创建匝数扫描CSV：%s', filename);
+end
+cleanupCSV = onCleanup(@() fclose(fid));
+
+fprintf(fid, 'turns,passed,is_fully_validated_maximum,failure_reason\n');
+for index = 1:numel(scan)
+    reason = strrep(scan(index).failureReason, '"', '""');
+    fprintf(fid, '%d,%d,%d,"%s"\n', ...
+        scan(index).turns, scan(index).passed, ...
+        scan(index).turns == fullyValidatedMaxTurns, reason);
+end
+
+clear cleanupCSV;
+
+end
+
+%% =========================================================
 function writeCoordinateCsv(filename, cfg, d, vias)
 
 fid = fopen(filename, 'w', 'n', 'UTF-8');
@@ -2815,9 +3089,9 @@ end
 function writeDesignSummary( ...
     filename, cfg, d, widthBasedMaxTurns, fullyValidatedMaxTurns, ...
     effectiveTurnsPerLayer, ...
-    innerLength, innerWidth, layerXY, copperFileNames, boardFileName, ...
+    innerLength, innerWidth, layerPaths, copperFileNames, boardFileName, ...
     boardMinAngle, copperMinAngles, minCopperSpacing, ...
-    viaXY, connectionErrors)
+    vias, connectionErrors)
 
 rhoCopper = cfg.copperResistivity;
 crossSection_m2 = (cfg.traceWidth/1000)*(cfg.copperThickness/1000);
@@ -2826,7 +3100,8 @@ layerLength_mm = zeros(cfg.layerCount, 1);
 layerRdc = zeros(cfg.layerCount, 1);
 
 for k = 1:cfg.layerCount
-    layerLength_mm(k) = calculatePathLength(layerXY{k});
+    layerLength_mm(k) = sum(cellfun( ...
+        @calculatePathLength, layerPaths{k}));
     layerRdc(k) = rhoCopper*(layerLength_mm(k)/1000)/crossSection_m2;
 end
 
@@ -2836,6 +3111,12 @@ totalRdc = sum(layerRdc);
 lines = {};
 lines{end+1} = 'FPC coil design summary';
 lines{end+1} = '=======================';
+lines{end+1} = sprintf('Recommended turns (max - 1) : %d', ...
+    max(1, fullyValidatedMaxTurns - 1));
+lines{end+1} = sprintf('Output topology             : L%d -> VOUT -> L1 -> PAD_B', ...
+    cfg.layerCount);
+lines{end+1} = sprintf('VOUT type / antipad         : %s / %.3f mm', ...
+    cfg.outputViaType, cfg.outputViaAntiPadDiameter);
 lines{end+1} = sprintf('设计名称                 : %s', cfg.designName);
 lines{end+1} = sprintf('层数                     : %d', cfg.layerCount);
 lines{end+1} = sprintf('主体长度/宽度            : %.3f / %.3f mm', ...
@@ -2897,16 +3178,21 @@ end
 lines{end+1} = sprintf('串联总长度               : %.3f mm', totalLength_mm);
 lines{end+1} = sprintf('估算总Rdc                : %.6f Ohm', totalRdc);
 lines{end+1} = '';
-lines{end+1} = sprintf('PAD_A                     : X=%.6f, Y=%.6f mm', ...
+lines{end+1} = sprintf('PAD_A (L1)                : X=%.6f, Y=%.6f mm', ...
     d.padA(1), d.padA(2));
 
-for k = 1:cfg.layerCount-1
-    lines{end+1} = sprintf('V%d%d                       : X=%.6f, Y=%.6f mm', ...
-        k, k+1, viaXY(k,1), viaXY(k,2));
+for k = 1:numel(vias)
+    lines{end+1} = sprintf( ...
+        '%-10s : X=%.6f, Y=%.6f mm, L%d -> L%d, %s, antipad %.3f mm', ...
+        vias(k).name, vias(k).xy(1), vias(k).xy(2), ...
+        vias(k).fromLayer, vias(k).toLayer, vias(k).type, ...
+        vias(k).antipadDiameter);
 end
 
-lines{end+1} = sprintf('PAD_B                     : X=%.6f, Y=%.6f mm', ...
+lines{end+1} = sprintf('PAD_B (L1)                : X=%.6f, Y=%.6f mm', ...
     d.padB(1), d.padB(2));
+lines{end+1} = sprintf('Output topology           : L%d -> VOUT -> L1 -> PAD_B', ...
+    cfg.layerCount);
 lines{end+1} = sprintf('层间最大连接误差         : %.6f mm', ...
     max(connectionErrors));
 lines{end+1} = '';
@@ -2944,6 +3230,11 @@ lines{end+1} = sprintf('LayerCount               : %d', cfg.layerCount);
 lines{end+1} = sprintf('TurnsPerLayer            : %d', cfg.turnsPerLayer);
 lines{end+1} = sprintf('WidthBasedMaximumTurns   : %d', widthBasedMaxTurns);
 lines{end+1} = sprintf('FullyValidatedMaximumTurns: %d', fullyValidatedMaxTurns);
+lines{end+1} = sprintf('RecommendedTurns         : %d', ...
+    max(1, fullyValidatedMaxTurns - 1));
+lines{end+1} = sprintf('OutputTopology           : L%d -> VOUT -> L1 -> PAD_B', ...
+    cfg.layerCount);
+lines{end+1} = sprintf('OutputViaType            : %s', cfg.outputViaType);
 lines{end+1} = sprintf('MinCopperSpacing         : %.4f mm', minCopperSpacing);
 lines{end+1} = sprintf('MinBoardAngle            : %.3f deg', boardMinAngle);
 lines{end+1} = sprintf('MinCopperAngle           : %.3f deg', minCopperAngle);
@@ -2962,7 +3253,7 @@ end
 
 %% =========================================================
 function fig = plotFullPreview( ...
-    cfg, boardXY, layerXY, padA, padB, viaXY)
+    cfg, boardXY, layerPaths, padA, padB, vias)
 
 titleText = sprintf( ...
     '%d-layer FPC coil | body %.0fx%.0f mm | tab %.0fx%.0f mm | %d turns/layer | %.2f/%.2f mm', ...
@@ -2971,20 +3262,20 @@ titleText = sprintf( ...
     cfg.traceWidth, cfg.traceSpacing);
 
 fig = plotLayout( ...
-    boardXY, layerXY, padA, padB, viaXY, titleText, true, []);
+    boardXY, layerPaths, padA, padB, vias, titleText, true, []);
 
 end
 
 %% =========================================================
 function fig = plotRightTabPreview( ...
-    cfg, boardXY, layerXY, padA, padB, viaXY)
+    cfg, boardXY, layerPaths, padA, padB, vias)
 
 titleText = sprintf( ...
     'Right tab detail | body %.0f mm + tab %.0f mm | %d turns/layer', ...
     cfg.plateLength, cfg.tabLength, cfg.turnsPerLayer);
 
 fig = plotLayout( ...
-    boardXY, layerXY, padA, padB, viaXY, titleText, true, ...
+    boardXY, layerPaths, padA, padB, vias, titleText, true, ...
     [cfg.plateLength/2 - 8, cfg.plateLength/2 + cfg.tabLength + 2]);
 
 ylim([-cfg.plateWidth/2 - 1, cfg.plateWidth/2 + 1]);
@@ -2993,7 +3284,7 @@ end
 
 %% =========================================================
 function fig = plotLayout( ...
-    boardXY, layerXY, padA, padB, viaXY, titleText, addLegend, xRange)
+    boardXY, layerPaths, padA, padB, vias, titleText, addLegend, xRange)
 
 if usejava('desktop')
     fig = figure('Name', titleText, 'Color', 'w');
@@ -3010,18 +3301,26 @@ plot([boardXY(:,1); boardXY(1,1)], ...
      [boardXY(:,2); boardXY(1,2)], ...
      '--', 'LineWidth', 1.0, 'DisplayName', 'Board outline');
 
-for k = 1:numel(layerXY)
-    plot(layerXY{k}(:,1), layerXY{k}(:,2), ...
-        'LineWidth', 0.8, 'DisplayName', sprintf('L%d', k));
+for k = 1:numel(layerPaths)
+    for pathIndex = 1:numel(layerPaths{k})
+        path = layerPaths{k}{pathIndex};
+        if pathIndex == 1
+            displayName = sprintf('L%d coil', k);
+        else
+            displayName = sprintf('L%d output return', k);
+        end
+        plot(path(:,1), path(:,2), ...
+            'LineWidth', 0.8, 'DisplayName', displayName);
+    end
 end
 
 plot(padA(1), padA(2), 'o', ...
     'MarkerSize', 7, 'LineWidth', 1.2, 'DisplayName', 'PAD A');
 
-for k = 1:size(viaXY,1)
-    plot(viaXY(k,1), viaXY(k,2), 's', ...
+for k = 1:numel(vias)
+    plot(vias(k).xy(1), vias(k).xy(2), 's', ...
         'MarkerSize', 6, 'LineWidth', 1.0, ...
-        'DisplayName', sprintf('V%d%d', k, k+1));
+        'DisplayName', vias(k).name);
 end
 
 plot(padB(1), padB(2), 'o', ...

@@ -153,6 +153,54 @@ verifyNotEmpty(testCase, regexp(scan(2).failureReason, '(width|宽度|空间)', 
 
 end
 
+function testEightLayerProductionValidationPasses(testCase)
+
+result = generatedEightLayerValidated(testCase.TestData.outputRoot);
+
+verifyTrue(testCase, result.passed);
+verifyEqual(testCase, result.layerCount, 8);
+verifyEqual(testCase, result.turnsPerLayer, 6);
+verifyEqual(testCase, result.fullyValidatedMaximumTurns, 7);
+verifyEqual(testCase, result.recommendedTurns, 6);
+verifyTrue(testCase, isfinite(result.totalLengthMm));
+verifyGreaterThan(testCase, result.totalResistanceOhm, 0);
+
+vout = result.vias(strcmp({result.vias.name}, 'VOUT'));
+seriesVias = result.vias(~strcmp({result.vias.name}, 'VOUT'));
+verifyEqual(testCase, vout.antipadDiameter, 0.90, 'AbsTol', 1e-12);
+verifyEqual(testCase, [seriesVias.antipadDiameter], zeros(1, 7));
+
+end
+
+function testOutputViaSpecificBoardClearanceIsEnforced(testCase)
+
+cfg = fastConfig(6, testCase.TestData.outputRoot);
+cfg.enableViaClearanceCheck = true;
+cfg.outputViaToBoardClearance = 100;
+cfg.designName = 'vout_board_clearance_failure';
+
+verifyError(testCase, @() fpc_coil_generate(cfg), ...
+    'FPC_Coil:NoValidTurnCount');
+
+end
+
+function testOutputAntipadHonorsConfiguredSeverity(testCase)
+
+cfg = fastConfig(6, testCase.TestData.outputRoot);
+cfg.enableViaClearanceCheck = true;
+cfg.outputViaAntiPadDiameter = 20;
+cfg.viaClearanceSeverity = 'error';
+cfg.designName = 'vout_antipad_error';
+verifyError(testCase, @() fpc_coil_generate(cfg), ...
+    'FPC_Coil:NoValidTurnCount');
+
+cfg.viaClearanceSeverity = 'warning';
+cfg.designName = 'vout_antipad_warning';
+result = fpc_coil_generate(cfg);
+verifyTrue(testCase, result.passed);
+
+end
+
 function cfg = fastConfig(layerCount, outputRoot)
 
 cfg = fpc_coil_default_config(struct( ...
@@ -182,6 +230,23 @@ persistent cachedOutputRoot cachedResult
 
 if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
     cfg = fastConfig(6, outputRoot);
+    cachedResult = fpc_coil_generate(cfg);
+    cachedOutputRoot = outputRoot;
+end
+result = cachedResult;
+
+end
+
+function result = generatedEightLayerValidated(outputRoot)
+
+persistent cachedOutputRoot cachedResult
+
+if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
+    cfg = fpc_coil_default_config(struct( ...
+        'layerCount', 8, ...
+        'outputRoot', outputRoot, ...
+        'designName', 'validated_8layer', ...
+        'enablePreview', false));
     cachedResult = fpc_coil_generate(cfg);
     cachedOutputRoot = outputRoot;
 end

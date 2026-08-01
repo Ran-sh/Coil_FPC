@@ -1,168 +1,179 @@
 # Coil_FPC
 
-用于生成两层或四层柔性 PCB（FPC）平面线圈的 MATLAB 工具。程序根据集中配置生成圆角矩形螺旋、焊盘与层间过孔坐标，并在验证通过后输出可导入 EDA 的 DXF、CSV、报告和预览图。
+用于生成多层柔性 PCB（FPC）串联平面线圈的 MATLAB 工具。程序生成圆角矩形螺旋、层间过孔、顶层输入/输出焊盘，并在全部几何与制造规则检查通过后输出 DXF、CSV、验证报告和预览图。
 
-## 主要功能
+## 当前能力
 
-- 支持 2 层和 4 层串联线圈。
-- 线宽、线距、板框、尾部、焊盘及过孔参数集中配置。
-- 自动生成圆角矩形螺旋和与路径相切的逃逸圆弧。
-- 四层设计中，V23 位于右侧中部并向尾部引出；V12、V34 向中心空白区引出。
-- 分别计算宽度理论最大匝数和全部几何检查最大匝数。
-- 检查铜线角度、自相交、线距、层间连接、焊盘、过孔、板框及 DXF 完整性。
-- 验证全部通过后才替换正式输出目录，失败时保留上一次成功结果。
+- 支持 2、4、6、8 层，以及不超过 `maxLayerCount` 的其他偶数层。
+- 暂不支持单数层；输入 3、5、7 层会明确报错 `FPC_Coil:InvalidLayerCount`。
+- 相邻铜层通过 `V12`、`V23`、…、`V(N-1)N` 串联。
+- 最后一层从右侧引出至 `VOUT`，经通孔返回 L1，再由独立的 L1 回路线连接 `PAD_B`。
+- `PAD_A`、`PAD_B` 均位于 L1，便于从同一面焊接。
+- `VOUT` 默认为通孔；在中间非连接铜层需要按 CSV 中的反焊盘直径设置禁铜。
+- 同时输出宽度理论上限、完整几何验证上限和安全推荐值（完整上限减 1）。
+- 自动检查角度、自交、线距、连接连续性、焊盘/过孔是否在板内、铜间距及 DXF 回读完整性。
 
 ## 环境
 
-- MATLAB
-- 已在 MATLAB R2026a 上完成实际运行和回归测试
+- MATLAB R2026a（已实际运行验证）
 - 不依赖第三方 MATLAB 工具箱
 
 ## 快速开始
 
-将 MATLAB 当前目录切换到仓库根目录，然后运行：
+在 MATLAB 中切换到仓库目录：
 
 ```matlab
 result = fpc_coil_main();
 ```
 
-默认配置为四层、每层 6 匝。生成成功后，`result.passed` 为 `true`，文件写入：
+默认配置为 4 层，并启用自动推荐匝数：
+
+```matlab
+cfg = fpc_coil_default_config();
+cfg.layerCount = 4;
+cfg.useRecommendedTurns = true;
+result = fpc_coil_generate(cfg);
+```
+
+自定义配置无需修改主程序：
+
+```matlab
+cfg = fpc_coil_default_config(struct( ...
+    'layerCount', 6, ...
+    'useRecommendedTurns', false, ...
+    'turnsPerLayer', 6, ...
+    'designName', 'my_6layer_coil'));
+
+result = fpc_coil_generate(cfg);
+```
+
+也可直接向入口传覆盖参数：
+
+```matlab
+result = fpc_coil_main(struct('layerCount', 8));
+```
+
+## 层间拓扑
+
+以 6 层为例：
 
 ```text
-fpc_coil_output/fpc_coil_4layer/
+PAD_A (L1)
+  -> L1 -> V12 -> L2 -> V23 -> L3 -> V34
+  -> L4 -> V45 -> L5 -> V56 -> L6
+  -> VOUT (L6 到 L1 通孔)
+  -> L1 独立回路线
+  -> PAD_B (L1)
 ```
 
-## 切换两层或四层
+L1 的线圈与输出回路线是两个独立 polyline。程序会分别写入同一个 L1 DXF，绝不会把两条路径拼接成一条造成虚假铜桥。
 
-编辑 `fpc_coil_main.m`：
+## 匝数上限
+
+程序区分三个概念：
+
+- `widthBasedMaximumTurns`：只按板宽、中心保留宽度、节距和多层相位计算。
+- `fullyValidatedMaximumTurns`：从宽度上限向下试算，角度、线距、自交、焊盘、过孔和板框检查全部通过的最大值。
+- `recommendedTurns`：`fullyValidatedMaximumTurns - 1`，保留一匝安全裕量。
+
+默认几何与制造参数在 MATLAB R2026a 中复核得到：
+
+| 层数 | 宽度理论上限 | 完整验证上限 | 安全推荐值 |
+| ---: | ---: | ---: | ---: |
+| 2 | 11 | 11 | 10 |
+| 4 | 11 | 9 | 8 |
+| 6 | 11 | 7 | 6 |
+| 8 | 11 | 7 | 6 |
+
+因此，两层并不是“大于 10 匝就一定不行”：默认参数下 11 匝能够通过完整验证，但推荐 10 匝以保留制造裕量。板宽、线宽、线距、中心保留宽度或逃逸几何变化后，上限会重新计算。
+
+若要查看指定匝数的逐项结论：
 
 ```matlab
-cfg.layerCount = 2;  % 两层
-cfg.layerCount = 4;  % 四层
+cfg = fpc_coil_default_config(struct('layerCount', 4));
+scan = fpc_coil_scan_turns(cfg, 6:11);
+disp(struct2table(scan));
 ```
 
-当 `cfg.useRecommendedTurns = true` 时，程序使用以下默认值：
-
-| 层数 | 默认匝数 |
-| ---: | ---: |
-| 2 | 10 匝/层 |
-| 4 | 6 匝/层 |
-
-如需手动指定匝数：
-
-```matlab
-cfg.useRecommendedTurns = false;
-cfg.turnsPerLayer = 8;
-```
+每次正式生成还会写出 `04_turn_scan.csv`，失败候选包含具体原因。
 
 ## 关键参数
-
-所有用户参数均位于 `fpc_coil_main.m`。
 
 | 参数 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `traceWidth` | 0.20 mm | 铜线宽度 |
 | `traceSpacing` | 0.15 mm | 目标净线距 |
-| `pitchMargin` | 0.005 mm | 几何附加节距 |
-| `edgeClearance` | 0.50 mm | 铜线到主体板边距离 |
-| `viaLandingLeadLength` | 0.80 mm | V12/V34 内圈逃逸长度 |
-| `viaInnerBendRadius` | 0.50 mm | V12/V34 逃逸圆弧半径 |
-| `viaOuterLandingLeadLength` | 1.00 mm | V23 向右引出长度 |
-| `viaOuterBendRadius` | 0.30 mm | V23 逃逸圆弧半径 |
+| `pitchMargin` | 0.005 mm | 附加节距余量 |
+| `edgeClearance` | 0.50 mm | 铜线到主体板边余量 |
+| `viaInnerBendRadius` | 0.50 mm | 内圈层间逃逸圆角半径 |
+| `viaOuterLandingLeadLength` | 1.00 mm | 右侧层间过孔引出长度 |
 | `viaToPadClearance` | 0.20 mm | 过孔焊盘到外接焊盘净距 |
-| `viaClearanceSeverity` | `warning` | 非连接铜层间距不足时的处理方式 |
+| `outputViaType` | `through_via` | VOUT 类型 |
+| `outputViaAntiPadDiameter` | 0.90 mm | VOUT 在非连接内层的反焊盘直径 |
+| `outputViaTipInset` | 4.00 mm | VOUT 距右侧尾端的水平内缩 |
+| `useRecommendedTurns` | `true` | 自动采用完整上限减 1 |
 
 实际生成节距为：
 
 ```text
-traceWidth + traceSpacing + pitchMargin
+traceWidth + traceSpacing + pitchMargin = 0.355 mm
 ```
 
-默认值对应 `0.355 mm`。
+## 输出文件
 
-## 默认几何结果
-
-默认四层 6 匝配置经 MATLAB 实际运行验证：
+成功运行后：
 
 ```text
-V12 ≈ (-36.295037, -1.136177) mm
-V23 =  ( 40.400000,  0.000000) mm
-V34 ≈ (-36.295037,  1.139741) mm
+fpc_coil_output/<designName>/
+├─ dxf/
+│  ├─ L1/ ... L<N>/             各铜层 DXF
+│  └─ BOARD_OUTLINE/             板框 DXF
+├─ reports/
+│  ├─ 01_pad_via_coordinates.csv 焊盘/过孔/反焊盘数据
+│  ├─ 02_design_summary.txt       长度、电阻、上限和拓扑摘要
+│  ├─ 03_validation_report.txt    全部验证结论
+│  └─ 04_turn_scan.csv            候选匝数与失败原因
+├─ previews/
+│  ├─ 01_preview_full.png
+│  └─ 02_preview_right_tab.png
+└─ generation_status.txt
 ```
 
-当前默认配置的验证结果：
+输出目录属于可再生成文件，已由 `.gitignore` 排除。发布时可把经过验证的输出压缩包附加到 GitHub Release，而不把大量 DXF 长期放在源码分支。
 
-| 项目 | 两层默认配置 | 四层默认配置 |
-| --- | ---: | ---: |
-| 当前匝数 | 10 | 6 |
-| 宽度理论最大匝数 | 11 | 11 |
-| 全部几何检查最大匝数 | 11 | 9 |
-| 最小铜线角 | 约 166.813° | 约 166.816° |
-| 最小铜线净距 | 约 0.151 mm | 约 0.151 mm |
-| 层间连接误差 | 0 mm | 0 mm |
-| 逃逸圆弧 | PASS | PASS |
+## EDA 导入注意事项
 
-四层设计建议使用 6–9 匝/层。虽然宽度公式允许 11 匝，但 10–11 匝无法通过当前全部几何检查。
+- DXF 单位为毫米，比例 1:1。
+- 铜线导入宽度设为 `traceWidth`（默认 0.20 mm）。
+- 各层按统一观察方向输出，底层无需手动镜像。
+- CSV 提供焊盘、钻孔、环宽、连接层和反焊盘数据；真实 padstack、覆盖膜开窗、盲埋孔或通孔工艺仍需在 EDA 中建立。
+- `VOUT` 穿过所有层；除 L1 和最后一层外，中间层按 `outputViaAntiPadDiameter` 设置禁铜/反焊盘。
+- 生产前必须与 FPC 制造商确认层叠、最小环宽、钻孔公差和通孔能力。
 
-## 输出结构
-
-运行后自动生成：
-
-```text
-fpc_coil_output/
-├─ fpc_coil_2layer/ 或 fpc_coil_4layer/
-│  ├─ dxf/                         # 各铜层及板框 DXF
-│  ├─ reports/
-│  │  ├─ 01_pad_via_coordinates.csv
-│  │  ├─ 02_design_summary.txt
-│  │  └─ 03_validation_report.txt
-│  ├─ previews/
-│  │  ├─ 01_preview_full.png
-│  │  └─ 02_preview_right_tab.png
-│  └─ generation_status.txt
-```
-
-输出目录属于可再生成文件，因此不纳入 Git 版本控制。
-
-## 验证逻辑
-
-程序在写出正式结果前检查：
-
-1. 配置字段、数值范围和板框尺寸。
-2. NaN、Inf、重复点及零长度线段。
-3. 板框和铜线最小角度。
-4. 板框及各铜层自相交。
-5. 同层非相邻铜线的实际最小线距。
-6. 修改后最终路径的层间连接误差。
-7. 焊盘和过孔是否位于板框内部，以及相关净距。
-8. 过孔连接层与非连接层铜线间距。
-9. DXF 写出后的实体、顶点和闭合标志回读。
-
-当过孔与非连接铜层间距不足时，`viaClearanceSeverity = 'warning'` 会输出警告并继续；设为 `'error'` 时停止生成。当前默认 V23 右侧引出方案通常能够通过该项检查。
-
-## 运行测试
+## 测试
 
 ```matlab
 results = runtests('test_fpc_coil_regressions.m');
 assertSuccess(results);
 ```
 
-当前回归测试覆盖独立过孔间距参数、内圈圆角参数、最终路径连接检查、板内判断、匝数上限报告和修剪圆角实现。
-
-## EDA 导入
-
-- 单位：毫米，DXF 中 `$INSUNITS = 4`。
-- 缩放比例：1:1。
-- 铜线导入线宽应设置为 `0.20 mm`，或与配置中的 `traceWidth` 保持一致。
-- 底层 DXF 已按统一观察方向生成，无需手动镜像。
-- CSV 仅提供焊盘和过孔坐标；真实焊盘、钻孔、覆盖膜及反焊盘需要在 EDA 中建立。
-- 四层过孔结构和生产工艺必须与 PCB 制造商确认。
+测试覆盖配置入口、偶数/单数层约束、6/8 层扩展、VOUT 通孔、PAD_B 顶层归属、L1 双独立路径、动态 DXF 层名、输出文件和失败原因。
 
 ## 文件说明
 
 ```text
-fpc_coil_main.m             用户入口与集中配置
-fpc_coil_generate.m         几何生成、验证和文件输出核心
-test_fpc_coil_regressions.m MATLAB 回归测试
-README.md                   项目说明
+fpc_coil_main.m              简洁入口
+fpc_coil_default_config.m    默认配置与覆盖参数
+fpc_coil_validate_config.m   公共配置验证
+fpc_coil_scan_turns.m        参数组合/匝数扫描
+fpc_coil_generate.m          几何、验证与导出核心
+examples/                    2/4/6/8 层示例
+test_fpc_coil_regressions.m  MATLAB 行为回归测试
 ```
+
+## 当前限制与后续方向
+
+- 单数层需要额外的专用回流层或独立跨层走线通道；当前明确拒绝，避免生成电气拓扑错误的结果。
+- 相邻层过孔目前按相邻层连接建模；是否使用盲孔、埋孔或逐层微孔，应根据制造商能力决定。
+- 核心文件仍可继续拆分为独立的 geometry、validation、export 模块；公共配置、验证和扫描入口已经先行分离。
+- 圆角函数保留失败回退标记；若某组参数只能形成尖角，验证报告会显示 `FALLBACK_TO_SHARP_CORNER`。

@@ -29,6 +29,8 @@ for index = 1:numel(turnValues)
         scan(index).passed = result.passed;
         scan(index).minCopperAngle = result.minCopperAngle;
         scan(index).minCopperSpacing = result.minCopperSpacing;
+        scan(index).totalLengthMm = result.totalLengthMm;
+        scan(index).totalResistanceOhm = result.totalResistanceOhm;
     catch ME
         scan(index).passed = false;
         scan(index).failureReason = ME.message;
