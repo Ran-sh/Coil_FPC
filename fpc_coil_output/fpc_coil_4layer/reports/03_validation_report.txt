@@ -1,0 +1,41 @@
+FPC coil validation report
+========================
+Design                   : fpc_coil_4layer
+Width-based maximum turns     : 11
+Fully validated maximum turns : 9
+参数检查                 : PASS
+主体尺寸检查             : PASS
+尾部尺寸检查             : PASS
+总尺寸检查               : PASS
+板框闭合检查             : PASS
+板框自相交检查           : PASS
+板框最小内角             : 178.571 deg
+L1最小内角               : 166.816 deg
+L2最小内角               : 166.829 deg
+L3最小内角               : 166.829 deg
+L4最小内角               : 166.816 deg
+铜线自相交检查           : PASS
+实际最小线距             : 0.1507 mm
+目标最小线距             : 0.1480 mm
+铜线线距检查             : PASS
+层间连接误差             : 0.000000 mm
+层间连接检查             : PASS
+过孔重合检查             : PASS
+焊盘到板框检查           : PASS
+焊盘到焊盘检查           : PASS
+焊盘到铜线检查           : PASS
+过孔到过孔检查           : PASS
+过孔到板框检查           : PASS
+过孔到焊盘检查           : PASS
+过孔连接层间距检查       : PASS
+过孔非连接层间距检查     : PASS
+NaN/Inf检查              : PASS
+零长度线段检查           : PASS
+最终结论                 : PASS
+DXF写入                 : PASS
+DXF基础完整性检查     : PASS
+CSV写入                 : PASS
+摘要写入                : PASS
+逃逸引线圆角             : PASS
+预览图写入              : PASS
+最终输出完整性          : PASS

@@ -1,0 +1,13 @@
+FPC coil generation status
+==========================
+Status                   : SUCCESS
+Generated                : 2026-08-01 12:22:02
+Design                   : fpc_coil_4layer
+LayerCount               : 4
+TurnsPerLayer            : 6
+WidthBasedMaximumTurns   : 11
+FullyValidatedMaximumTurns: 9
+MinCopperSpacing         : 0.1507 mm
+MinBoardAngle            : 178.571 deg
+MinCopperAngle           : 166.816 deg
+本目录属于本次参数成功生成的版本。

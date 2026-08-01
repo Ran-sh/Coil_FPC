@@ -1,0 +1,4 @@
+name,x_mm,y_mm,from_layer,to_layer,object_type,pad_diameter_mm,drill_diameter_mm,description
+PAD_A,50.500000,1.300000,L1,external,pad,1.500,0,Top-layer input terminal
+V12,-34.877571,0.001918,L1,L2,through_via,0.600,0.300,Layer-to-layer series connection
+PAD_B,50.500000,-1.300000,L2,external,pad,1.500,0,Last-layer output terminal
