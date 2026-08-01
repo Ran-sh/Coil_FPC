@@ -1,0 +1,8 @@
+# Generated coil artifacts
+fpc_coil_output/
+
+# MATLAB editor and temporary files
+*.asv
+*.m~
+*.autosave
+
