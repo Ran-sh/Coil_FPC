@@ -16,6 +16,8 @@ scan = repmat(struct( ...
     'totalResistanceOhm', NaN), numel(turnValues), 1);
 
 for index = 1:numel(turnValues)
+    % 每个候选使用独立设计名，避免原子输出目录相互覆盖；关闭预览只为
+    % 减少批量扫描开销，其他验证开关完全沿用调用者配置。
     candidate = cfg;
     candidate.useRecommendedTurns = false;
     candidate.turnsPerLayer = turnValues(index);

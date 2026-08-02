@@ -83,6 +83,7 @@ cfg.manufacturingTolerance = 0.05;
 cfg.minCopperInteriorAngleDeg = 90.0;
 cfg.minBoardInteriorAngleDeg = 90.0;
 cfg.angleToleranceDeg = 0.1;
+% true 时，任何无法构造切向圆弧而回退成尖角的候选都会验证失败。
 cfg.requireSmoothEscapeArcs = true;
 cfg.geometryTolerance = 1e-6;
 cfg.connectionTolerance = 1e-5;

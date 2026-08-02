@@ -53,6 +53,8 @@ end
 
 widthBasedMaxTurns = calculateMaximumTurns(cfg, d);
 
+% 理论宽度只回答“放不放得下”。正式推荐值还必须逐个候选执行
+% 圆弧、角度、线距、自交、焊盘和过孔检查，因此两种上限分开保存。
 boardXY = generateSmoothBoardOutline(cfg);
 boardXY = removeDuplicatePoints(boardXY, tol);
 boardXY = removeZeroLengthSegments(boardXY, tol);
@@ -74,6 +76,7 @@ if fullyValidatedMaxTurns < 1
 end
 
 if cfg.useRecommendedTurns
+    % 在完整验证上限下再保留一匝制造裕量；关闭本开关时尊重用户输入。
     cfg.turnsPerLayer = max(1, fullyValidatedMaxTurns - 1);
 end
 
@@ -126,6 +129,8 @@ failures = {};
 nanInfPass = true;
 zeroLengthPass = true;
 
+% 圆角构造器仍保留回退能力，便于诊断极端参数；生产默认不接受
+% 这种回退，避免“数值检查通过但实际仍是90度尖角”。
 if cfg.requireSmoothEscapeArcs && escapeArcFallback
     failures{end+1} = ...
         '逃逸引线圆弧生成失败，不允许回退为90度尖角';
@@ -419,6 +424,8 @@ for k = 1:cfg.layerCount
 
     expectedDxfVertices = 0;
     expectedDxfEntities = 0;
+    % 单条逻辑路径可能因 DXF 顶点上限被拆成多个实体。记录每条路径
+    % 的实体数，回读时只检查路径内部连续性，不连接 L1 的两条独立路径。
     expectedPathEntityCounts = zeros(1, numel(layerPaths{k}));
     for pathIndex = 1:numel(layerPaths{k})
         pathVertexCount = size(layerPaths{k}{pathIndex},1);
@@ -949,7 +956,8 @@ d.totalExitDelta = forwardPhaseDelta( ...
     d.padAPhase, d.padBPhase, cfg.geometryTolerance);
 routingDelta = d.totalExitDelta;
 
-% 每增加两层补偿一整圈，使所有外-外连接保持在右侧逃逸区域附近。
+% 相邻层交替采用外到内、内到外绕法。每增加两层补偿一整圈，
+% 再均摊到各层相位，使偶数编号的外圈连接保持在右侧逃逸区域。
 routingDelta = routingDelta + cfg.layerCount/2 - 1;
 
 d.phaseStep = routingDelta / cfg.layerCount;
@@ -982,10 +990,12 @@ function [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
     buildLayerGeometry(cfg, d)
 
 tol = cfg.geometryTolerance;
+% phaseNodes 定义每层的起止相位；共享节点保证相邻层原始端点重合。
 phaseNodes = mod(d.padAPhase + (0:cfg.layerCount)*d.phaseStep, 1);
 rawLayerXY = cell(cfg.layerCount, 1);
 
 for k = 1:cfg.layerCount
+    % 奇数层向内绕、偶数层向外绕，构成 PAD_A 到最后一层的单一路径。
     if mod(k,2) == 1
         radialMode = 'outerToInner';
     else
@@ -1024,6 +1034,7 @@ for k = 1:cfg.layerCount-1
             k, k+1, rawConnectionError, cfg.connectionTolerance);
     end
 
+    % 内圈端点朝中心空白区逃逸；外圈端点朝右侧尾部逃逸。
     if mod(k,2) == 1
         if size(rawLayerXY{k},1) < 2
             error('L%d螺旋点数不足，无法生成逃逸引线。', k);
@@ -1080,6 +1091,8 @@ vias(end).type = cfg.outputViaType;
 vias(end).role = 'output_return';
 vias(end).antipadDiameter = cfg.outputViaAntiPadDiameter;
 
+% VOUT 将最后一层送回顶层。该回路线必须作为 L1 的第二条独立
+% polyline 保存，不能与 L1 线圈数组拼接，否则 DXF 会产生虚假铜桥。
 topOutputLeadXY = [d.outputVia; d.padB];
 
 for k = 1:cfg.layerCount
@@ -1110,6 +1123,7 @@ function [maxTurns, scan] = calculateFullyValidatedMaximumTurns( ...
 maxTurns = 0;
 scan = repmat(struct('turns', 0, 'passed', false, ...
     'failureReason', ''), 0, 1);
+% 从理论上限向下扫描；首个通过者就是当前配置的完整几何上限。
 for turns = widthBasedMaxTurns:-1:1
     candidateCfg = cfg;
     candidateCfg.turnsPerLayer = turns;
@@ -1160,6 +1174,7 @@ for k = 1:cfg.layerCount
     minIndexSeparation = max(16, ceil(cfg.pointsPerTurn/4));
     for pathIndex = 1:numel(layerPaths{k})
         path = layerPaths{k}{pathIndex};
+        % 加上角度容差后再作严格比较，确保90度及数值抖动均不能通过。
         if cfg.enableCopperAngleCheck && ...
                 minimumOpenPolylineInteriorAngle(path, tol) <= ...
                 cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg
@@ -1245,6 +1260,8 @@ if cfg.enableViaClearanceCheck
     [connectedPass, nonConnectedPass] = validateViaToCopper( ...
         vias, layerPaths, cfg, tol, viaEscapeLengths, viaConnectedClearances);
 
+    % 连接层冲突始终致命；非连接层是否允许仅告警由制造策略决定。
+    % 候选扫描与正式验证必须使用同一严重级别，否则推荐匝数会漂移。
     nonConnectedAccepted = nonConnectedPass || ...
         strcmp(cfg.viaClearanceSeverity, 'warning');
     pass = connectedPass && nonConnectedAccepted;
@@ -2377,6 +2394,8 @@ for k = 1:numel(vias)
                 if checksThisLayer
                     genericRequired = vias(k).padDiameter/2 + ...
                         cfg.traceWidth/2 + cfg.viaToCopperClearance;
+                    % VOUT 是贯穿所有层的通孔。对中间非连接层，既要满足
+                    % 通用过孔净距，也要完整容纳配置的反焊盘开窗。
                     if strcmp(vias(k).role, 'output_return') && ...
                             strcmp(vias(k).type, 'through_via')
                         antipadRequired = vias(k).antipadDiameter/2 + ...
@@ -2858,6 +2877,7 @@ if ~isClosed
         return;
     end
 
+    % 只在同一逻辑 polyline 的分段之间检查公共端点；跨路径不应连续。
     firstEntity = 1;
     for pathIndex = 1:numel(expectedPathEntityCounts)
         lastEntity = firstEntity + expectedPathEntityCounts(pathIndex) - 1;
