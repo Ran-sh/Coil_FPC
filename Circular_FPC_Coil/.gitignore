@@ -1,0 +1,8 @@
+/outputs/
+/circular_fpc_output/
+/outputs_previous_*/
+*.asv
+*.m~
+
+# Local tooling metadata (not part of the repo)
+.reasonix/

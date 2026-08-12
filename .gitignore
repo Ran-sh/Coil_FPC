@@ -1,11 +1,13 @@
-# Generated coil artifacts
-fpc_coil_output/
-
-# MATLAB editor and temporary files
+# Editor / temporary files
 *.asv
 *.m~
 *.autosave
+.DS_Store
+Thumbs.db
 
 # Local tooling metadata (not part of the repo)
 .reasonix/
 
+# Generated coil artifacts are covered by each subproject's own .gitignore:
+#   Circular_FPC_Coil/.gitignore  (/outputs/, /circular_fpc_output/, /outputs_previous_*/)
+#   FPC_Coil/.gitignore           (fpc_coil_output/)
