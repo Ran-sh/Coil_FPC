@@ -4,7 +4,8 @@ tests = functiontests(localfunctions);
 end
 
 function setupOnce(testCase)
-projectRoot = 'D:/A_Bone_healing/bone_healing_simulink/Coil/Circular_FPC_Coil';
+testsFolder = fileparts(mfilename('fullpath'));
+projectRoot = fileparts(testsFolder);
 addpath(projectRoot);
 testCase.TestData.projectRoot = projectRoot;
 end
