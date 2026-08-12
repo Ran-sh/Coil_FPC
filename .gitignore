@@ -6,3 +6,6 @@ fpc_coil_output/
 *.m~
 *.autosave
 
+# Local tooling metadata (not part of the repo)
+.reasonix/
+

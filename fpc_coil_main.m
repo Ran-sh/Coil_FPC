@@ -8,7 +8,14 @@ if nargin < 1
 end
 
 cfg = fpc_coil_default_config(overrides);
-cfg = fpc_coil_validate_config(cfg);
-result = fpc_coil_generate(cfg);
+result = fpc_coil_engine(cfg);
+
+% When cfg.enableFigure is true (default) and a MATLAB desktop is available,
+% pop up the interactive figure viewer; headless runs (e.g. CI -batch) skip
+% the popup automatically. The viewer is implemented in private/fpc_coil_plot.m
+% and figures can be saved from the window menu.
+if cfg.enableFigure && usejava('desktop')
+    fpc_coil_plot(result);
+end
 
 end
