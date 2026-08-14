@@ -21,8 +21,9 @@ numFields = {'boardOuterDiameter', 'coilInnerDiameter', 'centerPlatformWidth', .
     'centerPlatformHeight', 'bridgeTargetWidth', 'geometryScale', 'turnsPerCoilLayer', ...
     'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', ...
     'padPairSpacing', ...
-    'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'antipadDiameter', ...
-    'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax'};
+    'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', 'antipadDiameter', ...
+    'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax', ...
+    'minCopperInteriorAngleDeg', 'minBoardInteriorAngleDeg', 'angleToleranceDeg'};
 for k = 1:numel(numFields)
     v = cfg.(numFields{k});
     if ~isscalar(v) || ~isnumeric(v) || ~isfinite(v) || v <= 0
@@ -34,6 +35,10 @@ if ~isscalar(cfg.connectionAngleDeg) || ~isnumeric(cfg.connectionAngleDeg) || ~i
 end
 if mod(cfg.turnsPerCoilLayer, 1) ~= 0 || mod(cfg.samplePointsPerTurn, 1) ~= 0 || mod(cfg.turnScanMax, 1) ~= 0
     error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer, samplePointsPerTurn and turnScanMax must be integers.');
+end
+% 当前螺旋按 (turns-1) 个周期采样；1 匝只产生单点，无法形成有效走线。
+if cfg.turnsPerCoilLayer < 2
+    error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer must be at least 2.');
 end
 supported = {[2 1], [2 2], [4 1], [4 2], [4 4]};
 ok = false;
@@ -48,8 +53,18 @@ if ~ok
         'Unsupported boardLayerCount/coilLayerCount combination: %d/%d.', ...
         cfg.boardLayerCount, cfg.coilLayerCount);
 end
+% 制造规则检查：唯一所有者 private/circular_fpc_manufacturing.m（ADR-1）。
+% 必须在层组合确认后执行，避免未验证的 boardLayerCount 进入规则解析。
+mfReport = circular_fpc_manufacturing('check_config', cfg);
+if ~mfReport.passed
+    error('CircularFPC:InvalidConfig', ...
+        'Manufacturing rules violated: %s', strjoin(mfReport.failures, '; '));
+end
 if ~ismember(cfg.terminalPlacementMode, {'auto', 'manual'})
     error('CircularFPC:InvalidConfig', 'terminalPlacementMode must be ''auto'' or ''manual''.');
+end
+if ~ismember(cfg.boardSizingMode, {'auto', 'fixed'})
+    error('CircularFPC:InvalidConfig', 'boardSizingMode must be ''auto'' or ''fixed''.');
 end
 for m = {'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
     v = cfg.(m{1});
@@ -164,9 +179,12 @@ for k = 1:numel(geom.vias)
 end
 v.closedBoardLoopCount = numel(geom.boardLoops);
 v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths);
-v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths);
+v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths, geom.vias);
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
+v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
+v.minCopperInteriorAngleDeg = computeMinCopperInteriorAngle(geom.coils, geom.connectionPaths);
+v.minBoardInteriorAngleDeg = computeMinBoardInteriorAngle(geom.boardLoops);
 v.actualBridgeWidthMm = geom.actualBridgeWidth;
 [v.uniqueSeriesNetwork, v.maxSeriesContinuityErrorMm] = ...
     checkSeriesRoute(geom.seriesRoute, geom.activeLayers, geom.vias);
@@ -193,6 +211,15 @@ end
 if v.minCopperToSlotsMm < cfg.edgeClearance - 1e-9
     v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
 end
+if v.minViaCoilSpacingMm < cfg.viaCoilSpacing - 1e-9
+    v.messages{end + 1} = 'via-to-coil spacing below viaCoilSpacing'; %#ok<AGROW>
+end
+if v.minCopperInteriorAngleDeg <= cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg
+    v.messages{end + 1} = 'copper path interior angle at/below 90 degrees'; %#ok<AGROW>
+end
+if v.minBoardInteriorAngleDeg <= cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg
+    v.messages{end + 1} = 'board outline interior angle at/below 90 degrees'; %#ok<AGROW>
+end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>
 end
@@ -213,9 +240,124 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minCopperSpacingMm >= cfg.traceSpacing - 1e-9 && ...
     v.minCopperToBoardMm >= cfg.edgeClearance - 1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
+    v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
+    v.minCopperInteriorAngleDeg > cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg && ...
+    v.minBoardInteriorAngleDeg > cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
     v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree;
+end
+
+function degMin = computeMinCopperInteriorAngle(coils, connectionPaths)
+% 所有铜走线路径（线圈 + 连接路径）的最小内角 [°]：不允许 <= 90° 的拐角
+% （180° = 直线，90° = 直角拐弯）。圆弧/贝塞尔平滑路径应远大于 90°。
+degMin = 180;
+for li = 1:numel(coils)
+    xy = coils{li};
+    if ~isempty(xy)
+        degMin = min(degMin, polylineMinInteriorAngle(xy));
+    end
+    paths = connectionPaths{li};
+    for k = 1:numel(paths)
+        degMin = min(degMin, polylineMinInteriorAngle(paths{k}));
+    end
+end
+end
+
+function degMin = computeMinBoardInteriorAngle(boardLoops)
+% 板框（外边界 + 挖空槽）所有闭环的最小内角 [°]：不允许 <= 90° 的尖角。
+degMin = 180;
+for k = 1:numel(boardLoops)
+    xy = boardLoops(k).xy;
+    if size(xy, 1) >= 3
+        degMin = min(degMin, polylineMinInteriorAngle(xy));
+    end
+end
+end
+
+function ang = polylineMinInteriorAngle(xy)
+ang = 180;
+n = size(xy, 1);
+for i = 2:n - 1
+    d1 = xy(i, :) - xy(i - 1, :);
+    d2 = xy(i + 1, :) - xy(i, :);
+    n1 = norm(d1);
+    n2 = norm(d2);
+    if n1 <= 1e-12 || n2 <= 1e-12
+        continue;
+    end
+    c = dot(d1, d2) / (n1 * n2);
+    dev = acosd(max(-1, min(1, c))); % 拐角偏离量 0..180
+    ang = min(ang, 180 - dev);
+end
+end
+
+function dMin = computeTerminalCoilSpacing(cfg, coils, vias, pads)
+% 过孔焊环/焊盘外缘到其连接层上线圈铜边的最小净距（mm），须 >= cfg.viaCoilSpacing。
+% 端点过孔（与线圈端点重合的引出端子）除外；线圈端点的"接入铜"（末端匝段，
+% 与焊环同网络汇合）不参与净距；排除焊环 + 净距 + 半线宽 范围内的线段，
+% 仅测量独立的相邻匝。
+dMin = inf;
+terms = struct('xy', {}, 'padDiameter', {}, 'layers', {});
+for k = 1:numel(vias)
+    v = vias(k);
+    t = struct('xy', v.xy, 'padDiameter', v.padDiameter, ...
+        'layers', unique([v.fromLayer, v.toLayer]));
+    terms(end + 1) = t; %#ok<AGROW>
+end
+for k = 1:numel(pads)
+    p = pads(k);
+    t = struct('xy', p.xy, 'padDiameter', p.diameter, 'layers', p.layer);
+    terms(end + 1) = t; %#ok<AGROW>
+end
+for k = 1:numel(terms)
+    v = terms(k);
+    for li = 1:numel(v.layers)
+        xy = coils{v.layers(li)};
+        if isempty(xy)
+            continue;
+        end
+        zoneR = v.padDiameter / 2 + cfg.traceWidth / 2 + cfg.viaCoilSpacing;
+        n = size(xy, 1);
+        inZone = sum((xy - v.xy).^2, 2) <= zoneR^2;
+        segMask = true(n - 1, 1);
+        segMask(inZone(1:n - 1) | inZone(2:n)) = false;
+        d = minDistanceToSegmentsMasked(v.xy, xy, segMask, 64);
+        dMin = min(dMin, d - v.padDiameter / 2 - cfg.traceWidth / 2); % 铜边到铜边
+    end
+end
+end
+
+function dMin = minDistanceToSegmentsMasked(points, xy, segMask, batchSize)
+% 点到折线的最小距离，跳过 segMask=false 的线段（过孔接入区）。
+dMin = inf;
+nPts = size(points, 1);
+first = 1;
+while first <= nPts
+    last = min(first + batchSize - 1, nPts);
+    P = points(first:last, :);
+    nSeg = size(xy, 1) - 1;
+    if nSeg >= 1
+        A = xy(1:nSeg, :);
+        B = xy(2:nSeg + 1, :);
+        keep = segMask & (sum((B - A).^2, 2) > eps);
+        A = A(keep, :);
+        B = B(keep, :);
+        if ~isempty(A)
+            ax = P(:, 1) - A(:, 1).';
+            ay = P(:, 2) - A(:, 2).';
+            dx = (B(:, 1) - A(:, 1)).';
+            dy = (B(:, 2) - A(:, 2)).';
+            len2k = sum((B - A).^2, 2).';
+            t = max(0, min(1, (ax .* dx + ay .* dy) ./ len2k));
+            qx = A(:, 1).' + t .* dx;
+            qy = A(:, 2).' + t .* dy;
+            d = sqrt((P(:, 1) - qx).^2 + (P(:, 2) - qy).^2);
+            dMin = min(dMin, min(d(:)));
+        end
+    end
+    first = last + 1;
+end
 end
 
 function tf = allFinite(xy)
@@ -325,7 +467,7 @@ end
 s = dMin - cfg.traceWidth;
 end
 
-function s = computeCopperToBoard(cfg, eff, coils, connectionPaths)
+function s = computeCopperToBoard(cfg, eff, coils, connectionPaths, vias)
 outerR = eff.boardOuterDiameter / 2;
 dMin = inf;
 for li = 1:numel(coils)
@@ -338,9 +480,13 @@ for li = 1:numel(coils)
         continue;
     end
     r = sqrt(sum(pts.^2, 2));
-    dMin = min(dMin, min(outerR - r));
+    dMin = min(dMin, min(outerR - r) - cfg.traceWidth / 2); % 走线中心线减半线宽
 end
-s = dMin - cfg.traceWidth / 2;
+for k = 1:numel(vias)
+    % 过孔焊环也是铜：焊环外缘到板边净距（padRadius 已含半宽，不再减线宽）
+    dMin = min(dMin, outerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
+end
+s = dMin;
 end
 
 function s = computeCopperToSlots(cfg, boardLoops, coils, connectionPaths, pads, vias)

@@ -23,7 +23,7 @@
    result = circular_fpc_main(struct('outputRoot', 'D:/tmp/fpc_out', 'designName', 'my_coil'));
    ```
 
-   生成完成后（默认 `enableFigure=true`）会在 MATLAB 桌面弹出图像窗口：左上为全部层叠放总览，其余为每物理层单独视图（板框、线圈、连接路径、焊盘与过孔）。可在窗口内通过 File > Save As 另存为 PNG/SVG/PDF 等格式；无头环境（如 `-batch`）自动跳过弹窗，之后仍可手动调用 `circular_fpc_plot(result)`。
+   生成完成后（默认 `enableFigure=true`）会在 MATLAB 桌面弹出图像窗口：左上为全部层叠放总览，其余为每物理层单独视图（板框、线圈、连接路径、焊盘与过孔）。可在窗口内通过 File > Save As 另存为 PNG/SVG/PDF 等格式；无头环境（如 `-batch`）自动跳过弹窗（`circular_fpc_plot` 为内部函数，位于 `private/`，仅由 `circular_fpc_main` 调用）。
 
 3. 一键生成全部五种层叠（2/1、2/2、4/1、4/2、4/4）：
 
@@ -38,19 +38,22 @@
 | 参数 | 默认值 | 含义 |
 |---|---|---|
 | boardLayerCount / coilLayerCount | 2 / 1 | 板层数 / 活动线圈层数 |
-| boardOuterDiameter | 25.0 mm | 板外径 |
+| boardOuterDiameter | 25.0 mm | 板外径（仅 fixed 模式使用） |
+| boardSizingMode | auto | 板框定尺寸：`auto` 由线圈匝数自动计算板框外径（输出报告板框尺寸）；`fixed` 使用 boardOuterDiameter |
 | coilInnerDiameter | 18.63 mm | 线圈内径 |
-| centerPlatformWidth / Height | 13.0 / 11.0 mm | 中央连接平台尺寸 |
+| centerPlatformWidth / Height | 13.0 / 11.0 mm | 中央连接平台尺寸（宽/高可独立配置，默认矩形；孔槽形状随平台尺寸自动生成） |
 | bridgeTargetWidth | 1.5 mm | 连接桥目标宽度 |
 | geometryScale | 1.0 | 宏观几何缩放 |
-| turnsPerCoilLayer | 8 | 每活动层匝数 |
+| turnsPerCoilLayer | 8 | 每活动层匝数（外端过孔经延伸区放置，不影响匝数） |
 | traceWidth | 0.20 mm | 铜线宽 |
 | traceSpacing | 0.15 mm | 铜间净距 |
 | pitchMargin | 0.005 mm | 节距余量 |
-| edgeClearance | 0.50 mm | 铜到板边/槽净距 |
+| edgeClearance | 0.30 mm | 铜到板边/槽净距（= 嘉立创 DRC 铜-板框 0.29972） |
 | connectionAngleDeg | 135.0 度 | 连接位置角度 |
-| padDiameter | 1.2 mm | 外接焊盘直径 |
-| viaPadDiameter / viaDrillDiameter | 0.8 / 0.3 mm | 过孔焊环/钻孔直径 |
+| padDiameter | 0.6096 mm（24 mil） | 外接焊盘直径（可调） |
+| viaPadDiameter / viaDrillDiameter | 0.55 / 0.3 mm | 过孔外径（焊环）/内径（钻孔），可调（默认 0.55 = 嘉立创 FPC 常规推荐）；外径-内径必须 ≥ 0.2 mm（推荐 ≥ 0.25）；制造极限：2 层板 内径 ≥ 0.1 / 外径 ≥ 0.3，4 层板 内径 ≥ 0.15 / 外径 ≥ 0.35（接近极限增加费用） |
+| viaCoilSpacing | 0.152 mm | 过孔焊环外缘到相邻线圈匝铜边的最小净距（= 嘉立创 DRC Track–Via 6 mil）；由外端过孔径向延伸区（`viaEndExtension`）保证，**不限制线距/匝数** |
+| minCopperInteriorAngleDeg / minBoardInteriorAngleDeg / angleToleranceDeg | 90.0 / 90.0 / 0.1 ° | 铜走线与板框（含挖空槽）最小内角（严格大于 90°；外端过孔延伸区用 180° 圆弧平滑过渡，槽角自动圆角化） |
 | antipadDiameter | 1.2 mm | 非连接层反焊盘直径 |
 | terminalClearance | 0.25 mm | 端子间最小净距 |
 | copperThickness | 0.035 mm | 铜厚（仅用于直流估算） |
@@ -61,6 +64,22 @@
 | enableFigure | true | 运行完成后是否在 MATLAB 弹出图像窗口 |
 
 除上表外，还支持 `terminalPlacementMode`（auto/manual）、`manualPadAXY`、`manualPadBXY`、`manualSeriesViaXY`、`outputRoot`、`designName` 等字段。
+
+## boardSizingMode 语义（默认 auto）
+
+- `auto`（默认）：**线圈匝数决定板框大小**，不再手工设定整体板框。板框外径 = 2 × (线圈内径/2 + 线宽/2 + 节距×(匝数−1) + **过孔延伸区** + max(线宽, 过孔外径)/2 + 板边净距)，保证线圈最外圈、端点过孔焊环与板边净距全部满足约束。匝数越多板框越大；
+- `fixed`：沿用旧行为，板框外径取 `boardOuterDiameter`；
+- **输出报告板框尺寸**：`03_design_summary.txt` 输出 `boardOuterDiameter`、`boardSizingMode` 与 `viaEndExtension`；`04_turn_scan.csv` 在 auto 模式下逐匝数给出所需板框直径（`requiredBoardDiameterMm` 列），便于按目标板径反选匝数。
+
+## 过孔延伸区（viaEndExtension，默认自动）
+
+外端过孔（V14/VRET/V12/V34 等）不再直接打在绕组端点上：线圈最外圈经 **180° 圆弧平滑过渡**到径向外伸点（`viaEndExtension = max(0, viaCoilSpacing + viaPad/2 + traceWidth/2 − coilPitch)`），过孔落在弧端，焊环与相邻匝净距自动满足 DRC（0.152 mm），**因此过孔不限制线距与匝数**，代价是板框相应变大（auto 模式自动计入）。圆弧过渡保证**走线内角严格 > 90°**（实测 ≥ 175.9°），无 ≤90° 拐角。内端过孔（VOUT）位于连接桥上，同样不影响线距。延伸量可在摘要中查看；若线距较大（节距足够），延伸量为 0。
+
+## 走线/板框角度规则（> 90°）
+
+- 所有铜走线路径（线圈 + 连接路径）最小内角**严格 > 90°**（实测 ≥ 175.9°），外端过孔延伸区为 180° 圆弧平滑过渡，连接路径全为圆弧/贝塞尔平滑过渡；
+- 板框（含四个挖空槽）同样**严格 > 90°**：槽角（圆环弧 × 桥侧交界）自动**圆角化**（实测 ≥ 112.2°），外边界为整圆无尖角；
+- 违反任一角度规则（≤ 阈值 + 0.1° 容差）即验证失败。
 
 ## geometryScale 语义
 
@@ -83,14 +102,14 @@
 
 - PAD_A / PAD_B 仅位于 L1，`removable=true`，是唯一可删除的外接焊盘。
 - 串联过孔：多线圈组合为 V12/V23/V34 与 VOUT；单线圈组合为 VRET 与 VOUT。过孔按层间转移角色区分：`OUTER_TRANSITION`（外端过渡）、`INNER_TRANSITION`（内端过渡）、`RETURN_OUTER`（回流外端）、`OUTPUT_RETURN`（输出回流）。
-- 在 4 层输出中，每个过孔的非连接物理层 DXF 会写入 `ANTIPAD_Ln` 层圆与 `ANTIPAD_<viaName>` 文本；连接层保留过孔铜环。
+- DXF 不写入焊盘/过孔圆、反焊盘与文字标注（丝印说明只在 SVG 预览中显示）；焊盘/过孔坐标、直径与层信息见 `01_pad_via_coordinates.csv`，位置/角色标注见 SVG 预览。
 - 手动坐标 `manualSeriesViaXY` 的行序必须与过孔顺序一致：2/1 与 4/1 为 `[VRET; VOUT]`；2/2 为 `[V12; VOUT]`；4/2 为 `[V14; VOUT]`；4/4 为 `[V12; V23; V34; VOUT]`。手动模式下行数不符会报 `CircularFPC:TerminalPlacementInvalid`。
 
 ### 端子布局元数据与 CSV/SVG 输出
 
-- `padPairSpacing=2.0`（单位 mm）是 PAD_A/PAD_B 沿连接角切向并排的中心距，不随 `geometryScale` 缩放；PAD_A 与 PAD_B 位于中央平台靠近入口桥一侧。
+- `padPairSpacing=2.0`（单位 mm）是 PAD_A/PAD_B 沿连接角切向并排的中心距，不随 `geometryScale` 缩放；**PAD_A/PAD_B 位于入口桥上**（外围圆环与中央矩形之间的连接区域），入口桥宽度自动容纳焊盘对（`padPairSpacing + padDiameter + 2×edgeClearance`）。
 - 入口桥采用双通道：进线通道（PAD_A → 线圈内端）与出线通道（VOUT → PAD_B）沿焊盘对切向并排布置，通道半距为 `(traceWidth + traceSpacing) / 2`。
-- 每个端子在 `result` 中带有 `placementRegion` 与 `bridgeAngleDeg`：自动模式下 PAD_A/PAD_B 为 `CENTER_PLATFORM_NEAR_ENTRY_BRIDGE`（角度取 `connectionAngleDeg`，默认 135°）；`VOUT` 为 `ENTRY_BRIDGE`（135°）；`VRET`/`V12`/`V14`/`V34` 为 `OUTER_COIL_ENDPOINT`（V34 在回流桥侧，取 315°）；`V23` 为 `RETURN_BRIDGE`（315°）。手动模式全部为 `MANUAL`，`bridgeAngleDeg=NaN`。
+- 每个端子在 `result` 中带有 `placementRegion` 与 `bridgeAngleDeg`：自动模式下 PAD_A/PAD_B 为 `ENTRY_BRIDGE`（角度取 `connectionAngleDeg`，默认 135°）；`VOUT` 为 `ENTRY_BRIDGE`（135°）；`VRET`/`V12`/`V14`/`V34` 为 `OUTER_COIL_ENDPOINT`（V34 在回流桥侧，取 315°）；`V23` 为 `RETURN_BRIDGE`（315°）。手动模式全部为 `MANUAL`，`bridgeAngleDeg=NaN`。
 - 五种层叠的过孔映射：2/1 与 4/1 为 `VRET`（回流外端）+ `VOUT`（输出回流）；2/2 为 `V12` + `VOUT`；4/2 为 `V14` + `VOUT`；4/4 为 `V12`、`V23`、`V34`、`VOUT`。
 - `01_pad_via_coordinates.csv` 保留原有 11 列 `name,xMm,yMm,diameterMm,drillMm,antipadDiameterMm,layer,fromLayer,toLayer,removable,role`，末尾追加 `placementRegion`、`bridgeAngleDeg`（角度保留 6 位小数，`NaN` 输出字面量 `NaN`）。
 - 预览中，每个焊盘/过孔圆后带有可见文本标签 `NAME [REGION] angle=...deg`，并写入 `data-name`、`data-placement-region`、`data-bridge-angle-deg` 属性（XML 特殊字符已转义）；`03_design_summary.txt` 同样记录 `connectionAngleDeg`、`padPairSpacing` 与逐端子区域/角度。每层单独预览（`03_preview_layer_L1_top.svg` 起）仅绘制该层铜与板框：L1 含焊盘，各层含与该层相连的过孔。
@@ -116,7 +135,7 @@ reports/
 generation_status.txt                  生成状态
 ```
 
-DXF 单位为毫米且 1:1。`result` 主要字段：`boardLayerCount`、`coilLayerCount`、`activeCoilLayers`、`effectiveDimensions`、`boardLoops`、`layerPaths`、`pads`、`vias`、`seriesSequence`、`seriesRoute`、`returnLayer`、`totalTraceLengthMm`、`estimatedDcResistanceOhm`、`validation`、`outputPath`。
+DXF 单位为毫米且 1:1，格式为 AutoCAD R2000（AC1015：含 `$ACADVER` 版本声明、TABLES/LAYER 图层表、CRLF 行尾、LWPOLYLINE 无每顶点宽度码），不含焊盘/过孔圆与文字标注（仅走线与板框几何），可直接导入嘉立创 EDA 等工具；导入时按图层名映射目标层（`BOARD`→板框，`COPPER_L1`/`COPPER_L4`→顶层/底层铜，`COPPER_L2`/`COPPER_L3`→内层）。`result` 主要字段：`boardLayerCount`、`coilLayerCount`、`activeCoilLayers`、`effectiveDimensions`、`boardLoops`、`layerPaths`、`pads`、`vias`、`seriesSequence`、`seriesRoute`、`returnLayer`、`totalTraceLengthMm`、`estimatedDcResistanceOhm`、`validation`、`outputPath`。
 
 ## 错误与边界行为
 

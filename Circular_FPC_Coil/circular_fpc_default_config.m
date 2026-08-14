@@ -23,17 +23,18 @@ end
 cfg = struct( ...
     'boardLayerCount', 2, ... % 物理板层数：2 或 4
     'coilLayerCount', 1, ... % 活动线圈层数：与板层数只支持 2/1、2/2、4/1、4/2、4/4
-    'boardOuterDiameter', 25.0, ... % 圆形板外径 [mm]（随 geometryScale 缩放）
+    'boardOuterDiameter', 25.0, ... % 圆形板外径 [mm]（随 geometryScale 缩放；仅 boardSizingMode='fixed' 时使用）
+    'boardSizingMode', 'auto', ... % 板框定尺寸方式：'auto' 由线圈匝数自动计算板框外径（推荐，输出报告板框尺寸）；'fixed' 使用 boardOuterDiameter
     'coilInnerDiameter', 18.63, ... % 螺旋线圈最内圈直径 [mm]（随缩放）
-    'centerPlatformWidth', 13.0, ... % 中央连接平台宽度（切向）[mm]，用于放置 PAD_A/PAD_B（随缩放）
-    'centerPlatformHeight', 11.0, ... % 中央连接平台高度（径向）[mm]（随缩放）
+    'centerPlatformWidth', 13.0, ... % 中央连接平台宽度（切向）[mm]，可与高度独立配置（随缩放）
+    'centerPlatformHeight', 11.0, ... % 中央连接平台高度（径向）[mm]，默认矩形平台（随缩放）
     'bridgeTargetWidth', 1.5, ... % 连接桥目标宽度 [mm]（随缩放）；实际桥宽会被验证不小于该值
     'geometryScale', 1.0, ... % 宏观几何缩放系数：只缩放上述宏观尺寸，不缩放制造参数
-    'turnsPerCoilLayer', 8, ... % 每个活动层上的螺旋匝数
+    'turnsPerCoilLayer', 8, ... % 每活动层匝数（默认 8；外端过孔通过径向延伸区放置，不影响线距/匝数）
     'traceWidth', 0.20, ... % 铜走线宽度 [mm]（制造参数，不随缩放）
     'traceSpacing', 0.15, ... % 相邻铜走线之间的最小净距 [mm]（制造参数）
     'pitchMargin', 0.005, ... % 螺旋节距安全余量 [mm]；coilPitch = traceWidth + traceSpacing + pitchMargin
-    'edgeClearance', 0.50, ... % 铜到板外缘 / 孔槽的最小净距 [mm]
+    'edgeClearance', 0.30, ... % 铜到板外缘 / 孔槽的最小净距 [mm]（= 嘉立创 DRC 铜-板框 0.29972）
     'samplePointsPerTurn', 360, ... % 每匝采样点数：折线精度，点数越多越光滑、输出文件越大
     'turnScanMax', 16, ... % 04_turn_scan.csv 中匝数扫描的上限
     'connectionAngleDeg', 135.0, ... % 连接区（入口桥）方位角 [deg]，0° 指向 +X；决定焊盘对与进出线方向
@@ -42,13 +43,20 @@ cfg = struct( ...
     'manualPadAXY', zeros(0, 2), ... % manual 模式：PAD_A 坐标 [x y]（Nx2，mm）
     'manualPadBXY', zeros(0, 2), ... % manual 模式：PAD_B 坐标 [x y]（Nx2，mm）
     'manualSeriesViaXY', zeros(0, 2), ... % manual 模式：串联过孔坐标；行序须与过孔顺序一致：2/1、4/1 为 [VRET;VOUT]、2/2 为 [V12;VOUT]、4/2 为 [V14;VOUT]、4/4 为 [V12;V23;V34;VOUT]
-    'padDiameter', 1.2, ... % PAD_A/PAD_B 外接焊盘直径 [mm]
-    'viaPadDiameter', 0.8, ... % 过孔焊环（pad）直径 [mm]
-    'viaDrillDiameter', 0.3, ... % 过孔钻孔直径 [mm]
+    'padDiameter', 0.6096, ... % PAD_A/PAD_B 外接焊盘直径 [mm]（24 mil，可调；位于 135° 入口桥侧）
+    'viaPadDiameter', 0.55, ... % 过孔焊环（pad）外径 [mm]（默认 0.55 = 嘉立创 FPC 常规推荐；外径-内径须 >= 0.2，推荐 >= 0.25）
+    'viaDrillDiameter', 0.3, ... % 过孔钻孔内径 [mm]（默认 0.3，可调；制造极限：2 层板内径>=0.1/外径>=0.3，4 层板内径>=0.15/外径>=0.35，接近极限增加费用）
+    'viaCoilSpacing', 0.152, ... % 过孔焊环外缘到相邻线圈匝铜边的最小净距 [mm]（= 嘉立创 DRC Track-Via 6mil；外端过孔通过径向延伸区保证，不影响线距）
+    'minCopperInteriorAngleDeg', 90.0, ... % 铜走线路径允许的最小内角 [°]（严格大于该值；不允许 90° 及以下拐角）
+    'minBoardInteriorAngleDeg', 90.0, ... % 板框（含挖空槽）允许的最小内角 [°]（严格大于该值；槽角自动圆角化）
+    'angleToleranceDeg', 0.1, ... % 角度容差 [°]：叠加在铜线与板框最小内角阈值上（≤ 阈值+容差 即判定违规）
     'antipadDiameter', 1.2, ... % 反焊盘直径 [mm]：4 层板中过孔的非连接物理层 DXF 使用
     'terminalClearance', 0.25, ... % 焊盘/过孔等端子之间的最小净距 [mm]
     'copperThickness', 0.035, ... % 铜箔厚度 [mm]，仅用于估算直流电阻
     'copperResistivity', 1.724e-8, ... % 铜电阻率 [Ohm·m]，仅用于估算直流电阻
+    'manufacturingProfile', 'jlc_fpc_1oz', ... % 制造档案名称：当前仅支持 'jlc_fpc_1oz'
+    'manufacturingTier', 'standard', ... % 制造档位：'standard' 常规 JLC 极限 / 'extreme' 层相关最小尺寸（记录 HIGH_COST_EXTREME 警告）
+    'manufacturingRuleOverrides', struct(), ... % 制造规则覆盖：仅允许覆盖已定义规则（见 private/circular_fpc_manufacturing.m），值为正有限标量
     'enablePreview', true, ... % 是否生成 previews/ 下的 SVG 预览文件
     'enableFigure', true, ... % 生成完成后是否在 MATLAB 桌面自动弹出图像窗口（无头环境自动跳过）
     'outputRoot', fullfile(pwd, 'circular_fpc_output'), ... % 输出根目录；正式产物在 <outputRoot>/<designName>/

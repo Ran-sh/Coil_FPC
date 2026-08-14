@@ -1,5 +1,13 @@
 function varargout = circular_fpc_export(operation, varargin)
 % Atomic DXF/SVG/CSV/TXT export with lightweight readback (R4).
+% Dual-track DXF: legacy centerline files (dxf/Ln/NN_copper_Ln.dxf) keep
+% their byte contract; physical CAM-reference files
+% (dxf/Ln/NN_copper_physical_Ln.dxf) add group-43 trace width and pad/via
+% circles. Antipad keepout files (dxf/Ln/NN_antipad_keepout_Ln.dxf) are
+% reference-only and never copper. Engineering coordinates are +X right,
+% +Y up; only SVG display flips Y. The file manifest
+% (reports/08_file_manifest.csv) lists every generated regular file except
+% itself.
 switch operation
     case 'write_all'
         varargout{1} = exportAll(varargin{1}, varargin{2});
@@ -45,10 +53,13 @@ reportsDir = fullfile(outDir, 'reports');
 mkdir(dxfDir);
 mkdir(reportsDir);
 writeBoardDxf(fullfile(dxfDir, '00_board_outline.dxf'), result.boardLoops);
+writeDrillMapDxf(fullfile(dxfDir, '00_drill_map.dxf'), result);
 for li = 1:cfg.boardLayerCount
     layerDir = fullfile(dxfDir, sprintf('L%d', li));
     mkdir(layerDir);
-    writeCopperDxf(fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li)), cfg, result, li);
+    writeCopperDxf(fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li)), result, li);
+    writePhysicalCopperDxf(fullfile(layerDir, sprintf('%02d_copper_physical_L%d.dxf', li, li)), cfg, result, li);
+    writeAntipadKeepoutDxf(fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li)), cfg, result, li);
 end
 if cfg.enablePreview
     prevDir = fullfile(outDir, 'previews');
@@ -62,26 +73,98 @@ if cfg.enablePreview
 end
 writeReports(cfg, result, reportsDir);
 writeStatus(cfg, result, fullfile(outDir, 'generation_status.txt'));
+writeFileManifest(fullfile(reportsDir, '08_file_manifest.csv'), outDir);
 end
 
 function writeBoardDxf(filename, boardLoops)
 % 板框 DXF：5 个闭合 LWPOLYLINE（1 外边界 + 4 孔槽）。
-fid = fopen(filename, 'w');
-writeDxfHeader(fid);
+fid = openOutputFile(filename);
+writeDxfHeader(fid, {'BOARD'});
 for k = 1:numel(boardLoops)
-    writeLwPolyline(fid, boardLoops(k).xy, 'BOARD', true, 0);
+    writeLwPolyline(fid, boardLoops(k).xy, 'BOARD', true);
 end
 writeDxfFooter(fid);
 fclose(fid);
 end
 
-function writeCopperDxf(filename, cfg, result, li)
-% 单层铜 DXF：线圈折线 + 连接路径（LWPOLYLINE，宽度 = traceWidth）；
-% L1 额外画 PAD_A/PAD_B 圆；与该层相连的过孔画焊环圆，
-% 不与该层相连的过孔画 ANTIPAD 圆（4 层板才有）。
-fid = fopen(filename, 'w');
-writeDxfHeader(fid);
+function writeCopperDxf(filename, result, li)
+% 单层铜 DXF：仅线圈折线 + 连接路径（LWPOLYLINE）。
+% 不写入焊盘/过孔圆与任何文字标注（焊盘、过孔信息见 01_pad_via_coordinates.csv 与 SVG 预览）。
+fid = openOutputFile(filename);
 layerName = sprintf('COPPER_L%d', li);
+writeDxfHeader(fid, {layerName});
+lp = result.layerPaths(li);
+if ~isempty(lp.coilXY)
+    writeLwPolyline(fid, lp.coilXY, layerName, false);
+end
+paths = lp.connectionPaths;
+for k = 1:numel(paths)
+    writeLwPolyline(fid, paths{k}, layerName, false);
+end
+writeDxfFooter(fid);
+fclose(fid);
+end
+
+function writeDxfHeader(fid, layerNames)
+% DXF 头：声明版本(AC1015, LWPOLYLINE 自 R2000 起支持)与单位(mm)，
+% 并写入 TABLES/LAYER 图层表；行尾统一 CRLF。
+fprintf(fid, '0\r\nSECTION\r\n2\r\nHEADER\r\n');
+fprintf(fid, '9\r\n$ACADVER\r\n1\r\nAC1015\r\n');
+fprintf(fid, '9\r\n$INSUNITS\r\n70\r\n4\r\n');
+fprintf(fid, '9\r\n$DWGCODEPAGE\r\n3\r\nANSI_1252\r\n');
+fprintf(fid, '0\r\nENDSEC\r\n');
+fprintf(fid, '0\r\nSECTION\r\n2\r\nTABLES\r\n');
+fprintf(fid, '0\r\nTABLE\r\n2\r\nLAYER\r\n70\r\n%d\r\n', numel(layerNames));
+for k = 1:numel(layerNames)
+    fprintf(fid, '0\r\nLAYER\r\n2\r\n%s\r\n70\r\n0\r\n62\r\n7\r\n6\r\nCONTINUOUS\r\n', layerNames{k});
+end
+fprintf(fid, '0\r\nENDTAB\r\n0\r\nENDSEC\r\n');
+fprintf(fid, '0\r\nSECTION\r\n2\r\nENTITIES\r\n');
+end
+
+function writeDxfFooter(fid)
+fprintf(fid, '0\r\nENDSEC\r\n0\r\nEOF\r\n');
+end
+
+function writeLwPolyline(fid, xy, layerName, isClosed, constantWidth)
+% Optional 5th argument writes group 43 once per LWPOLYLINE (physical trace
+% width). Legacy centerline/board callers pass 4 args and keep old bytes.
+n = size(xy, 1);
+fprintf(fid, '0\r\nLWPOLYLINE\r\n8\r\n%s\r\n90\r\n%d\r\n70\r\n%d\r\n', layerName, n, double(isClosed));
+if nargin >= 5 && ~isempty(constantWidth)
+    fprintf(fid, '43\r\n%.6f\r\n', constantWidth);
+end
+for k = 1:n
+    fprintf(fid, '10\r\n%.6f\r\n20\r\n%.6f\r\n', xy(k, 1), xy(k, 2));
+end
+end
+
+function writeDrillMapDxf(filename, result)
+% Drill map: one DRILL CIRCLE per via at engineering coordinates.
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+writeDxfHeader(fid, {'DRILL'});
+for k = 1:numel(result.vias)
+    writeCircle(fid, result.vias(k).xy, result.vias(k).drillDiameter / 2, 'DRILL');
+end
+writeDxfFooter(fid);
+end
+
+function writePhysicalCopperDxf(filename, cfg, result, li)
+% Physical CAM-reference copper for layer li: constant-width traces plus
+% pad/via circle boundaries. Centerline files remain unchanged.
+layerName = sprintf('COPPER_PHYSICAL_L%d', li);
+layerNames = {layerName};
+if li == 1
+    layerNames{end + 1} = 'PAD_L1';
+end
+viaIds = find([result.vias.fromLayer] == li | [result.vias.toLayer] == li);
+if ~isempty(viaIds)
+    layerNames{end + 1} = sprintf('VIA_PAD_L%d', li);
+end
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+writeDxfHeader(fid, layerNames);
 lp = result.layerPaths(li);
 if ~isempty(lp.coilXY)
     writeLwPolyline(fid, lp.coilXY, layerName, false, cfg.traceWidth);
@@ -91,48 +174,45 @@ for k = 1:numel(paths)
     writeLwPolyline(fid, paths{k}, layerName, false, cfg.traceWidth);
 end
 if li == 1
-    for k = 1:numel(result.pads)
-        writeCircle(fid, layerName, result.pads(k).xy(1), result.pads(k).xy(2), cfg.padDiameter / 2);
-        writeText(fid, layerName, result.pads(k).xy(1), result.pads(k).xy(2), result.pads(k).name);
+    for p = 1:numel(result.pads)
+        writeCircle(fid, result.pads(p).xy, result.pads(p).diameter / 2, 'PAD_L1');
     end
 end
+for k = 1:numel(viaIds)
+    v = result.vias(viaIds(k));
+    writeCircle(fid, v.xy, v.padDiameter / 2, sprintf('VIA_PAD_L%d', li));
+end
+writeDxfFooter(fid);
+end
+
+function writeAntipadKeepoutDxf(filename, cfg, result, li)
+% Reference-only keepout layer: circles for vias NOT connected to layer li.
+% Never emitted as copper. File stays valid even with zero circles.
+layerName = sprintf('ANTIPAD_KEEPOUT_L%d', li);
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+writeDxfHeader(fid, {layerName});
 for k = 1:numel(result.vias)
     v = result.vias(k);
     if v.fromLayer == li || v.toLayer == li
-        writeCircle(fid, layerName, v.xy(1), v.xy(2), cfg.viaPadDiameter / 2);
-        writeText(fid, layerName, v.xy(1), v.xy(2), v.name);
-    else
-        antipadLayer = sprintf('ANTIPAD_L%d', li);
-        writeCircle(fid, antipadLayer, v.xy(1), v.xy(2), cfg.antipadDiameter / 2);
-        writeText(fid, antipadLayer, v.xy(1), v.xy(2), sprintf('ANTIPAD_%s', v.name));
+        continue;
     end
+    writeCircle(fid, v.xy, cfg.antipadDiameter / 2, layerName);
 end
 writeDxfFooter(fid);
-fclose(fid);
 end
 
-function writeDxfHeader(fid)
-fprintf(fid, '0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n');
+function writeCircle(fid, xy, radius, layer)
+% CIRCLE with engineering +X/+Y coordinates (no display Y flip).
+fprintf(fid, '0\r\nCIRCLE\r\n8\r\n%s\r\n10\r\n%.9f\r\n20\r\n%.9f\r\n40\r\n%.9f\r\n', ...
+    layer, xy(1), xy(2), radius);
 end
 
-function writeDxfFooter(fid)
-fprintf(fid, '0\nENDSEC\n0\nEOF\n');
+function fid = openOutputFile(filename)
+fid = fopen(filename, 'wb');
+if fid < 0
+    error('CircularFPC:ExportReadbackFailed', 'Cannot open output file: %s', filename);
 end
-
-function writeLwPolyline(fid, xy, layerName, isClosed, width)
-n = size(xy, 1);
-fprintf(fid, '0\nLWPOLYLINE\n8\n%s\n90\n%d\n70\n%d\n', layerName, n, double(isClosed));
-for k = 1:n
-    fprintf(fid, '10\n%.6f\n20\n%.6f\n40\n%.6f\n41\n%.6f\n', xy(k, 1), xy(k, 2), width, width);
-end
-end
-
-function writeCircle(fid, layerName, cx, cy, r)
-fprintf(fid, '0\nCIRCLE\n8\n%s\n10\n%.6f\n20\n%.6f\n40\n%.6f\n', layerName, cx, cy, r);
-end
-
-function writeText(fid, layerName, x, y, txt)
-fprintf(fid, '0\nTEXT\n8\n%s\n10\n%.6f\n20\n%.6f\n40\n0.5\n1\n%s\n', layerName, x, y, txt);
 end
 
 function writeSvgFull(filename, cfg, result)
@@ -163,14 +243,14 @@ idx = 0;
 for k = 1:numel(result.pads)
     p = result.pads(k);
     fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
-        p.xy(1), p.xy(2), cfg.padDiameter / 2);
+        p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, p, labelX, labelY(idx));
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
     fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
-        v.xy(1), v.xy(2), cfg.viaPadDiameter / 2);
+        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, v, labelX, labelY(idx));
 end
@@ -206,7 +286,7 @@ if li == 1
     for k = 1:numel(result.pads)
         p = result.pads(k);
         fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
-            p.xy(1), p.xy(2), cfg.padDiameter / 2);
+            p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     end
 end
 for k = 1:numel(result.vias)
@@ -215,7 +295,7 @@ for k = 1:numel(result.vias)
         continue;
     end
     fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
-        v.xy(1), v.xy(2), cfg.viaPadDiameter / 2);
+        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
@@ -261,8 +341,10 @@ xMin = floor(xMin * 1000) / 1000;
 xMax = ceil(xMax * 1000) / 1000;
 yMin = floor(yMin * 1000) / 1000;
 yMax = ceil(yMax * 1000) / 1000;
+svgYMin = -yMax;
+svgYMax = -yMin;
 fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.3f">\n', ...
-    xMin, yMin, xMax - xMin, yMax - yMin);
+    xMin, svgYMin, xMax - xMin, svgYMax - svgYMin);
 for k = 1:numel(result.boardLoops)
     fprintf(fid, '<polygon points="%s" fill="none" stroke="black" stroke-width="0.15"/>\n', pointsAttr(result.boardLoops(k).xy));
 end
@@ -273,20 +355,20 @@ for li = 1:numel(result.layerPaths)
             pointsAttr(paths{k}), cfg.traceWidth);
     end
 end
-[labelX, labelY, bg] = svgLegendLayout(xMin, yMin, xMax, yMax, numel(result.pads) + numel(result.vias));
+[labelX, labelY, bg] = svgLegendLayout(xMin, svgYMin, xMax, svgYMax, numel(result.pads) + numel(result.vias));
 writeSvgLegendBackground(fid, bg);
 idx = 0;
 for k = 1:numel(result.pads)
     p = result.pads(k);
     fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
-        p.xy(1), p.xy(2), cfg.padDiameter / 2);
+        p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, p, labelX, labelY(idx));
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
     fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
-        v.xy(1), v.xy(2), cfg.viaPadDiameter / 2);
+        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, v, labelX, labelY(idx));
 end
@@ -295,7 +377,7 @@ fclose(fid);
 end
 
 function s = pointsAttr(xy)
-s = sprintf('%.4f,%.4f ', xy.');
+s = sprintf('%.4f,%.4f ', [xy(:,1), -xy(:,2)].');
 end
 
 function writeReports(cfg, result, reportsDir)
@@ -332,6 +414,8 @@ fprintf(fid, 'designName: %s\n', cfg.designName);
 fprintf(fid, 'boardLayerCount: %d\n', cfg.boardLayerCount);
 fprintf(fid, 'coilLayerCount: %d\n', cfg.coilLayerCount);
 fprintf(fid, 'boardOuterDiameter: %.6f mm\n', eff.boardOuterDiameter);
+fprintf(fid, 'boardSizingMode: %s\n', cfg.boardSizingMode);
+fprintf(fid, 'viaEndExtension: %.6f mm\n', eff.viaEndExtension);
 fprintf(fid, 'coilInnerDiameter: %.6f mm\n', eff.coilInnerDiameter);
 fprintf(fid, 'centerPlatformWidth: %.6f mm\n', eff.centerPlatformWidth);
 fprintf(fid, 'centerPlatformHeight: %.6f mm\n', eff.centerPlatformHeight);
@@ -342,6 +426,9 @@ fprintf(fid, 'coilPitch: %.6f mm\n', eff.coilPitch);
 fprintf(fid, 'traceWidth: %.6f mm\n', cfg.traceWidth);
 fprintf(fid, 'traceSpacing: %.6f mm\n', cfg.traceSpacing);
 fprintf(fid, 'edgeClearance: %.6f mm\n', cfg.edgeClearance);
+fprintf(fid, 'viaPadDiameter: %.6f mm\n', cfg.viaPadDiameter);
+fprintf(fid, 'viaDrillDiameter: %.6f mm\n', cfg.viaDrillDiameter);
+fprintf(fid, 'viaCoilSpacing: %.6f mm\n', cfg.viaCoilSpacing);
 fprintf(fid, 'totalTraceLengthMm: %.6f\n', result.totalTraceLengthMm);
 fprintf(fid, 'estimatedDcResistanceOhm: %.9f\n', result.estimatedDcResistanceOhm);
 fprintf(fid, 'geometry-only estimate; no electrical performance claim (NG-2/INV-5).\n');
@@ -367,11 +454,24 @@ for k = 1:numel(result.vias)
 end
 fclose(fid);
 fid = fopen(fullfile(reportsDir, '04_turn_scan.csv'), 'w');
-fprintf(fid, 'turns,requiredRadialWidthMm,fitsBoard\n');
-available = eff.boardOuterDiameter / 2 - cfg.edgeClearance - eff.coilInnerDiameter / 2;
-for t = 1:cfg.turnScanMax
-    req = cfg.traceWidth + (t - 1) * eff.coilPitch;
-    fprintf(fid, '%d,%.6f,%d\n', t, req, req <= available + 1e-9);
+% 与配置校验保持一致：1 匝会退化为单采样点，两种模式都从 2 匝开始扫描。
+if strcmp(cfg.boardSizingMode, 'auto')
+    % auto 模式：板框随匝数增长，报告每个匝数对应的板框外径（含过孔延伸区）。
+    fprintf(fid, 'turns,requiredRadialWidthMm,requiredBoardDiameterMm\n');
+    for t = 2:cfg.turnScanMax
+        req = cfg.traceWidth + (t - 1) * eff.coilPitch;
+        boardD = 2 * (eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
+            eff.coilPitch * (t - 1) + eff.viaEndExtension + ...
+            max(cfg.traceWidth, cfg.viaPadDiameter) / 2 + cfg.edgeClearance);
+        fprintf(fid, '%d,%.6f,%.6f\n', t, req, boardD);
+    end
+else
+    fprintf(fid, 'turns,requiredRadialWidthMm,fitsBoard\n');
+    available = eff.boardOuterDiameter / 2 - cfg.edgeClearance - eff.coilInnerDiameter / 2;
+    for t = 2:cfg.turnScanMax
+        req = cfg.traceWidth + (t - 1) * eff.coilPitch;
+        fprintf(fid, '%d,%.6f,%d\n', t, req, req <= available + 1e-9);
+    end
 end
 fclose(fid);
 fid = fopen(fullfile(reportsDir, '05_validation_report.txt'), 'w');
@@ -394,6 +494,102 @@ for m = v.messages
 end
 fprintf(fid, 'passed: %d\n', v.passed);
 fclose(fid);
+fid6 = openOutputFile(fullfile(reportsDir, '06_manufacturing_check.csv'));
+c6 = onCleanup(@() fclose(fid6));
+fprintf(fid6, 'id,measuredMm,limitMm,marginMm,status,source,code,message,profile,tier\n');
+for k = 1:numel(result.manufacturing.checks)
+    chk = result.manufacturing.checks(k);
+    fprintf(fid6, '%s,%.9f,%.9f,%.9f,%s,%s,%s,%s,%s,%s\n', ...
+        chk.id, chk.measuredMm, chk.limitMm, chk.marginMm, ...
+        chk.status, chk.source, chk.code, csvEscape(chk.message), ...
+        result.manufacturing.profile, result.manufacturing.tier);
+end
+fid7 = openOutputFile(fullfile(reportsDir, '07_fabrication_notes.txt'));
+c7 = onCleanup(@() fclose(fid7));
+fprintf(fid7, 'Circular_FPC_Coil fabrication notes\n');
+fprintf(fid7, 'boardLayerCount: %d\n', cfg.boardLayerCount);
+fprintf(fid7, 'coilLayerCount: %d\n', cfg.coilLayerCount);
+fprintf(fid7, 'activeCoilLayers: %s\n', mat2str(result.activeCoilLayers));
+fprintf(fid7, 'copperThickness: %.6f mm (1 oz nominal profile)\n', cfg.copperThickness);
+fprintf(fid7, 'manufacturingProfile: %s\n', result.manufacturing.profile);
+fprintf(fid7, 'manufacturingTier: %s\n', result.manufacturing.tier);
+fprintf(fid7, 'surfaceFinish: TO_BE_SELECTED\n');
+fprintf(fid7, 'coordinates: +X right, +Y up; SVG display only flips Y\n');
+fprintf(fid7, 'Physical DXF is a CAM reference and does not replace Gerber.\n');
+fprintf(fid7, 'NOT_GENERATED: coverlay, stiffener, Gerber, panelization\n');
+fprintf(fid7, 'File manifest 08_file_manifest.csv excludes itself.\n');
+end
+
+function s = csvEscape(s)
+% RFC4180 minimal escaping for CSV text fields.
+if any(s == ',') || any(s == '"') || any(s == newline) || any(double(s) == 13)
+    s = ['"' strrep(s, '"', '""') '"'];
+end
+end
+
+function writeFileManifest(filename, outDir)
+% Manifest of every generated regular file except itself, sorted by
+% forward-slash relative path; raw-byte SHA256 via Java MessageDigest.
+entries = struct('rel', {}, 'role', {}, 'sizeBytes', {}, 'sha256', {});
+d = dir(fullfile(outDir, '**', '*'));
+for k = 1:numel(d)
+    if d(k).isdir
+        continue;
+    end
+    absPath = fullfile(d(k).folder, d(k).name);
+    rel = strrep(strrep(absPath, outDir, ''), '\', '/');
+    if strcmp(rel, '/reports/08_file_manifest.csv')
+        continue;
+    end
+    entries(end + 1) = struct('rel', rel(2:end), 'role', manifestRole(rel(2:end)), ...
+        'sizeBytes', d(k).bytes, 'sha256', sha256File(absPath)); %#ok<AGROW>
+end
+[~, order] = sort({entries.rel});
+entries = entries(order);
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+fprintf(fid, 'relativePath,role,sizeBytes,sha256\n');
+for k = 1:numel(entries)
+    fprintf(fid, '%s,%s,%d,%s\n', entries(k).rel, entries(k).role, entries(k).sizeBytes, entries(k).sha256);
+end
+end
+
+function role = manifestRole(rel)
+if strcmp(rel, 'dxf/00_board_outline.dxf')
+    role = 'board_outline';
+elseif strcmp(rel, 'dxf/00_drill_map.dxf')
+    role = 'drill_map';
+elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_L\d+\.dxf$', 'once'))
+    role = 'copper_centerline';
+elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_physical_L\d+\.dxf$', 'once'))
+    role = 'copper_physical';
+elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_antipad_keepout_L\d+\.dxf$', 'once'))
+    role = 'antipad_keepout';
+elseif ~isempty(regexp(rel, '^previews/', 'once'))
+    role = 'preview';
+elseif ~isempty(regexp(rel, '^reports/', 'once'))
+    role = 'report';
+elseif strcmp(rel, 'generation_status.txt')
+    role = 'generation_status';
+else
+    error('CircularFPC:ExportReadbackFailed', 'Unmappable manifest file: %s', rel);
+end
+end
+
+function h = sha256File(path)
+fid = fopen(path, 'rb');
+if fid < 0
+    error('CircularFPC:ExportReadbackFailed', 'Cannot open file for hashing: %s', path);
+end
+c = onCleanup(@() fclose(fid));
+raw = fread(fid, Inf, '*uint8');
+md = java.security.MessageDigest.getInstance('SHA-256');
+h = lower(reshape(dec2hex(typecast(md.digest(raw), 'uint8'), 2).', 1, []));
+end
+
+function n = countFilesRecursive(root)
+d = dir(fullfile(root, '**', '*'));
+n = sum(~[d.isdir]);
 end
 
 function writeStatus(cfg, result, filename)
@@ -416,10 +612,90 @@ end
 if countClosedLwpolylines(txt) ~= 5
     error('CircularFPC:ExportReadbackFailed', 'Board DXF must contain exactly 5 closed LWPOLYLINE entities.');
 end
+drillFile = fullfile(tempDir, 'dxf', '00_drill_map.dxf');
+if ~isfile(drillFile)
+    error('CircularFPC:ExportReadbackFailed', 'Missing drill map DXF: %s', drillFile);
+end
+drillTxt = fileread(drillFile);
+checkDxfBase(drillTxt, drillFile);
+if ~contains(drillTxt, 'DRILL')
+    error('CircularFPC:ExportReadbackFailed', 'Drill map DXF must declare DRILL layer.');
+end
+[dc, ~, ~] = readDxfEntities(drillTxt);
+expDrillR = sort([result.vias.drillDiameter] / 2);
+if numel(dc) ~= numel(result.vias) || any(~strcmp({dc.layer}, 'DRILL')) || ...
+        (~isempty(dc) && any(abs(sort([dc.r]) - expDrillR) > 1e-9))
+    error('CircularFPC:ExportReadbackFailed', 'Drill map circle mismatch: %s', drillFile);
+end
 for li = 1:cfg.boardLayerCount
-    f = fullfile(tempDir, 'dxf', sprintf('L%d', li), sprintf('%02d_copper_L%d.dxf', li, li));
-    if ~isfile(f)
-        error('CircularFPC:ExportReadbackFailed', 'Missing copper DXF: %s', f);
+    layerDir = fullfile(tempDir, 'dxf', sprintf('L%d', li));
+    centerFile = fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li));
+    if ~isfile(centerFile)
+        error('CircularFPC:ExportReadbackFailed', 'Missing copper DXF: %s', centerFile);
+    end
+    centerTxt = fileread(centerFile);
+    checkDxfBase(centerTxt, centerFile);
+    [cc, w43c, ~] = readDxfEntities(centerTxt);
+    if ~isempty(cc) || ~isempty(w43c)
+        error('CircularFPC:ExportReadbackFailed', 'Centerline DXF must not contain CIRCLE/group43: %s', centerFile);
+    end
+    physFile = fullfile(layerDir, sprintf('%02d_copper_physical_L%d.dxf', li, li));
+    if ~isfile(physFile)
+        error('CircularFPC:ExportReadbackFailed', 'Missing physical copper DXF: %s', physFile);
+    end
+    physTxt = fileread(physFile);
+    checkDxfBase(physTxt, physFile);
+    if contains(physTxt, 'ANTIPAD')
+        error('CircularFPC:ExportReadbackFailed', 'Physical DXF must not contain ANTIPAD: %s', physFile);
+    end
+    physLayer = sprintf('COPPER_PHYSICAL_L%d', li);
+    if ~contains(physTxt, physLayer)
+        error('CircularFPC:ExportReadbackFailed', 'Physical DXF must declare %s layer.', physLayer);
+    end
+    [pc, w43, nPoly] = readDxfEntities(physTxt);
+    if numel(w43) ~= nPoly || any(abs(w43 - cfg.traceWidth) > 1e-9)
+        error('CircularFPC:ExportReadbackFailed', 'Physical DXF group 43 mismatch: %s', physFile);
+    end
+    viaIds = find([result.vias.fromLayer] == li | [result.vias.toLayer] == li);
+    if li == 1
+        if ~contains(physTxt, 'PAD_L1')
+            error('CircularFPC:ExportReadbackFailed', 'Physical L1 DXF must declare PAD_L1 layer.');
+        end
+        padC = pc(strcmp({pc.layer}, 'PAD_L1'));
+        if numel(padC) ~= 2 || any(abs(sort([padC.r]) - sort([result.pads.diameter] / 2)) > 1e-9)
+            error('CircularFPC:ExportReadbackFailed', 'Physical L1 pad circle mismatch: %s', physFile);
+        end
+    end
+    viaLayer = sprintf('VIA_PAD_L%d', li);
+    if ~isempty(viaIds) && ~contains(physTxt, viaLayer)
+        error('CircularFPC:ExportReadbackFailed', 'Physical DXF must declare %s layer.', viaLayer);
+    end
+    viaC = pc(strcmp({pc.layer}, viaLayer));
+    if numel(viaC) ~= numel(viaIds) || ...
+            (~isempty(viaC) && any(abs(sort([viaC.r]) - sort([result.vias(viaIds).padDiameter] / 2)) > 1e-9))
+        error('CircularFPC:ExportReadbackFailed', 'Physical via circle mismatch: %s', physFile);
+    end
+    if numel(pc) ~= (li == 1) * 2 + numel(viaIds)
+        error('CircularFPC:ExportReadbackFailed', 'Physical circle count mismatch: %s', physFile);
+    end
+    keepFile = fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li));
+    if ~isfile(keepFile)
+        error('CircularFPC:ExportReadbackFailed', 'Missing keepout DXF: %s', keepFile);
+    end
+    keepTxt = fileread(keepFile);
+    checkDxfBase(keepTxt, keepFile);
+    if contains(keepTxt, 'COPPER_PHYSICAL')
+        error('CircularFPC:ExportReadbackFailed', 'Keepout DXF must not contain copper traces: %s', keepFile);
+    end
+    keepLayer = sprintf('ANTIPAD_KEEPOUT_L%d', li);
+    if ~contains(keepTxt, keepLayer)
+        error('CircularFPC:ExportReadbackFailed', 'Keepout DXF must declare %s layer.', keepLayer);
+    end
+    [kc, ~, ~] = readDxfEntities(keepTxt);
+    keepIds = find(~([result.vias.fromLayer] == li | [result.vias.toLayer] == li));
+    if numel(kc) ~= numel(keepIds) || ...
+            (~isempty(kc) && (any(~strcmp({kc.layer}, keepLayer)) || any(abs([kc.r] - cfg.antipadDiameter / 2) > 1e-9)))
+        error('CircularFPC:ExportReadbackFailed', 'Keepout circle mismatch: %s', keepFile);
     end
 end
 if cfg.enablePreview
@@ -460,8 +736,152 @@ for f = {'03_design_summary.txt', '04_turn_scan.csv', '05_validation_report.txt'
         error('CircularFPC:ExportReadbackFailed', 'Empty report: %s', p);
     end
 end
+csvCheck = fullfile(tempDir, 'reports', '06_manufacturing_check.csv');
+if ~isfile(csvCheck)
+    error('CircularFPC:ExportReadbackFailed', 'Missing manufacturing check CSV: %s', csvCheck);
+end
+t6 = readtable(csvCheck);
+expCols6 = {'id', 'measuredMm', 'limitMm', 'marginMm', 'status', 'source', 'code', 'message', 'profile', 'tier'};
+if ~isequal(t6.Properties.VariableNames, expCols6)
+    error('CircularFPC:ExportReadbackFailed', '06 CSV columns mismatch.');
+end
+chks = result.manufacturing.checks;
+if height(t6) ~= numel(chks)
+    error('CircularFPC:ExportReadbackFailed', '06 CSV row count mismatch.');
+end
+for k = 1:numel(chks)
+    if ~strcmp(char(t6.id(k)), chks(k).id) || ...
+            abs(t6.measuredMm(k) - chks(k).measuredMm) > 1e-9 || ...
+            abs(t6.limitMm(k) - chks(k).limitMm) > 1e-9 || ...
+            abs(t6.marginMm(k) - chks(k).marginMm) > 1e-9 || ...
+            ~strcmp(char(t6.status(k)), chks(k).status) || ...
+            ~strcmp(char(t6.source(k)), chks(k).source) || ...
+            ~strcmp(char(t6.code(k)), chks(k).code) || ...
+            ~strcmp(char(t6.message(k)), chks(k).message) || ...
+            ~strcmp(char(t6.profile(k)), result.manufacturing.profile) || ...
+            ~strcmp(char(t6.tier(k)), result.manufacturing.tier)
+        error('CircularFPC:ExportReadbackFailed', '06 CSV row %d mismatch.', k);
+    end
+end
+txtNotes = fullfile(tempDir, 'reports', '07_fabrication_notes.txt');
+if ~isfile(txtNotes)
+    error('CircularFPC:ExportReadbackFailed', 'Missing fabrication notes: %s', txtNotes);
+end
+notes = fileread(txtNotes);
+if isempty(notes) || ~contains(notes, 'NOT_GENERATED') || ~contains(notes, 'Gerber')
+    error('CircularFPC:ExportReadbackFailed', '07 fabrication notes content mismatch.');
+end
+csvManifest = fullfile(tempDir, 'reports', '08_file_manifest.csv');
+if ~isfile(csvManifest)
+    error('CircularFPC:ExportReadbackFailed', 'Missing file manifest: %s', csvManifest);
+end
+t8 = readtable(csvManifest);
+if ~isequal(t8.Properties.VariableNames, {'relativePath', 'role', 'sizeBytes', 'sha256'})
+    error('CircularFPC:ExportReadbackFailed', '08 manifest columns mismatch.');
+end
+if height(t8) ~= countFilesRecursive(tempDir) - 1
+    error('CircularFPC:ExportReadbackFailed', '08 manifest row count mismatch.');
+end
+rel8 = string(t8.relativePath);
+if any(strcmp(rel8, 'reports/08_file_manifest.csv'))
+    error('CircularFPC:ExportReadbackFailed', '08 manifest must not list itself.');
+end
+if any(startsWith(rel8, '/')) || any(contains(rel8, '\')) || any(contains(rel8, '..'))
+    error('CircularFPC:ExportReadbackFailed', '08 manifest relativePath invalid.');
+end
+roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', ...
+    'antipad_keepout', 'preview', 'report', 'generation_status'};
+for k = 1:height(t8)
+    rel = char(t8.relativePath(k));
+    if ~ismember(char(t8.role(k)), roles8)
+        error('CircularFPC:ExportReadbackFailed', '08 manifest invalid role for %s.', rel);
+    end
+    abs8 = fullfile(tempDir, rel);
+    if ~isfile(abs8)
+        error('CircularFPC:ExportReadbackFailed', '08 manifest file missing: %s', rel);
+    end
+    d8 = dir(abs8);
+    if t8.sizeBytes(k) ~= d8.bytes
+        error('CircularFPC:ExportReadbackFailed', '08 manifest size mismatch: %s', rel);
+    end
+    sha8 = char(t8.sha256(k));
+    if isempty(regexp(sha8, '^[0-9a-f]{64}$', 'once')) || ~strcmp(sha8, sha256File(abs8))
+        error('CircularFPC:ExportReadbackFailed', '08 manifest sha256 mismatch: %s', rel);
+    end
+end
 if isempty(fileread(fullfile(tempDir, 'generation_status.txt')))
     error('CircularFPC:ExportReadbackFailed', 'Empty generation status.');
+end
+end
+
+function checkDxfBase(txt, label)
+% Readback: DXF must declare AC1015, mm (INSUNITS 4), CRLF and no TEXT.
+if ~contains(txt, 'AC1015')
+    error('CircularFPC:ExportReadbackFailed', '%s must declare AC1015.', label);
+end
+lines = strtrim(strsplit(txt, newline));
+insIdx = find(strcmp(lines, '$INSUNITS'), 1);
+if isempty(insIdx) || insIdx + 2 > numel(lines) || ...
+        ~strcmp(lines{insIdx + 1}, '70') || str2double(lines{insIdx + 2}) ~= 4
+    error('CircularFPC:ExportReadbackFailed', '%s $INSUNITS must be 4 (mm).', label);
+end
+if ~contains(txt, sprintf('\r\n'))
+    error('CircularFPC:ExportReadbackFailed', '%s must use CRLF line endings.', label);
+end
+if contains(txt, 'TEXT')
+    error('CircularFPC:ExportReadbackFailed', '%s must not contain TEXT entities.', label);
+end
+end
+
+function [circles, w43, nPoly] = readDxfEntities(txt)
+% Readback parser: CIRCLE entities (layer/center/radius) and LWPOLYLINE
+% group-43 widths plus polyline count.
+lines = strtrim(strsplit(txt, newline));
+circles = struct('layer', {}, 'cx', {}, 'cy', {}, 'r', {});
+w43 = [];
+nPoly = 0;
+k = 1;
+while k + 1 <= numel(lines)
+    if strcmp(lines{k}, '0')
+        entType = lines{k + 1};
+        j = k + 2;
+        if strcmp(entType, 'CIRCLE')
+            layer = '';
+            cx = NaN;
+            cy = NaN;
+            r = NaN;
+            while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+                code = str2double(lines{j});
+                val = lines{j + 1};
+                switch code
+                    case 8
+                        layer = val;
+                    case 10
+                        cx = str2double(val);
+                    case 20
+                        cy = str2double(val);
+                    case 40
+                        r = str2double(val);
+                end
+                j = j + 2;
+            end
+            circles(end + 1) = struct('layer', layer, 'cx', cx, 'cy', cy, 'r', r); %#ok<AGROW>
+            k = j;
+        elseif strcmp(entType, 'LWPOLYLINE')
+            nPoly = nPoly + 1;
+            while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+                if strcmp(lines{j}, '43')
+                    w43(end + 1) = str2double(lines{j + 1}); %#ok<AGROW>
+                end
+                j = j + 2;
+            end
+            k = j;
+        else
+            k = k + 1;
+        end
+    else
+        k = k + 1;
+    end
 end
 end
 
@@ -501,7 +921,7 @@ escName = xmlEscapeText(term.name);
 escRegion = xmlEscapeText(term.placementRegion);
 escAngle = xmlEscapeText(sprintf('%.6f', term.bridgeAngleDeg));
 fprintf(fid, '<line class="terminal-leader" data-name="%s" x1="%.6f" y1="%.6f" x2="%.6f" y2="%.6f" stroke="#666666" stroke-width="0.025" opacity="0.45"/>\n', ...
-    escName, term.xy(1), term.xy(2), labelX - 0.05, labelY - 0.06);
+    escName, term.xy(1), -term.xy(2), labelX - 0.05, labelY - 0.06);
 fprintf(fid, '<text class="terminal-label" x="%.6f" y="%.6f" font-size="0.22" fill="#000000" data-name="%s" data-placement-region="%s" data-bridge-angle-deg="%s">%s [%s] angle=%sdeg</text>\n', ...
     labelX, labelY, escName, escRegion, escAngle, ...
     escName, escRegion, escAngle);
