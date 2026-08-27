@@ -63,7 +63,7 @@ for li = 1:nL
     for k = 1:numel(paths)
         if ~isempty(paths{k})
             plot(paths{k}(:, 1), paths{k}(:, 2), 'Color', colors(li, :), ...
-                'LineWidth', 1.0, 'LineStyle', '--');
+                'LineWidth', 1.0, 'LineStyle', '-');
         end
     end
     if li == 1

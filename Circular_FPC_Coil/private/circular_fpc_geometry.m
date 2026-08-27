@@ -27,6 +27,7 @@ eff.centerPlatformHeight = cfg.centerPlatformHeight * cfg.geometryScale;
 eff.bridgeTargetWidth = cfg.bridgeTargetWidth * cfg.geometryScale;
 eff.coilPitch = cfg.traceWidth + cfg.traceSpacing + cfg.pitchMargin; % 螺旋节距 = 线宽 + 净距 + 余量
 eff.turnsPerCoilLayer = cfg.turnsPerCoilLayer;
+eff.platformCornerR = cfg.platformCornerRadius * cfg.geometryScale; % 平台轻微圆角随宏观缩放（0 = 直角）
 eff.actualBridgeWidth = NaN; % 由 buildBoardGeometry 回填
 end
 
@@ -39,7 +40,9 @@ innerR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
 outerP = polyshape(sampleCircle(0, 0, outerR, nCircle));
 innerP = polyshape(sampleCircle(0, 0, innerR, nCircle));
 annulus = subtract(outerP, innerP); % 线圈所在的圆环区域
-cornerR = min(0.25 * min(eff.centerPlatformWidth, eff.centerPlatformHeight), 2.0);
+% 平台矩形仅做轻微工艺圆角（platformCornerRadius，默认 0.2 mm，可设 0 为直角）；
+% 四个角部朝向四条连接桥轴，允许伸入桥区走廊，由 validate_result 实测净距把关。
+cornerR = eff.platformCornerR;
 platP = polyshape(sampleRoundedRect(eff.centerPlatformWidth, eff.centerPlatformHeight, cornerR, nCircle));
 polys = [annulus, platP]; % 中央平台：焊盘与进出线所在的连接区
 % 四条桥臂：沿 connectionAngleDeg ± 90° 与 ±180° 方向连接平台与外部环区。
@@ -59,6 +62,14 @@ for k = 1:4
 end
 shape = intersect(union(polys), outerP);
 nBoundaries = numboundaries(shape);
+% 板框必须恰好 5 个闭环（1 外边界 + 4 孔槽）：平台过大或缩放过小会吞没内环、
+% 使孔槽退化消失，此处快速失败并给出可读错误（而不是在后续索引处越界崩溃）。
+if nBoundaries ~= 5
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Board outline must contain exactly 5 loops (1 outer + 4 slots), got %d. ', ...
+         'The central platform or geometryScale setting collapses the slot regions.'], ...
+        nBoundaries);
+end
 bnd = cell(nBoundaries, 1);
 for boundaryIndex = 1:nBoundaries
     [boundaryX, boundaryY] = boundary(shape, boundaryIndex);
@@ -85,9 +96,9 @@ boardLoops(1).orientation = signedArea(outerXY);
 for j = 1:numel(holeIdx)
     h = holeIdx(ord(j));
     hxy = bnd{h};
-    % 圆角化：槽角（圆环弧 × 桥侧等）内角 <= 90° 处替换为相切圆弧，
-    % 保证板框（含挖空槽）不存在 <= 90° 内角。
-    hxy = filletHoleCorners(hxy, 0.3, 90.1, 10);
+    % 圆角化：槽边界（圆环弧 × 平台边 × 桥侧的交界）上内角 <= 90° 的尖角
+    % 一律替换为相切圆弧轻微圆角化，保证挖槽区域无尖锐拐点。
+    hxy = filletHoleCorners(hxy, 0.3, 90.0, 10);
     boardLoops(j + 1).name = sprintf('hole_%d', j);
     boardLoops(j + 1).isHole = true;
     boardLoops(j + 1).xy = hxy;
@@ -130,9 +141,15 @@ xy = [cx + r * cos(th); cy + r * sin(th)].';
 end
 
 function xy = sampleRoundedRect(w, h, r, n)
+% 采样圆角矩形（顺时针从右上角开始，首尾不重复）。r=0 时退化为直角矩形四顶点
+% （角度规则 >=90° 允许直角平台）；r 会按 min(W,H)/2 自动截断防越界。
 halfW = w / 2;
 halfH = h / 2;
 r = min(r, min(halfW, halfH));
+if r <= 1e-12
+    xy = [halfW, halfH; -halfW, halfH; -halfW, -halfH; halfW, -halfH];
+    return;
+end
 nq = max(8, round(n / 8));
 c1 = [halfW - r, halfH - r];
 c2 = [halfW - r, -halfH + r];
@@ -266,16 +283,25 @@ end
 
 function coils = buildCoils(cfg, eff, activeLayers, directions)
 % 生成阿基米德螺旋线圈：r = rStart + coilPitch * theta/(2π)。
-% 奇数序号活动层从 connectionAngleDeg 相位起绕（CCW），偶数层相位 +180° 起绕（CW）。
+% 奇数序号活动层从 connectionAngleDeg 相位起绕（CCW），偶数层相近相位反向绕（CW），
+% 俯视电流同向叠加；4/4 采用分数匝（L2 +0.25、L4 -0.25 圈跨度）使内端落在过孔轴线。
 % 外端过孔延伸区：线圈最外圈沿径向向外延伸 eff.viaEndExtension，过孔落在延伸端，
 % 焊环避开相邻匝（不影响线距/匝数），板框自动计入延伸区。
 coils = cell(1, cfg.boardLayerCount);
 rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
-span = 2 * pi * (cfg.turnsPerCoilLayer - 1); % 匝数-1 圈（首点在内圈起点）
-n = cfg.samplePointsPerTurn * (cfg.turnsPerCoilLayer - 1) + 1;
+% 4/4 分数匝（用户设计约定）：L2 多绕 1/4 圈使内端直接落到 225° 的 V23，
+% L4 少绕 1/4 圈使内端直接落到 135° 的 VOUT——内端无任何过渡走线，
+% 全部铜箔均为同心螺旋，且四层平均匝数恰为 turnsPerCoilLayer（8 匝）。
+is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
+spanExtra = [0, 0.25, 0, -0.25];
+phaseExtra = [0, 90, 90, 0];
 for p = 1:numel(activeLayers)
     li = activeLayers(p);
-    phaseDeg = cfg.connectionAngleDeg + 180 * floor((p - 1) / 2); % 相邻线圈对相位相差 180°
+    spanTurns = cfg.turnsPerCoilLayer - 1 + spanExtra(p) * is44;
+    phaseDeg = cfg.connectionAngleDeg + phaseExtra(p) * is44 ...
+        + 90 * floor((p - 1) / 2) * (~is44);
+    span = 2 * pi * spanTurns; % 角跨度（分数匝时含 +90°）
+    n = round(cfg.samplePointsPerTurn * spanTurns) + 1;
     th = linspace(0, span, n);
     if directions(p) < 0
         % 偶数层镜像绕制（角度随半径增大而减小）：翻转点序后电流从外端流向内端时
@@ -347,6 +373,10 @@ for li = 1:cfg.boardLayerCount
 end
 
 [pads, vias, returnLayer, routeInfo] = buildTerminals(cfg, eff, activeLayers, coils, layoutRegions);
+% 4/4 内端延伸（用户设计约定）：L2/L4 的内端经 180° 内弯弧直接延伸到
+% V23/VOUT 中心，L3 的起点前置同样的内弯弧——过孔落在线圈端点上，
+% 无任何过渡走线（全部铜箔为同心螺旋 + 过孔处的径向微连接）。
+coils = applyInnerExtensions(cfg, activeLayers, coils, vias);
 seriesRoute = struct('name', {}, 'kind', {}, 'startXY', {}, 'endXY', {}, ...
     'startLayer', {}, 'endLayer', {});
 seriesRoute = addRouteComponent(seriesRoute, 'PAD_A', 'PAD', pads(1).xy, pads(1).xy, 1, 1);
@@ -479,20 +509,23 @@ if manual
     rVout = NaN;
     rV23 = NaN;
 else
-    rPad = searchPadCenterRadius(cfg, layoutRegions, coils); % 焊盘对中心沿入口桥轴搜索（位于桥上）
+    rPad = searchPadCenterRadius(cfg, layoutRegions, coils); % 焊盘对中心沿入口桥轴搜索
     pairCenter = rPad * u;
     padA = pairCenter - (cfg.padPairSpacing / 2) * t; % 切向负侧为 PAD_A
     padB = pairCenter + (cfg.padPairSpacing / 2) * t; % 切向正侧为 PAD_B
     % VOUT 位于焊盘对与线圈之间：下限 = rPad + 与 PAD_B 的净距约束
     deltaVout = sqrt(max(0, (cfg.padDiameter / 2 + cfg.viaPadDiameter / 2 + cfg.terminalClearance)^2 - ...
         (cfg.padPairSpacing / 2 - layoutRegions.laneOffset)^2));
-    rVout = searchSafeRadiusOnAxis(cfg, layoutRegions, layoutRegions.laneOffset, ...
+    rVout = searchSafeRadiusOnAxis(cfg, layoutRegions, u, t, layoutRegions.laneOffset, ...
         cfg.viaPadDiameter / 2, layoutRegions.rStart - 0.36, rPad + deltaVout + 0.02, coils);
     rV23 = NaN;
     if numel(activeLayers) == 4 && activeLayers(end) == 4
-        % 4/4 组合才有 V23：在回流桥轴（-u 方向）上搜索位置
-        rV23 = searchSafeRadiusOnAxis(cfg, layoutRegions, 0.0, ...
-            cfg.viaPadDiameter / 2, layoutRegions.rStart - 1.5, layoutRegions.entrySpan(1) + 0.5, coils);
+        % 4/4 的 V23 位于 theta+90 桥轴上、L1 在该角度相邻匝的内切位置：
+        % 焊环边缘距 L1 铜边 = viaCoilSpacing（与 VOUT 同款约束）；
+        % L2 的内端延伸弧直接落到 V23 中心（无过渡走线，用户设计约定）。
+        % clamp 下限：禁止公式在极端参数下为负（负值会让过孔跑到对侧轴线）。
+        rV23 = max(0.1, layoutRegions.rStart - (cfg.viaCoilSpacing + ...
+            cfg.viaPadDiameter / 2 + cfg.traceWidth / 2) + 0.25 * eff.coilPitch);
     end
 end
 pads = struct('name', {}, 'xy', {}, 'diameter', {}, 'layer', {}, 'removable', {}, ...
@@ -543,15 +576,15 @@ else
             viaXY(end + 1, :) = coils{activeLayers(p)}(end, :); %#ok<AGROW>
             viaRegions{end + 1} = 'OUTER_COIL_ENDPOINT'; %#ok<AGROW>
             if strcmp(viaNames{end}, 'V34')
-                viaAngles(end + 1) = theta + 180; %#ok<AGROW>
+                viaAngles(end + 1) = theta + 90; %#ok<AGROW> % V34 位于 theta+90 桥侧（L3/L4 相位组）
             else
                 viaAngles(end + 1) = theta; %#ok<AGROW>
             end
         else
             viaRoles{end + 1} = 'INNER_TRANSITION'; %#ok<AGROW>
-            viaXY(end + 1, :) = -rV23 * u; %#ok<AGROW>
+            viaXY(end + 1, :) = rV23 * t; %#ok<AGROW> % theta+90（默认 225°）桥轴
             viaRegions{end + 1} = 'RETURN_BRIDGE'; %#ok<AGROW>
-            viaAngles(end + 1) = theta + 180; %#ok<AGROW>
+            viaAngles(end + 1) = theta + 90; %#ok<AGROW>
         end
     end
     viaNames{end + 1} = 'VOUT'; %#ok<AGROW>
@@ -656,10 +689,10 @@ if ~strcmp(pads(1).placementRegion, 'MANUAL')
     end
     v23 = vias(strcmp({vias.name}, 'V23'));
     if ~isempty(v23)
-        tRet = [-sind(layoutRegions.theta + 180), cosd(layoutRegions.theta + 180)];
-        if numel(v23) ~= 1 || abs(dot(v23(1).xy, tRet)) > 1e-6
+        % V23 位于 theta+90 桥轴（+t 方向）：垂直分量（u 投影）必须为零
+        if numel(v23) ~= 1 || abs(dot(v23(1).xy, layoutRegions.u)) > 1e-6
             error('CircularFPC:TerminalPlacementInvalid', ...
-                'Automatic V23 violates the return bridge axis contract.');
+                'Automatic V23 violates the theta+90 bridge axis contract.');
         end
     end
 end
@@ -725,28 +758,30 @@ elseif strncmp(name, 'RETURN_', 7)
     % 回流走线：单线圈组合最高物理层上 VRET → VOUT 的直线段
     path = sampleSegment(p0, p3, 0.1);
 elseif strcmp(name, 'TRACE_L3_IN')
-    path = sampleBezier(-ri.rV23 * u, u, -rStart * u, -t, 0.6, 0.6, 257);
+    % V23(theta+90 轴) → L3 内端(theta+90)：同轴径向局部连接，末端切向对齐线圈 CCW 切向
+    path = sampleBezier(ri.rV23 * t, t, rStart * t, -u, 0.6, 0.6, 257);
+elseif strcmp(name, 'TRACE_L2_IN') || strcmp(name, 'TRACE_L4_IN')
+    % 外端微调段（分数匝后 L2/L4 的外端起点与 V12/V34 半径差 0.25 节距）：
+    % 终点切向对齐外端延伸弧尖端的切向（rot90cw(径向)），避免 90° 接头。
+    % 控制长度取 0.35·弦长（刻意偏小，收紧横向摆幅，避免侵入外层匝间走廊——
+    % 0.55·弦长在极限档小过孔下实测铜间距 0.1383 < traceSpacing）。
+    chord = norm(p3 - p0);
+    uS = p3 / norm(p3);
+    tan1 = [uS(2), -uS(1)];
+    Lc = 0.35 * chord;
+    path = sampleBezier(p0, p3 - p0, p3, tan1, Lc, Lc, 129);
 elseif strcmp(name, 'TRACE_L4_OUT')
-    % 偶数层镜像绕制：线圈内端末段切线为 +t（135°）或 -t（315°），与线圈方向一致进入。
-    if dot(p0, u) < 0
-        path = sampleBezier(-rStart * u, -t, ri.voutXY, u, 1.5, 1.5, 257);
-    else
-        path = sampleBezier(rStart * u, t, ri.voutXY, -u, 0.15, 0.15, 129);
-    end
+    % 分数匝方案下 L4 的内端延伸弧已并入线圈折线、直接落在 VOUT 中心，
+    % 本分支仅作兜底（2/2 等组合的本地短贝塞尔，控制长度随弦长自适应）。
+    chord = norm(ri.voutXY - p0);
+    Lc = 0.8 * min(chord, 1.0);
+    path = sampleBezier(p0, t, ri.voutXY, -u, Lc, Lc, 129);
 elseif strcmp(name, 'TRACE_L2_OUT')
-    if ~isempty(ri.v23XY) && norm(p3 - ri.v23XY) <= 1e-9
-        % 4/4 的 L2 外端 → V23：先折向回流桥轴再转出
-        transitionEnd = (rStart - 1.5) * u;
-        bend = sampleBezier(p0, t, transitionEnd, -u, 0.5, 0.5, 129);
-        if norm(transitionEnd - p3) <= 1e-9
-            path = bend;
-        else
-            trunk = sampleSegment(transitionEnd, p3, 0.05);
-            path = [bend; trunk(2:end, :)];
-        end
-    else
-        path = sampleBezier(rStart * u, t, ri.voutXY, -u, 0.15, 0.15, 129);
-    end
+    % 分数匝方案下 L2 的内端延伸弧已并入线圈折线、直接落在 V23 中心，
+    % 本分支仅作兜底（起点切向对齐线圈到达切向，避免接头折角）。
+    chord = norm(p3 - p0);
+    Lc = 0.8 * min(chord, 1.0);
+    path = sampleBezier(p0, t, p3, -u, Lc, Lc, 129);
 else
     path = smoothLead(p0, p3, [], [], cfg);
 end
@@ -769,6 +804,66 @@ v = S - C;
 phi0 = atan2(dot(v, t), dot(v, u));
 phi = phi0 + deg2rad(90 * (0:n - 1).' / (n - 1) * turn);
 pts = C + R * (cos(phi) * u + sin(phi) * t);
+end
+
+function coils = applyInnerExtensions(cfg, activeLayers, coils, vias)
+% 4/4 内端延伸（用户设计约定）：L2 多绕 1/4 圈后内端落在 225°，经 180° 内弯
+% 弧延伸到 V23 中心；L3 的起点前置反向内弯弧从 V23 出发；L4 少绕 1/4 圈后
+% 内端落在 135°，经短贝塞尔延伸到 VOUT——过孔直接落在线圈端点上，
+% 无任何过渡走线（全部铜箔为同心螺旋 + 过孔处的径向微连接）。
+if ~(cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4)
+    return;
+end
+v23 = vias(strcmp({vias.name}, 'V23'));
+vout = vias(strcmp({vias.name}, 'VOUT'));
+L2 = activeLayers(2);
+L3 = activeLayers(3);
+L4 = activeLayers(end);
+% L2 内端 → V23（180° 内弯弧，镜像外端延伸区；E 已含 clamp 保证 >0）
+S = coils{L2}(end, :);
+a = S - coils{L2}(end - 1, :);
+a = a / norm(a);
+E = norm(v23.xy - S);
+ext = smoothInwardArc(S, a, max(E, 1e-6), 61);
+coils{L2} = [coils{L2}; ext(2:end, :)];
+% L3 起点 ← V23（前置反向内弯弧）：弧以 CW 切向离开 S3，反转后到达 S3 的
+% 方向恰为 CCW 切向 a3，与螺旋起点切向对齐（直接用 a3 会反转 180°）
+S3 = coils{L3}(1, :);
+a3 = coils{L3}(2, :) - coils{L3}(1, :);
+a3 = a3 / norm(a3);
+E3 = norm(S3 - v23.xy);
+arc3 = smoothInwardArc(S3, -a3, max(E3, 1e-6), 61);
+coils{L3} = [flipud(arc3); coils{L3}(2:end, :)];
+% L4 内端 → VOUT（短贝塞尔：VOUT 带 lane 侧偏，终点切向取自然趋近方向）
+S4 = coils{L4}(end, :);
+a4 = S4 - coils{L4}(end - 1, :);
+a4 = a4 / norm(a4);
+dBack = vout.xy - S4;
+dBack = dBack / norm(dBack);
+stub = sampleBezier(S4, a4, vout.xy, dBack, 0.3, 0.3, 97);
+coils{L4} = [coils{L4}; stub(2:end, :)];
+end
+
+function xy = smoothInwardArc(S, a, E, n)
+% 内端延伸弧（镜像 smoothOutwardArc）：从线圈内端 S 沿切向 a 经 180° 圆弧
+% 过渡到径向向内，终点位于 S - E·uLoc（uLoc 为 S 的径向单位向量），
+% 内端过孔（V23/VOUT）落在弧终点。180° 弧采样密度保证逐点偏转角 < 10°。
+uLoc = S / norm(S);
+tLoc = [-uLoc(2), uLoc(1)];
+R = E / 2;
+n1 = [-a(2), a(1)];
+n2 = [a(2), -a(1)];
+if dot(n1, -uLoc) >= dot(n2, -uLoc)
+    C = S + R * n1; turn = 1;
+else
+    C = S + R * n2; turn = -1;
+end
+v = S - C;
+phi0 = atan2(dot(v, tLoc), dot(v, uLoc));
+phis = phi0 + deg2rad(180) * turn * (0:n - 1).' / (n - 1);
+xy = C + R * (cos(phis) * uLoc + sin(phis) * tLoc);
+xy(1, :) = S;
+xy(end, :) = S - E * uLoc;
 end
 
 function pts = sampleBezier(p0, d0, p3, d1, L1, L2, n)
@@ -833,10 +928,13 @@ end
 end
 
 function rPad = searchPadCenterRadius(cfg, lr, coils)
-% 焊盘对中心沿入口桥轴搜索，位于连接桥上、贴近平台角部（外围圆环与中央矩形
-% 之间的桥区入口）：焊盘中心必须在平台之外（isinterior 反向检查）、位于板内
-% （不在挖空槽中）、与孔槽保持 edgeClearance + 0.02 净距、与线圈保持
-% DRC 焊盘-走线净距；半径上限为 VOUT 预留。
+% 焊盘对中心沿入口桥轴搜索，两阶段：
+%   第一优先（经典布局）：平台外沿、贴近平台角部的桥区，自内向外扫描；
+%   回退（大平台吞没桥轴内侧区段，如 13 x 14）：在平台板面上自外向内取位，
+%   并额外为 VOUT 预留 delta+0.04 径向窗口。
+% 两阶段共用同一合法性检查：焊盘位于板内（不在挖空槽中）、与孔槽保持
+% edgeClearance + 0.02 净距、与线圈保持 DRC 焊盘-走线净距；铜-槽净距
+% 最终由 validate_result 实测把关。旧版"必须在平台外"硬约束会误杀大平台配置。
 u = lr.u;
 t = lr.t;
 holes = lr.holeLoops;
@@ -850,27 +948,34 @@ delta = sqrt(max(0, (cfg.padDiameter / 2 + cfg.viaPadDiameter / 2 + cfg.terminal
 reqCoilV = max(cfg.traceWidth + cfg.traceSpacing, ...
     cfg.viaPadDiameter / 2 + cfg.traceWidth / 2 + cfg.viaCoilSpacing) + 0.02;
 rHigh = lr.rStart - reqCoilV - delta - 0.02;
+% 平台沿入口桥轴方向的延伸半径（platformLoop 包围盒反推），决定第一阶段的起点。
+xyP = lr.platformLoop;
+halfW = max(abs(xyP(:, 1)));
+halfH = max(abs(xyP(:, 2)));
+platExtent = Inf;
+if abs(u(1)) > 1e-9
+    platExtent = min(platExtent, halfW / abs(u(1)));
+end
+if abs(u(2)) > 1e-9
+    platExtent = min(platExtent, halfH / abs(u(2)));
+end
 found = NaN;
-for r = 1.0:0.02:rHigh % 从平台侧向外搜索：焊盘贴近平台角部的桥区，为 VOUT 留出窗口
-    pA = r * u - half * t;
-    pB = r * u + half * t;
-    if norm(pA) > outerLimit || norm(pB) > outerLimit
-        continue;
+for r = (platExtent + 0.02):0.02:rHigh % 阶段一：平台外、自内向外（贴近平台角部）
+    if padFeasible(r, lr, coils, u, t, half, req, reqCoilPad, outerLimit, holes)
+        found = r;
+        break;
     end
-    if isinterior(lr.platformShape, pA(1), pA(2)) || isinterior(lr.platformShape, pB(1), pB(2))
-        continue; % 焊盘中心必须位于桥上（平台之外）
+end
+if isnan(found)
+    % 阶段二回退：平台上自外向内。额外预留 0.44 = delta + 0.04 + 0.4（入口弧
+    % 半径 R1）：焊盘下移让 VOUT 半径落在入口走线负通道的直线段内，
+    % 否则 TRACE_L1_ENTRY 的过渡弧会顶到 VOUT 半径处、破坏双通道契约。
+    for r = (rHigh - delta - 0.44):-0.02:1.0
+        if padFeasible(r, lr, coils, u, t, half, req, reqCoilPad, outerLimit, holes)
+            found = r;
+            break;
+        end
     end
-    if ~isinterior(lr.boardShape, pA(1), pA(2)) || ~isinterior(lr.boardShape, pB(1), pB(2))
-        continue; % 焊盘必须位于板内（不能在挖空槽中）
-    end
-    if minDistanceToHolesLocal(pA, holes) < req || minDistanceToHolesLocal(pB, holes) < req
-        continue;
-    end
-    if minDistanceToHolesLocal(pA, coils) < reqCoilPad || minDistanceToHolesLocal(pB, coils) < reqCoilPad
-        continue; % 焊盘不得压到线圈走线（含线圈匝间无法容纳焊盘的情形）
-    end
-    found = r;
-    break;
 end
 if isnan(found)
     error('CircularFPC:TerminalPlacementInvalid', ...
@@ -879,7 +984,29 @@ end
 rPad = found;
 end
 
-function r = searchSafeRadiusOnAxis(cfg, lr, tOffset, radius, rHigh, rLow, coils)
+function tf = padFeasible(r, lr, coils, u, t, half, req, reqCoilPad, outerLimit, holes)
+% 单个焊盘对中心候选半径的合法性检查（PAD_A/PAD_B 对称取 ±half·t）。
+pA = r * u - half * t;
+pB = r * u + half * t;
+tf = false;
+if norm(pA) > outerLimit || norm(pB) > outerLimit
+    return;
+end
+if ~isinterior(lr.boardShape, pA(1), pA(2)) || ~isinterior(lr.boardShape, pB(1), pB(2))
+    return; % 焊盘必须位于板内（不能落在挖空槽中）
+end
+if minDistanceToHolesLocal(pA, holes) < req || minDistanceToHolesLocal(pB, holes) < req
+    return;
+end
+if minDistanceToHolesLocal(pA, coils) < reqCoilPad || minDistanceToHolesLocal(pB, coils) < reqCoilPad
+    return; % 焊盘不得压到线圈走线（含线圈匝间无法容纳焊盘的情形）
+end
+tf = true;
+end
+
+function r = searchSafeRadiusOnAxis(cfg, lr, axisDir, latDir, tOffset, radius, rHigh, rLow, coils)
+% 沿 axisDir 方向的桥轴搜索安全半径：候选点 p = rr*axisDir + tOffset*latDir。
+% VOUT 沿 u 轴（lat=t），V23 沿 t 轴（lat=u，tOffset=0）。
 u = lr.u;
 t = lr.t;
 holes = lr.holeLoops;
@@ -891,7 +1018,7 @@ reqCoil = max(cfg.traceWidth + cfg.traceSpacing, ...
 outerLimit = lr.outerRadius - 0.05;
 found = NaN;
 for rr = rHigh:-0.02:rLow
-    p = rr * u + tOffset * t;
+    p = rr * axisDir + tOffset * latDir;
     if norm(p) > outerLimit
         continue;
     end

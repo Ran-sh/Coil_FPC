@@ -31,12 +31,9 @@ geom.seriesRoute = seriesRoute;
 geom.seriesSequence = seriesSequence;
 geom.activeLayers = activeLayers;
 validation = circular_fpc_validation('validate_result', cfg, eff, geom);
-% 铜线或板框出现尖角/尖点时，不得继续构建结果或进入正式导出阶段。
-hasSharpAngle = validation.minCopperInteriorAngleDeg <= ...
-    cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg || ...
-    validation.minBoardInteriorAngleDeg <= ...
-    cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg;
-if hasSharpAngle
+% 任一验证指标失败（间距/净距/连续性/角度等）一律拒绝继续，杜绝带病导出。
+% 角度类指标特别检出并给出与算法一致的错误文案；其余指标由 manufacturing 复核兜底。
+if ~validation.passed
     error('CircularFPC:ValidationFailed', ...
         'Generated geometry failed validation: %s', strjoin(validation.messages, '; '));
 end
@@ -46,6 +43,10 @@ if ~manufacturing.passed
     error('CircularFPC:ValidationFailed', ...
         'Manufacturing result checks failed: %s', strjoin(manufacturing.failures, '; '));
 end
+% 建议性提示（非错误）：平台角部超出内接圆进入桥区走廊时给出量化建议，
+% 最终可行性由上面的实测验证判定。advisories 随 result.validation 输出，
+% main 入口打印到命令行，analyze 只读入口仅携带不打印。
+validation.advisories = platformFitAdvisories(cfg, eff);
 layerPaths = buildLayerPaths(cfg.boardLayerCount, activeLayers, directions, coils, connectionPaths);
 totalLengthMm = computeTotalLength(coils, connectionPaths);
 % 直流电阻粗估：R = ρ * L / (线宽 * 铜厚)，仅几何长度估算（无电气性能声明）。
@@ -72,11 +73,68 @@ result.config = cfg;
 end
 
 function d = requiredBoardDiameter(cfg, eff)
-% 板框自动定尺寸（mm）：外径 = 2 × (线圈最外圈中心线半径 + 过孔延伸区 + 过孔焊环半径 + 板边净距)。
-% 线圈最外圈中心线半径 = 线圈内径/2 + 线宽/2 + 节距 × (匝数-1)。
-coilOuterR = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + eff.coilPitch * (cfg.turnsPerCoilLayer - 1);
-maxCopperR = coilOuterR + eff.viaEndExtension + max(cfg.traceWidth, cfg.viaPadDiameter) / 2;
+% 板框自动定尺寸（mm）：外径 = 2 × (最大铜外缘半径 + 板边净距)。
+% 最大铜外缘取两项之大：
+%   ① 基准匝数层（L1/L3）外端 + 过孔延伸区 + 端点过孔焊环半径；
+%   ② 分数匝层（4/4 的 L2 多绕 1/4 圈）外端 + 延伸区 + 半线宽。
+% 若不取 ②，极限档小焊环下 L2 外端会越过板边净距（实测 0.286 < 0.3）。
+baseSpan = cfg.turnsPerCoilLayer - 1;
+spanMax = baseSpan;
+if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+    spanMax = baseSpan + 0.25; % 4/4 的 L2 多绕 1/4 圈（L4 少绕，外端不变大）
+end
+rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
+coilOuterR = rStart + eff.coilPitch * baseSpan;
+coilOuterRMax = rStart + eff.coilPitch * spanMax;
+maxCopperR = max(coilOuterR + eff.viaEndExtension + max(cfg.traceWidth, cfg.viaPadDiameter) / 2, ...
+    coilOuterRMax + eff.viaEndExtension + cfg.traceWidth / 2);
 d = 2 * (maxCopperR + cfg.edgeClearance);
+end
+
+function msgs = platformFitAdvisories(cfg, eff)
+% 中央平台与线圈内径的内接关系检查（建议性，不报错）：
+% 平台圆角化后实际最大半径（roundedRectMaxRadius，与 validation 同式）
+% + platformSlotMargin 超出 可用半径(ID/2 - edgeClearance) 时，
+% 矩形平台四角进入四条连接桥的走廊——该处铜线本就跨越桥体，最终可行性
+% 由 validate_result 实测铜-槽净距判定；此处仅输出量化提示与两个修正建议：
+%   ① 当前内径下等比缩放平台的最大可行尺寸（二分法：缩放同步改变平台尺寸与圆角半径）；
+%   ② 容纳当前平台所需的最小线圈内径。
+msgs = {};
+usableR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
+reach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, eff.platformCornerR);
+if reach + cfg.platformSlotMargin < usableR - 1e-9
+    return;
+end
+lo = 0.0;
+hi = 1.0;
+for iter = 1:40
+    mid = (lo + hi) / 2;
+    rMid = roundedRectMaxRadius(mid * eff.centerPlatformWidth, ...
+        mid * eff.centerPlatformHeight, mid * eff.platformCornerR);
+    if rMid + cfg.platformSlotMargin < usableR
+        lo = mid;
+    else
+        hi = mid;
+    end
+end
+over = reach + cfg.platformSlotMargin - usableR;
+minID = 2 * (reach + cfg.platformSlotMargin + cfg.edgeClearance);
+msgs{end + 1} = sprintf(['Central platform %.2f x %.2f mm exceeds the inscribed circle by ', ...
+    '%.3f mm (reach %.3f + slot margin %.3f > usable radius %.3f); its corners enter the ', ...
+    'bridge corridors, where copper already crosses the bridges - final acceptance ', ...
+    'relies on measured copper-to-slot clearance. Fix options: shrink platform to at most ', ...
+    '%.2f x %.2f mm (same aspect ratio), or increase coilInnerDiameter to at least %.2f mm.'], ...
+    eff.centerPlatformWidth, eff.centerPlatformHeight, over, reach, cfg.platformSlotMargin, ...
+    usableR, lo * eff.centerPlatformWidth, lo * eff.centerPlatformHeight, minID);
+end
+
+function rMax = roundedRectMaxRadius(w, h, cornerR)
+% 圆角矩形平台边界到中心的最大半径（与 validation>assertFeasible 使用同一公式：
+% 最远点位于圆角弧上 = 弧心距离 + 半径；cornerR=0 时为尖角半对角线）。
+halfW = w / 2;
+halfH = h / 2;
+r = min(cornerR, min(halfW, halfH));
+rMax = sqrt((halfW - r)^2 + (halfH - r)^2) + r;
 end
 
 function active = activeLayerMap(cfg)

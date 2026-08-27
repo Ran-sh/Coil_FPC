@@ -19,7 +19,7 @@ function cfg = validateConfig(cfg)
 % 必须为正的有限标量数值的字段（长度/直径/净距/厚度/电阻率/采样数等）。
 numFields = {'boardOuterDiameter', 'coilInnerDiameter', 'centerPlatformWidth', ...
     'centerPlatformHeight', 'bridgeTargetWidth', 'geometryScale', 'turnsPerCoilLayer', ...
-    'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', ...
+    'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', 'platformSlotMargin', ...
     'padPairSpacing', ...
     'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', 'antipadDiameter', ...
     'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax', ...
@@ -72,6 +72,16 @@ for m = {'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
         error('CircularFPC:InvalidConfig', '%s must be empty or an Nx2 finite numeric matrix.', m{1});
     end
 end
+% 平台圆角：允许 0（直角，角度规则 >=90° 已放开）；上限在缩放后由
+% sampleRoundedRect 按 min(W,H)/2 自动截断，此处只查非负有限。
+if ~isscalar(cfg.platformCornerRadius) || ~isnumeric(cfg.platformCornerRadius) || ...
+        ~isfinite(cfg.platformCornerRadius) || cfg.platformCornerRadius < 0
+    error('CircularFPC:InvalidConfig', 'platformCornerRadius must be a nonnegative finite scalar.');
+end
+if cfg.platformCornerRadius >= min(cfg.centerPlatformWidth, cfg.centerPlatformHeight) / 2
+    error('CircularFPC:InvalidConfig', ...
+        'platformCornerRadius must be smaller than half of the smaller platform dimension.');
+end
 if ~islogical(cfg.enablePreview) || ~isscalar(cfg.enablePreview)
     error('CircularFPC:InvalidConfig', 'enablePreview must be a logical scalar.');
 end
@@ -87,9 +97,12 @@ end
 end
 
 function assertFeasible(cfg, eff)
-% 生成前可行性校验：
+% 生成前可行性校验（只做快速失败的硬检查，最终几何质量由 validate_result 实测把关）：
 %   1) 线圈所需径向跨度（线宽 + (匝数-1)*节距）必须小于环区可用跨度；
-%   2) 中央平台（含余量）必须能放进内圆环区，不能压到槽边。
+%   2) 平台最大半径不得超过 板外半径 - edgeClearance（配置荒谬时立即失败）。
+% 平台与线圈内径的"内接"关系不再硬性要求：矩形平台的四个尖角指向四条连接桥轴，
+% 超出内接圆时角部进入桥区走廊（该处铜线本就跨越桥体），是否可行取决于实测
+% 铜-槽净距；引擎会在超差时生成 ADVISORY 建议文本（见 engine>platformFitAdvisories）。
 coilPitch = eff.coilPitch;
 requiredSpan = cfg.traceWidth + (cfg.turnsPerCoilLayer - 1) * coilPitch;
 availableSpan = eff.boardOuterDiameter / 2 - cfg.edgeClearance - eff.coilInnerDiameter / 2;
@@ -97,17 +110,27 @@ if availableSpan < requiredSpan - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
         'Coil radial span %.6f mm exceeds available annulus span %.6f mm.', requiredSpan, availableSpan);
 end
-halfDiag = sqrt((eff.centerPlatformWidth / 2)^2 + (eff.centerPlatformHeight / 2)^2);
-slotMargin = 0.25;
-annulusInnerRadius = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
-if halfDiag + slotMargin >= annulusInnerRadius - 1e-9
+platReach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, eff.platformCornerR);
+if platReach >= eff.boardOuterDiameter / 2 - cfg.edgeClearance - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
-        'Central platform %.3f x %.3f mm does not fit inside the annulus.', ...
-        eff.centerPlatformWidth, eff.centerPlatformHeight);
+        ['Central platform %.3f x %.3f mm reaches %.3f mm from center, beyond ', ...
+         'the board outer radius minus edge clearance (%.3f mm).'], ...
+        eff.centerPlatformWidth, eff.centerPlatformHeight, platReach, ...
+        eff.boardOuterDiameter / 2 - cfg.edgeClearance);
 end
 if eff.bridgeTargetWidth <= 0
     error('CircularFPC:GeometryInfeasible', 'Bridge width must be positive.');
 end
+end
+
+function rMax = roundedRectMaxRadius(w, h, cornerR)
+% 圆角矩形平台边界到中心的最大半径：最远点位于四段圆角弧上，
+% = 弧心到中心的距离 + 圆角半径；cornerR=0 时退化为尖角半对角线。
+% 与 sampleRoundedRect 的形状定义一致；engine>platformFitAdvisories 使用同一公式。
+halfW = w / 2;
+halfH = h / 2;
+r = min(cornerR, min(halfW, halfH));
+rMax = sqrt((halfW - r)^2 + (halfH - r)^2) + r;
 end
 
 function v = validateResult(cfg, eff, geom)
@@ -178,7 +201,7 @@ for k = 1:numel(geom.vias)
     end
 end
 v.closedBoardLoopCount = numel(geom.boardLoops);
-v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths);
+v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths, geom.vias);
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
@@ -214,11 +237,12 @@ end
 if v.minViaCoilSpacingMm < cfg.viaCoilSpacing - 1e-9
     v.messages{end + 1} = 'via-to-coil spacing below viaCoilSpacing'; %#ok<AGROW>
 end
-if v.minCopperInteriorAngleDeg <= cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg
-    v.messages{end + 1} = 'copper path interior angle at/below 90 degrees'; %#ok<AGROW>
+% 角度规则（>= 阈值合法，含直角）：低于 阈值-容差 才算违规。
+if v.minCopperInteriorAngleDeg < cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
+    v.messages{end + 1} = 'copper path interior angle below the minimum'; %#ok<AGROW>
 end
-if v.minBoardInteriorAngleDeg <= cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg
-    v.messages{end + 1} = 'board outline interior angle at/below 90 degrees'; %#ok<AGROW>
+if v.minBoardInteriorAngleDeg < cfg.minBoardInteriorAngleDeg - cfg.angleToleranceDeg
+    v.messages{end + 1} = 'board outline interior angle below the minimum'; %#ok<AGROW>
 end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>
@@ -241,16 +265,16 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minCopperToBoardMm >= cfg.edgeClearance - 1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
-    v.minCopperInteriorAngleDeg > cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg && ...
-    v.minBoardInteriorAngleDeg > cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg && ...
+    v.minCopperInteriorAngleDeg >= cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg && ...
+    v.minBoardInteriorAngleDeg >= cfg.minBoardInteriorAngleDeg - cfg.angleToleranceDeg && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
     v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree;
 end
 
 function degMin = computeMinCopperInteriorAngle(coils, connectionPaths)
-% 所有铜走线路径（线圈 + 连接路径）的最小内角 [°]：不允许 <= 90° 的拐角
-% （180° = 直线，90° = 直角拐弯）。圆弧/贝塞尔平滑路径应远大于 90°。
+% 所有铜走线路径（线圈 + 连接路径）的最小内角 [°]（180° = 直线，90° = 直角拐弯）。
+% 规则：>= 阈值（默认 90°）合法，低于 阈值-容差 违规；圆弧/贝塞尔平滑路径应远大于 90°。
 degMin = 180;
 for li = 1:numel(coils)
     xy = coils{li};
@@ -265,7 +289,8 @@ end
 end
 
 function degMin = computeMinBoardInteriorAngle(boardLoops)
-% 板框（外边界 + 挖空槽）所有闭环的最小内角 [°]：不允许 <= 90° 的尖角。
+% 板框（外边界 + 挖空槽）所有闭环的最小内角 [°]。
+% 规则：>= 阈值（默认 90°）合法；尖角已由 filletHoleCorners 轻微圆角化。
 degMin = 180;
 for k = 1:numel(boardLoops)
     xy = boardLoops(k).xy;
@@ -408,9 +433,25 @@ ok = ~par & t >= -tol & t <= 1 + tol & u >= -tol & u <= 1 + tol;
 tf = any(ok);
 end
 
-function s = computeCopperSpacing(cfg, eff, coils, connectionPaths)
+function s = computeCopperSpacing(cfg, eff, coils, connectionPaths, pads, vias)
 dMin = inf;
 per = cfg.samplePointsPerTurn;
+% 端子列表与焊环半径：路径端点若与某端子重合，则该端子焊环+净距带内的路径点
+% 属于"端子附着铜"，其净距由 computeTerminalCoilSpacing 按其焊环规则单独把关，
+% 不参与走线间间距（否则会把并网络/同网络的端子邻接区误判为间距违规，
+% 如极端档小过孔下 V12 与 L2 匝的中心距 0.338 → 边缘 0.138 < traceSpacing 的假阳性）。
+termXY = zeros(0, 2);
+termR = zeros(0, 1);
+for k = 1:numel(pads)
+    termXY(end + 1, :) = pads(k).xy; %#ok<AGROW>
+    termR(end + 1) = pads(k).diameter / 2; %#ok<AGROW>
+end
+for k = 1:numel(vias)
+    termXY(end + 1, :) = vias(k).xy; %#ok<AGROW>
+    termR(end + 1) = vias(k).padDiameter / 2; %#ok<AGROW>
+end
+zone = @(tR, p) tR + cfg.traceWidth / 2 + cfg.traceSpacing; % 附着带半径
+nTerm = size(termXY, 1);
 for li = 1:numel(coils)
     xy = coils{li};
     if isempty(xy)
@@ -431,16 +472,32 @@ for li = 1:numel(connectionPaths)
     Q = coils{li};
     paths = connectionPaths{li};
     for k = 1:numel(paths)
-        P = paths{k};
-        if isempty(P)
+        Pfull = paths{k};
+        if isempty(Pfull)
+            continue;
+        end
+        % 端点若为端子，剔除其附着带内的路径点（端子净距单独把关）
+        keep = true(size(Pfull, 1), 1);
+        for e = 1:nTerm
+            d0 = norm(Pfull(1, :) - termXY(e, :));
+            if d0 <= 1e-9
+                keep = keep & (sqrt(sum((Pfull - termXY(e, :)).^2, 2)) >= zone(termR(e), Pfull) - 1e-9 );
+            end
+            d1 = norm(Pfull(end, :) - termXY(e, :));
+            if d1 <= 1e-9
+                keep = keep & (sqrt(sum((Pfull - termXY(e, :)).^2, 2)) >= zone(termR(e), Pfull) - 1e-9);
+            end
+        end
+        P = Pfull(keep, :);
+        if size(P, 1) < 2
             continue;
         end
         if ~isempty(Q)
             Qa = Q;
-            if norm(P(end, :) - Q(1, :)) <= 1e-6
+            if norm(Pfull(end, :) - Q(1, :)) <= 1e-6
                 Qa = Qa(min(size(Qa, 1), per + 1):end, :);
             end
-            if norm(P(1, :) - Q(end, :)) <= 1e-6
+            if norm(Pfull(1, :) - Q(end, :)) <= 1e-6
                 Qa = Qa(1:max(1, size(Qa, 1) - per), :);
             end
             if ~isempty(Qa)
@@ -456,7 +513,20 @@ for li = 1:numel(connectionPaths)
             if isempty(R)
                 continue;
             end
-            D = sqrt((P(:, 1) - R(:, 1).').^2 + (P(:, 2) - R(:, 2).').^2);
+            keepR = true(size(R, 1), 1);
+            for e = 1:nTerm
+                if norm(R(1, :) - termXY(e, :)) <= 1e-9
+                    keepR = keepR & (sqrt(sum((R - termXY(e, :)).^2, 2)) >= zone(termR(e), R) - 1e-9);
+                end
+                if norm(R(end, :) - termXY(e, :)) <= 1e-9
+                    keepR = keepR & (sqrt(sum((R - termXY(e, :)).^2, 2)) >= zone(termR(e), R) - 1e-9);
+                end
+            end
+            R2 = R(keepR, :);
+            if size(R2, 1) < 2 || size(P, 1) < 2
+                continue;
+            end
+            D = sqrt((P(:, 1) - R2(:, 1).').^2 + (P(:, 2) - R2(:, 2).').^2);
             mask = D > 1e-6;
             if any(mask(:))
                 dMin = min(dMin, min(D(mask)));

@@ -21,13 +21,15 @@ end
 % 注意：struct(...) 续行内部不能放独立注释行（MATLAB 会报语法错误），
 % 因此所有字段说明都写在 '...' 之后同行内联。
 cfg = struct( ...
-    'boardLayerCount', 2, ... % 物理板层数：2 或 4
-    'coilLayerCount', 1, ... % 活动线圈层数：与板层数只支持 2/1、2/2、4/1、4/2、4/4
+    'boardLayerCount', 4, ... % 物理板层数：2 或 4
+    'coilLayerCount', 2, ... % 活动线圈层数：与板层数只支持 2/1、2/2、4/1、4/2、4/4
     'boardOuterDiameter', 25.0, ... % 圆形板外径 [mm]（随 geometryScale 缩放；仅 boardSizingMode='fixed' 时使用）
     'boardSizingMode', 'auto', ... % 板框定尺寸方式：'auto' 由线圈匝数自动计算板框外径（推荐，输出报告板框尺寸）；'fixed' 使用 boardOuterDiameter
-    'coilInnerDiameter', 18.63, ... % 螺旋线圈最内圈直径 [mm]（随缩放）
-    'centerPlatformWidth', 13.0, ... % 中央连接平台宽度（切向）[mm]，可与高度独立配置（随缩放）
-    'centerPlatformHeight', 11.0, ... % 中央连接平台高度（径向）[mm]，默认矩形平台（随缩放）
+    'coilInnerDiameter', 18.63, ... % 螺旋线圈最内圈直径 [mm]（随缩放）；增大内径可容纳更大的中央平台
+    'centerPlatformWidth', 13.0, ... % 中央连接平台宽度（切向）[mm]（随缩放）；矩形平台四角朝向四条连接桥轴，允许伸入桥区走廊
+    'centerPlatformHeight', 14.0, ... % 中央连接平台高度（径向）[mm]（随缩放）；挖槽区域由平台/桥/内圆自动布尔运算生成
+    'platformCornerRadius', 0.2, ... % 平台矩形圆角半径 [mm]（轻微弧度化，随缩放；0 = 直角，角度规则 >=90° 允许）
+    'platformSlotMargin', 0.25, ... % 平台-内圆弧槽宽安全余量 [mm]（不随缩放）：reach+余量 超出 ID/2-edgeClearance 时输出 ADVISORY 建议值，非硬性判据
     'bridgeTargetWidth', 1.5, ... % 连接桥目标宽度 [mm]（随缩放）；实际桥宽会被验证不小于该值
     'geometryScale', 1.0, ... % 宏观几何缩放系数：只缩放上述宏观尺寸，不缩放制造参数
     'turnsPerCoilLayer', 8, ... % 每活动层匝数（默认 8；外端过孔通过径向延伸区放置，不影响线距/匝数）
@@ -47,9 +49,9 @@ cfg = struct( ...
     'viaPadDiameter', 0.55, ... % 过孔焊环（pad）外径 [mm]（默认 0.55 = 嘉立创 FPC 常规推荐；外径-内径须 >= 0.2，推荐 >= 0.25）
     'viaDrillDiameter', 0.3, ... % 过孔钻孔内径 [mm]（默认 0.3，可调；制造极限：2 层板内径>=0.1/外径>=0.3，4 层板内径>=0.15/外径>=0.35，接近极限增加费用）
     'viaCoilSpacing', 0.152, ... % 过孔焊环外缘到相邻线圈匝铜边的最小净距 [mm]（= 嘉立创 DRC Track-Via 6mil；外端过孔通过径向延伸区保证，不影响线距）
-    'minCopperInteriorAngleDeg', 90.0, ... % 铜走线路径允许的最小内角 [°]（严格大于该值；不允许 90° 及以下拐角）
-    'minBoardInteriorAngleDeg', 90.0, ... % 板框（含挖空槽）允许的最小内角 [°]（严格大于该值；槽角自动圆角化）
-    'angleToleranceDeg', 0.1, ... % 角度容差 [°]：叠加在铜线与板框最小内角阈值上（≤ 阈值+容差 即判定违规）
+    'minCopperInteriorAngleDeg', 90.0, ... % 铜走线路径允许的最小内角 [°]（>= 该值合法，含直角；低于 阈值-容差 违规）
+    'minBoardInteriorAngleDeg', 90.0, ... % 板框（含挖空槽）允许的最小内角 [°]（>= 该值合法；尖角已自动轻微圆角化）
+    'angleToleranceDeg', 0.1, ... % 角度容差 [°]：内角低于 阈值-容差 判定违规
     'antipadDiameter', 1.2, ... % 反焊盘直径 [mm]：4 层板中过孔的非连接物理层 DXF 使用
     'terminalClearance', 0.25, ... % 焊盘/过孔等端子之间的最小净距 [mm]
     'copperThickness', 0.035, ... % 铜箔厚度 [mm]，仅用于估算直流电阻
@@ -60,13 +62,19 @@ cfg = struct( ...
     'enablePreview', true, ... % 是否生成 previews/ 下的 SVG 预览文件
     'enableFigure', true, ... % 生成完成后是否在 MATLAB 桌面自动弹出图像窗口（无头环境自动跳过）
     'outputRoot', fullfile(pwd, 'circular_fpc_output'), ... % 输出根目录；正式产物在 <outputRoot>/<designName>/
-    'designName', 'Circular_FPC_2L_1C'); % 设计名（用作输出目录名），只允许字母/数字/下划线/连字符
+    'designName', 'auto'); % 设计名（用作输出目录名）：'auto' 时自动命名为 Circular_FPC_<板层>L_<线圈层>C_<年月日_时分>（如 Circular_FPC_4L_4C_20260826_1830，每次生成目录唯一）；显式指定时只允许字母/数字/下划线/连字符
 
 for f = fieldnames(overrides).'
     if ~isfield(cfg, f{1})
         error('CircularFPC:UnknownConfigField', 'Unknown config field: %s', f{1});
     end
     cfg.(f{1}) = overrides.(f{1});
+end
+% designName='auto'：在 overrides 应用完成后解析，目录名 = 层叠组合 + 年月日_时分
+% （如 Circular_FPC_4L_4C_20260826_1830），每次生成目录唯一、无需删除旧产物。
+if strcmp(cfg.designName, 'auto')
+    cfg.designName = sprintf('Circular_FPC_%dL_%dC_%s', cfg.boardLayerCount, cfg.coilLayerCount, ...
+        datestr(now, 'yyyymmdd_HHMM'));
 end
 cfg = circular_fpc_validation('validate_config', cfg);
 end

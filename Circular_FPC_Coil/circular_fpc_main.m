@@ -14,6 +14,11 @@ cfg = circular_fpc_default_config(overrides);   % 默认配置 + 覆盖 + 配置
 result = circular_fpc_engine(cfg);              % 计算几何与结果验证（不写文件）
 outputPath = circular_fpc_export('write_all', cfg, result); % 原子写入 DXF/SVG/CSV/TXT
 result.outputPath = outputPath;
+% 打印建议性提示（如平台角部超出内接圆进入桥区走廊的量化建议）。
+% 只读入口 circular_fpc_analyze 不打印，advisories 随 result.validation 携带。
+for k = 1:numel(result.validation.advisories)
+    fprintf('ADVISORY: %s\n', result.validation.advisories{k});
+end
 % 运行完成后在 MATLAB 桌面环境自动弹出图像窗口（可在窗口内另存为其他格式）。
 % 无头环境（如 CI 的 -batch 运行）自动跳过，需要时仍可手动调用 circular_fpc_plot(result)。
 if cfg.enableFigure && usejava('desktop')

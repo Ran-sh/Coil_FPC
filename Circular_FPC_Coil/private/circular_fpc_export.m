@@ -452,17 +452,29 @@ for k = 1:numel(result.vias)
     fprintf(fid, 'terminal: %s, placementRegion=%s, bridgeAngleDeg=%.6f\n', ...
         v.name, v.placementRegion, v.bridgeAngleDeg);
 end
+% 建议性提示（如平台角部超出内接圆进入桥区走廊）随摘要落盘，便于离线复查。
+for k = 1:numel(result.validation.advisories)
+    fprintf(fid, 'advisory: %s\n', result.validation.advisories{k});
+end
 fclose(fid);
 fid = fopen(fullfile(reportsDir, '04_turn_scan.csv'), 'w');
 % 与配置校验保持一致：1 匝会退化为单采样点，两种模式都从 2 匝开始扫描。
 if strcmp(cfg.boardSizingMode, 'auto')
-    % auto 模式：板框随匝数增长，报告每个匝数对应的板框外径（含过孔延伸区）。
+    % auto 模式：板框随匝数增长，报告每个匝数对应的板框外径。
+    % 4/4 分数匝（L2 多绕 1/4 圈）下按各层最大外端取 max，与引擎 requiredBoardDiameter 一致。
     fprintf(fid, 'turns,requiredRadialWidthMm,requiredBoardDiameterMm\n');
     for t = 2:cfg.turnScanMax
         req = cfg.traceWidth + (t - 1) * eff.coilPitch;
-        boardD = 2 * (eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
+        spanMax = (t - 1);
+        if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+            spanMax = (t - 1) + 0.25; % 4/4 的 L2 多绕 1/4 圈
+        end
+        termBase = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
             eff.coilPitch * (t - 1) + eff.viaEndExtension + ...
-            max(cfg.traceWidth, cfg.viaPadDiameter) / 2 + cfg.edgeClearance);
+            max(cfg.traceWidth, cfg.viaPadDiameter) / 2;
+        termFrac = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
+            eff.coilPitch * spanMax + eff.viaEndExtension + cfg.traceWidth / 2;
+        boardD = 2 * (max(termBase, termFrac) + cfg.edgeClearance);
         fprintf(fid, '%d,%.6f,%.6f\n', t, req, boardD);
     end
 else

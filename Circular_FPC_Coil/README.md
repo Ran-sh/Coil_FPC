@@ -10,7 +10,7 @@
    addpath('D:/A_Bone_healing/bone_healing_simulink/Coil/Circular_FPC_Coil');
    ```
 
-2. 单版本生成（默认 2 层 1 线圈，输出到 `outputRoot/designName`）：
+2. 单版本生成（默认按当前配置生成 4 层板 4 线圈；输出到 `outputRoot/designName`。`designName` 默认 `'auto'`，自动命名为 `Circular_FPC_<板层>L_<线圈层>C_<年月日_时分>`，如 `Circular_FPC_4L_4C_20260826_1830`——每次生成目录唯一，无需删除旧产物）：
 
    ```matlab
    cfg = circular_fpc_default_config(struct('outputRoot', 'D:/tmp/fpc_out', 'designName', 'my_coil'));
@@ -41,7 +41,9 @@
 | boardOuterDiameter | 25.0 mm | 板外径（仅 fixed 模式使用） |
 | boardSizingMode | auto | 板框定尺寸：`auto` 由线圈匝数自动计算板框外径（输出报告板框尺寸）；`fixed` 使用 boardOuterDiameter |
 | coilInnerDiameter | 18.63 mm | 线圈内径 |
-| centerPlatformWidth / Height | 13.0 / 11.0 mm | 中央连接平台尺寸（宽/高可独立配置，默认矩形；孔槽形状随平台尺寸自动生成） |
+| centerPlatformWidth / Height | 13.0 / 11.0 mm | 中央连接平台尺寸（矩形，四角朝向四条连接桥轴；孔槽由平台/桥/内圆自动布尔运算生成） |
+| platformCornerRadius | 0.2 mm | 平台矩形轻微工艺圆角半径（随缩放；0 = 直角，≥90° 规则允许） |
+| platformSlotMargin | 0.25 mm | 平台-内圆弧槽宽安全余量（不随缩放）：超出内接圆时用于计算 ADVISORY 建议值，非硬性判据 |
 | bridgeTargetWidth | 1.5 mm | 连接桥目标宽度 |
 | geometryScale | 1.0 | 宏观几何缩放 |
 | turnsPerCoilLayer | 8 | 每活动层匝数（外端过孔经延伸区放置，不影响匝数） |
@@ -53,7 +55,7 @@
 | padDiameter | 0.6096 mm（24 mil） | 外接焊盘直径（可调） |
 | viaPadDiameter / viaDrillDiameter | 0.55 / 0.3 mm | 过孔外径（焊环）/内径（钻孔），可调（默认 0.55 = 嘉立创 FPC 常规推荐）；外径-内径必须 ≥ 0.2 mm（推荐 ≥ 0.25）；制造极限：2 层板 内径 ≥ 0.1 / 外径 ≥ 0.3，4 层板 内径 ≥ 0.15 / 外径 ≥ 0.35（接近极限增加费用） |
 | viaCoilSpacing | 0.152 mm | 过孔焊环外缘到相邻线圈匝铜边的最小净距（= 嘉立创 DRC Track–Via 6 mil）；由外端过孔径向延伸区（`viaEndExtension`）保证，**不限制线距/匝数** |
-| minCopperInteriorAngleDeg / minBoardInteriorAngleDeg / angleToleranceDeg | 90.0 / 90.0 / 0.1 ° | 铜走线与板框（含挖空槽）最小内角（严格大于 90°；外端过孔延伸区用 180° 圆弧平滑过渡，槽角自动圆角化） |
+| minCopperInteriorAngleDeg / minBoardInteriorAngleDeg / angleToleranceDeg | 90.0 / 90.0 / 0.1 ° | 铜走线与板框（含挖空槽）最小内角阈值（**>= 阈值合法，含直角**；低于 阈值−容差 违规；残留尖角自动轻微圆角化，过孔延伸区为 180° 圆弧平滑过渡） |
 | antipadDiameter | 1.2 mm | 非连接层反焊盘直径 |
 | terminalClearance | 0.25 mm | 端子间最小净距 |
 | copperThickness | 0.035 mm | 铜厚（仅用于直流估算） |
@@ -63,7 +65,7 @@
 | enablePreview | true | 是否生成 SVG 预览 |
 | enableFigure | true | 运行完成后是否在 MATLAB 弹出图像窗口 |
 
-除上表外，还支持 `terminalPlacementMode`（auto/manual）、`manualPadAXY`、`manualPadBXY`、`manualSeriesViaXY`、`outputRoot`、`designName` 等字段。
+除上表外，还支持 `terminalPlacementMode`（auto/manual）、`manualPadAXY`、`manualPadBXY`、`manualSeriesViaXY`、`outputRoot`、`designName`（默认 `'auto'`，自动命名为 `Circular_FPC_<板层>L_<线圈层>C_<年月日_时分>`，目录唯一；显式指定时只允许字母/数字/下划线/连字符，且不追加时间戳）等字段。
 
 ## boardSizingMode 语义（默认 auto）
 
@@ -75,11 +77,22 @@
 
 外端过孔（V14/VRET/V12/V34 等）不再直接打在绕组端点上：线圈最外圈经 **180° 圆弧平滑过渡**到径向外伸点（`viaEndExtension = max(0, viaCoilSpacing + viaPad/2 + traceWidth/2 − coilPitch)`），过孔落在弧端，焊环与相邻匝净距自动满足 DRC（0.152 mm），**因此过孔不限制线距与匝数**，代价是板框相应变大（auto 模式自动计入）。圆弧过渡保证**走线内角严格 > 90°**（实测 ≥ 175.9°），无 ≤90° 拐角。内端过孔（VOUT）位于连接桥上，同样不影响线距。延伸量可在摘要中查看；若线距较大（节距足够），延伸量为 0。
 
-## 走线/板框角度规则（> 90°）
+## 中央平台与挖槽
 
-- 所有铜走线路径（线圈 + 连接路径）最小内角**严格 > 90°**（实测 ≥ 175.9°），外端过孔延伸区为 180° 圆弧平滑过渡，连接路径全为圆弧/贝塞尔平滑过渡；
-- 板框（含四个挖空槽）同样**严格 > 90°**：槽角（圆环弧 × 桥侧交界）自动**圆角化**（实测 ≥ 112.2°），外边界为整圆无尖角；
-- 违反任一角度规则（≤ 阈值 + 0.1° 容差）即验证失败。
+- 挖空槽**完全由配置推导**：板框 = 外圆环 ∪ 中央矩形平台 ∪ 四条连接桥 做布尔并集，剩下的空隙即 4 个孔槽；边界由"内圆弧段 + 平台直边 + 桥侧直边"组成，所有 ≤90° 尖角自动相切圆弧轻微圆角化。
+- 平台默认仅做 **0.2 mm 轻微工艺圆角**（`platformCornerRadius`，可设 0 为直角）；四个角部天然朝向四条连接桥轴（45°/135°/225°/315°），允许伸入桥区走廊——该走廊是铜线跨越线圈区的必经之路，桥宽公式已保证两侧净距。
+- **软内接判据**：当平台圆角后实际最大半径 + `platformSlotMargin` 超出 `ID/2 − edgeClearance` 时不再报错，而是输出 **ADVISORY** 提示（命令行、设计摘要各一份），给出超出量与两个修正建议（等比缩放最大尺寸 / 所需最小内径）。最终可行性由实测把关：铜-槽净距 < edgeClearance、板框闭环数 ≠5 等仍会硬失败。例如内径 φ18.63 下 13×14 可正常生成（角部落入桥走廊）；20×11 角部越过走廊会被实测净距拒绝。
+- 仅有的平台硬错误：平台最大半径 ≥ 板外半径 − edgeClearance（配置荒谬时快速失败）。
+
+## 连接桥参数
+
+连接桥只需设置目标宽度 `bridgeTargetWidth`；桥**长**为推导值（平台边缘到外环的间隙，随平台/匝数/内径自动变化）。入口桥（135°）与回流桥（315°）会在目标宽度基础上自动加宽以容纳焊盘对、双通道走线与过孔净距（实际宽度写入摘要 `actualBridgeWidth`）。
+
+## 走线/板框角度规则（>= 90°）
+
+- 所有铜走线路径（线圈 + 连接路径）与板框（含挖空槽）的最小内角 **>= 阈值即合法（含直角）**，低于 `阈值 − angleToleranceDeg` 判定违规；
+- 挖槽区域所有 ≤90° 尖角自动轻微圆角化；铜走线仍全程圆弧/贝塞尔平滑（实测远大于 90°）；
+- 违反角度规则即验证失败，不产生正式输出。
 
 ## geometryScale 语义
 
@@ -96,6 +109,7 @@
 | 4/4 | L1, L2, L3, L4 | 四活动层 |
 
 - 奇数序号活动线圈按 CCW（逆时针）由内向外绕；偶数序号按 CW（顺时针）由外向内绕。
+- 4 层 4 线圈（4/4）采用**分数匝直连**：L1 绕 8 匝@θ（默认 135°）、L2 绕 8.25 匝@θ+90（外端 θ 接 V12、内端 θ+90 接 V23）、L3 绕 8 匝@θ+90、L4 绕 7.75 匝@θ（外端 θ+90 接 V34、内端 θ 接 VOUT）——L2/L4 的内端经 180° 内弯弧直接延伸到过孔中心，**无过渡走线**（全部铜箔为同心螺旋），四层平均匝数恰为 turnsPerCoilLayer；V23/V34 位于 θ+90 桥侧。
 - 2/1 与 4/1 因 PAD_A/PAD_B 仅位于 L1，单线圈的外端经 VRET 到最高物理层（L2 或 L4），在该层用 RETURN 铜线回到中央 VOUT，再经 VOUT 回 L1 接 PAD_B。该回流层**不是额外线圈**，其 `isActiveCoilLayer=false`。
 
 ## 焊盘、过孔与反焊盘
@@ -109,7 +123,7 @@
 
 - `padPairSpacing=2.0`（单位 mm）是 PAD_A/PAD_B 沿连接角切向并排的中心距，不随 `geometryScale` 缩放；**PAD_A/PAD_B 位于入口桥上**（外围圆环与中央矩形之间的连接区域），入口桥宽度自动容纳焊盘对（`padPairSpacing + padDiameter + 2×edgeClearance`）。
 - 入口桥采用双通道：进线通道（PAD_A → 线圈内端）与出线通道（VOUT → PAD_B）沿焊盘对切向并排布置，通道半距为 `(traceWidth + traceSpacing) / 2`。
-- 每个端子在 `result` 中带有 `placementRegion` 与 `bridgeAngleDeg`：自动模式下 PAD_A/PAD_B 为 `ENTRY_BRIDGE`（角度取 `connectionAngleDeg`，默认 135°）；`VOUT` 为 `ENTRY_BRIDGE`（135°）；`VRET`/`V12`/`V14`/`V34` 为 `OUTER_COIL_ENDPOINT`（V34 在回流桥侧，取 315°）；`V23` 为 `RETURN_BRIDGE`（315°）。手动模式全部为 `MANUAL`，`bridgeAngleDeg=NaN`。
+- 每个端子在 `result` 中带有 `placementRegion` 与 `bridgeAngleDeg`：自动模式下 PAD_A/PAD_B 为 `ENTRY_BRIDGE`（角度取 `connectionAngleDeg`，默认 135°）；`VOUT` 为 `ENTRY_BRIDGE`（135°）；`VRET`/`V12`/`V14` 为 `OUTER_COIL_ENDPOINT`；4/4 的 `V23`/`V34` 位于 θ+90 桥侧（默认 225°，`V23` 的 `placementRegion` 为 `RETURN_BRIDGE`）。手动模式全部为 `MANUAL`，`bridgeAngleDeg=NaN`。
 - 五种层叠的过孔映射：2/1 与 4/1 为 `VRET`（回流外端）+ `VOUT`（输出回流）；2/2 为 `V12` + `VOUT`；4/2 为 `V14` + `VOUT`；4/4 为 `V12`、`V23`、`V34`、`VOUT`。
 - `01_pad_via_coordinates.csv` 保留原有 11 列 `name,xMm,yMm,diameterMm,drillMm,antipadDiameterMm,layer,fromLayer,toLayer,removable,role`，末尾追加 `placementRegion`、`bridgeAngleDeg`（角度保留 6 位小数，`NaN` 输出字面量 `NaN`）。
 - 预览中，每个焊盘/过孔圆后带有可见文本标签 `NAME [REGION] angle=...deg`，并写入 `data-name`、`data-placement-region`、`data-bridge-angle-deg` 属性（XML 特殊字符已转义）；`03_design_summary.txt` 同样记录 `connectionAngleDeg`、`padPairSpacing` 与逐端子区域/角度。每层单独预览（`03_preview_layer_L1_top.svg` 起）仅绘制该层铜与板框：L1 含焊盘，各层含与该层相连的过孔。
@@ -142,6 +156,10 @@ DXF 单位为毫米且 1:1，格式为 AutoCAD R2000（AC1015：含 `$ACADVER` �
 - 不支持的板层/线圈层组合会报 `CircularFPC:UnsupportedLayerCombination`，不会静默压缩线距、减少匝数或移动中央平台。
 - 几何不可行（如平台过大、缩放过小）会报 `CircularFPC:GeometryInfeasible`，且不留下正式输出目录。
 - 正式输出目录已存在时报告 `CircularFPC:OutputExists`，不覆盖旧产物。
+
+**边界行为**：
+- `geometryScale` 过度缩小（约 <0.5）时，制造参数（线宽/过孔）不随缩放，4 层等组合可能几何不可行（如 V23 报铜-槽净距不足）——属预期限制，需增大平台/内径或避免过度缩小；
+- 任何验证指标（间距/净距/连续性/角度）失败都会**拒绝导出**，不会留下带病产物（`CircularFPC:ValidationFailed`）。
 
 ## 与论文几何的差异
 
