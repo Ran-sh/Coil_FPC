@@ -66,12 +66,11 @@ verifyError(testCase, @() analyzeInternal(struct( ...
     'CircularFPC:TerminalPlacementInvalid');
 end
 
-function testAntipadProtectsEveryUnconnectedCopperLayer(testCase)
-% The configured antipad, not merely the drill, is the no-copper envelope.
-verifyError(testCase, @() analyzeInternal(struct( ...
-    'boardLayerCount', 4, 'coilLayerCount', 4, ...
-    'antipadDiameter', 20, 'designName', 'antipad_must_clear_copper')), ...
-    'CircularFPC:GeometryInfeasible');
+function testAntipadIsNotAPublicGeometryControl(testCase)
+% These are ordinary plated through-vias.  A separate large antipad is not
+% part of this signal-layer FPC geometry and must not remain in the config API.
+verifyError(testCase, @() circular_fpc_default_config(struct( ...
+    'antipadDiameter', 1.2)), 'CircularFPC:UnknownConfigField');
 end
 
 function testCopperSpacingUsesContinuousSegments(testCase)
@@ -84,7 +83,7 @@ verifyError(testCase, @() analyzeInternal(struct( ...
     'CircularFPC:ValidationFailed');
 end
 
-function testLayerPreviewDistinguishesCopperRingAndAntipad(testCase)
+function testLayerPreviewShowsIdenticalThroughViasOnEveryLayer(testCase)
 root = tempname;
 mkdir(root);
 cleanup = onCleanup(@() removeTree(root)); %#ok<NASGU>
@@ -93,17 +92,28 @@ result = circular_fpc_main(struct( ...
     'analysisOnly', false, 'enableFigure', false, 'enablePreview', true, ...
     'outputRoot', root, 'designName', 'layer_via_semantics'));
 
-v12 = result.vias(strcmp({result.vias.name}, 'V12'));
-verifyEqual(testCase, sort([v12.fromLayer, v12.toLayer]), [1 2]);
-layer1 = fullfile(result.outputPath, 'previews', '03_preview_layer_L1_top.svg');
-layer3 = fullfile(result.outputPath, 'previews', '05_preview_layer_L3_inner2.svg');
-svg1 = fileread(layer1);
-svg3 = fileread(layer3);
-verifyTrue(testCase, contains(svg1, 'data-via-name="V12" data-via-role="copper-ring"'));
-verifyTrue(testCase, contains(svg3, 'data-via-name="V12" data-via-role="antipad"'));
-verifyTrue(testCase, contains(svg3, 'data-via-name="V12" data-via-role="drill"'));
-verifyFalse(testCase, contains(svg3, 'data-via-name="V12" data-via-role="copper-ring"'));
-verifyFalse(testCase, contains(svg3, 'stroke-dasharray'));
+verifyEqual(testCase, [result.vias.padDiameter], ...
+    repmat(result.config.viaPadDiameter, 1, numel(result.vias)), 'AbsTol', 1e-12);
+verifyEqual(testCase, [result.vias.drillDiameter], ...
+    repmat(result.config.viaDrillDiameter, 1, numel(result.vias)), 'AbsTol', 1e-12);
+layerFiles = { ...
+    '03_preview_layer_L1_top.svg', ...
+    '04_preview_layer_L2_inner1.svg', ...
+    '05_preview_layer_L3_inner2.svg', ...
+    '06_preview_layer_L4_bottom.svg'};
+for li = 1:numel(layerFiles)
+    svg = fileread(fullfile(result.outputPath, 'previews', layerFiles{li}));
+    for k = 1:numel(result.vias)
+        name = result.vias(k).name;
+        verifyTrue(testCase, contains(svg, sprintf( ...
+            'data-via-name="%s" data-via-role="copper-ring"', name)));
+        verifyTrue(testCase, contains(svg, sprintf( ...
+            'data-via-name="%s" data-via-role="drill"', name)));
+    end
+    verifyFalse(testCase, contains(svg, 'data-via-role="antipad"'));
+    verifyFalse(testCase, contains(svg, '#ffcc1a'));
+    verifyFalse(testCase, contains(svg, 'stroke-dasharray'));
+end
 end
 
 function result = analyzeInternal(overrides)

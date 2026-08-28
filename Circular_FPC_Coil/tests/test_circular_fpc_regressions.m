@@ -16,7 +16,7 @@ verifyEqual(testCase, cfg.boardLayerCount, 4);
 verifyEqual(testCase, cfg.coilLayerCount, 4);
 verifyEqual(testCase, cfg.boardOuterDiameter, 25.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.boardSizingMode, 'auto'); % 默认匝数驱动板框尺寸
-verifyEqual(testCase, cfg.coilInnerDiameter, 20.21, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.bridgeTargetWidth, 1.5, 'AbsTol', 1e-9);
@@ -41,6 +41,7 @@ verifyEqual(testCase, size(cfg.manualSeriesViaXY), [0 2]);
 verifyTrue(testCase, isfield(cfg, 'padDiameter'));
 verifyTrue(testCase, isfield(cfg, 'viaDrillDiameter'));
 verifyTrue(testCase, isfield(cfg, 'viaPadDiameter'));
+verifyFalse(testCase, isfield(cfg, 'antipadDiameter'));
 verifyTrue(testCase, isfield(cfg, 'outputRoot'));
 verifyTrue(testCase, isfield(cfg, 'designName'));
 verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % 平台到内圆环的硬槽宽余量
@@ -89,7 +90,12 @@ verifyError(testCase, @() circular_fpc_default_config(struct('boardSizingMode', 
     'CircularFPC:InvalidConfig');
 outRoot = createTempOutput(testCase);
 rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board'));
-verifyEqual(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 28.063360125, 'AbsTol', 1e-6);
+verifyGreaterThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 25.7);
+verifyLessThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 26.1);
+rTwo = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board_2l', ...
+    'boardLayerCount', 2, 'coilLayerCount', 2));
+verifyGreaterThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.2);
+verifyLessThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.6);
 verifyTrue(testCase, contains(fileread(fullfile(rAuto.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: auto'));
 turnTxt = fileread(fullfile(rAuto.outputPath, 'reports', '04_turn_scan.csv'));
 verifyTrue(testCase, contains(turnTxt, 'requiredBoardDiameterMm'));
@@ -97,20 +103,15 @@ verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 5 * 0.355))); % 6
 % 匝数扫描只列出几何生成器支持的范围：至少两个径向采样层级。
 verifyEmpty(testCase, regexp(turnTxt, '(?m)^1,', 'once'));
 verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
-% fixed 25.0（小于 auto 所需 27.503001）：环区径向空间不足，
+% fixed 25.0 小于默认线圈/过孔所需尺寸：环区径向空间不足，
 % 在几何可行性阶段明确拒绝，原子导出不留正式目录。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
     'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
-% fixed 28.0 虽能容纳基础线圈，但不足以同时满足最终 antipad/过孔板边闭合。
-verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
-    'designName', 'fixed_board_280', 'boardSizingMode', 'fixed', ...
-    'boardOuterDiameter', 28.0)), 'CircularFPC:ValidationFailed');
-verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board_280')));
-% fixed 29.0 大于最终 auto 所需：成功，板径/制造报告/扫描契约保持。
-rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_290', ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 29.0));
-verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 29.0, 'AbsTol', 1e-9);
+% fixed 26.5 大于默认紧凑 auto 尺寸：成功，板径/制造报告/扫描契约保持。
+rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_265', ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.5));
+verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 26.5, 'AbsTol', 1e-9);
 verifyTrue(testCase, rFixed.manufacturing.passed);
 verifyTrue(testCase, contains(fileread(fullfile(rFixed.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: fixed'));
 fixedTurnTxt = fileread(fullfile(rFixed.outputPath, 'reports', '04_turn_scan.csv'));
@@ -119,18 +120,15 @@ verifyNotEmpty(testCase, regexp(fixedTurnTxt, '(?m)^2,', 'once'));
 end
 
 function testPlatformRectangleBridgeCorridorAndAdvisory(testCase)
-% 平台矩形化 + 内径硬约束（严格 >90° 角度规则配套）：
-%   1) 默认 20.21 mm 内径完整容纳 13x14 平台、槽余量和铜到槽净距；
-%   2) 过小内径必须在布尔运算前明确拒绝，不能形成天然四角桥；
-%   2) 平台远超板外半径：预检硬错误 GeometryInfeasible；
-%   3) 超大平台越过走廊（20x11）：统一桥宽参与最终布尔运算后，槽拓扑直接失败。
+% 先画精确正向 13x14 平台，再由 18.63 mm 内圆和四个统一宽度的
+% 对角连接区自然形成四槽；不得强迫矩形四角完全缩进内圆。
 res = analyzeInternal(struct('centerPlatformWidth', 13.0, 'centerPlatformHeight', 14.0));
 verifyTrue(testCase, res.validation.passed);
 verifyGreaterThanOrEqual(testCase, res.validation.minCopperToSlotsMm, cfgEdgeClearanceForCheck(testCase) - 1e-9);
 verifyEmpty(testCase, res.validation.advisories);
 verifyEqual(testCase, res.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
-verifyError(testCase, @() analyzeInternal(struct('coilInnerDiameter', 20.20)), ...
-    'CircularFPC:GeometryInfeasible');
+verifyEqual(testCase, res.effectiveDimensions.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
+verifyEqual(testCase, numel(res.boardLoops), 5);
 verifyError(testCase, @() analyzeInternal(struct('centerPlatformWidth', 30.0, ...
     'centerPlatformHeight', 30.0)), 'CircularFPC:GeometryInfeasible');
 % 超大平台（20x11）：四条桥统一加宽后由最终布尔槽拓扑拒绝。
@@ -150,6 +148,8 @@ res = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
 verifyTrue(testCase, res.validation.passed, ...
     sprintf('4/4 validation failed: %s', strjoin(res.validation.messages, ' | ')));
 verifyGreaterThanOrEqual(testCase, res.validation.minViaToNonConnectedCopperMm, 0.176 - 1e-9);
+verifyGreaterThanOrEqual(testCase, res.validation.minViaPadToNonConnectedCopperMm, ...
+    res.config.viaCoilSpacing - 1e-9);
 verifyGreaterThanOrEqual(testCase, res.validation.minViaToBoardMm, res.config.edgeClearance - 1e-9);
 verifyGreaterThanOrEqual(testCase, res.validation.minDrillToBoardMm, 0.176 - 1e-9);
 verifyEmpty(testCase, res.layerPaths(3).connectionPaths, 'L3 must have no transition traces');
@@ -207,15 +207,14 @@ rMaxL4 = max(sqrt(sum(res.layerPaths(4).coilXY.^2, 2)));
 verifyEqual(testCase, rMaxL2, rMaxL1, 'AbsTol', 1e-9);
 verifyEqual(testCase, rMaxL4, rMaxL3, 'AbsTol', 1e-9);
 verifyGreaterThan(testCase, rMaxL2, rStart + 7.25 * pitch);
-% V23 位置：theta+90 桥轴；径向偏移使用连接层焊环净距与非连接层
-% antipad 包络二者中较大的约束，并留 1 um 数值裕量。
+% V23 位置：theta+90 桥轴；径向偏移使用真实 0.55 mm 过孔焊环
+% 到走线的净距，并留 1 um 数值裕量。
 v23 = res.vias(strcmp({res.vias.name}, 'V23'));
 verifyEqual(testCase, numel(v23), 1);
 uAxis = [cosd(res.config.connectionAngleDeg), sind(res.config.connectionAngleDeg)];
 verifyTrue(testCase, abs(dot(v23.xy, uAxis)) <= 1e-6, ...
     'V23 must lie on the theta+90 bridge axis');
-keepoutR = max(res.config.viaCoilSpacing + res.config.viaPadDiameter / 2, ...
-    res.config.antipadDiameter / 2);
+keepoutR = res.config.viaCoilSpacing + res.config.viaPadDiameter / 2;
 expectedRV23 = rStart - (keepoutR + res.config.traceWidth / 2 + 1e-3 - 0.25 * pitch);
 verifyEqual(testCase, norm(v23.xy), expectedRV23, 'AbsTol', 1e-6);
 % 13x14 平台下 4/4 仍可生成
@@ -404,8 +403,9 @@ verifyEmpty(testCase, warningId);
 verifyEqual(testCase, result.boardLayerCount, 4);
 verifyEqual(testCase, result.coilLayerCount, 4);
 verifyEqual(testCase, result.activeCoilLayers, [1 2 3 4]);
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 28.063360125, 'AbsTol', 1e-6); % auto：闭合最终 antipad、外端过孔与板边净距
-verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 20.21, 'AbsTol', 1e-9);
+verifyGreaterThan(testCase, result.effectiveDimensions.boardOuterDiameter, 25.7);
+verifyLessThan(testCase, result.effectiveDimensions.boardOuterDiameter, 26.1);
+verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 1.5, 'AbsTol', 1e-9);
@@ -494,8 +494,9 @@ if isfield(base, 'padPairSpacing') && isfield(scaled, 'padPairSpacing')
 end
 outRoot = createTempOutput(testCase);
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'scaled_geometry', 'geometryScale', 2.0));
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 48.258162828, 'AbsTol', 1e-6); % auto+scale2：含最终 antipad 与跨层净距
-verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 40.42, 'AbsTol', 1e-9);
+verifyGreaterThan(testCase, result.effectiveDimensions.boardOuterDiameter, 43.0);
+verifyLessThan(testCase, result.effectiveDimensions.boardOuterDiameter, 46.0);
+verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 37.26, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 26.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
@@ -505,7 +506,9 @@ fullSvg = fullfile(result.outputPath, 'previews', '01_preview_full.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
-    verifyTrue(testCase, contains(svgTxt, 'viewBox="-24.629081 -24.629081 49.258163 49.258163"')); % auto+scale2 板径/2+0.5
+    extent = result.effectiveDimensions.boardOuterDiameter / 2 + 0.5;
+    verifyTrue(testCase, contains(svgTxt, sprintf('viewBox="%.6f %.6f %.6f %.6f"', ...
+        -extent, -extent, 2 * extent, 2 * extent)));
 end
 end
 
@@ -669,7 +672,7 @@ for k = 1:size(combos, 1)
             end
             verifyTrue(testCase, all(abs(w43 - result.config.traceWidth) <= 1e-9), ...
                 sprintf('physical %s group 43 must equal cfg.traceWidth', physFile));
-            viaIds = find([result.vias.fromLayer] == li | [result.vias.toLayer] == li);
+            viaIds = 1:numel(result.vias);
             pc = dxfCircles(physTxt);
             if li == 1
                 verifyTrue(testCase, contains(physTxt, 'PAD_L1'), ...
@@ -697,26 +700,7 @@ for k = 1:size(combos, 1)
                 sprintf('physical %s total circle count', physFile));
         end
         keepFile = fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li));
-        verifyTrue(testCase, isfile(keepFile), sprintf('missing keepout %s', keepFile));
-        if isfile(keepFile)
-            keepTxt = fileread(keepFile);
-            verifyDxfBase(testCase, keepTxt, keepFile);
-            verifyFalse(testCase, contains(keepTxt, 'COPPER_PHYSICAL'), ...
-                sprintf('keepout %s must not contain copper traces', keepFile));
-            keepLayer = sprintf('ANTIPAD_KEEPOUT_L%d', li);
-            verifyTrue(testCase, contains(keepTxt, keepLayer), ...
-                sprintf('keepout %s must declare %s layer even with 0 circles', keepFile, keepLayer));
-            kc = dxfCircles(keepTxt);
-            keepIds = find(~([result.vias.fromLayer] == li | [result.vias.toLayer] == li));
-            verifyEqual(testCase, numel(kc), numel(keepIds), ...
-                sprintf('keepout %s circle count', keepFile));
-            verifyTrue(testCase, all(strcmp({kc.layer}, keepLayer)), ...
-                'keepout circles must use ANTIPAD_KEEPOUT_Ln layer');
-            if ~isempty(kc)
-                verifyTrue(testCase, all(abs([kc.r] - result.config.antipadDiameter / 2) <= 1e-9), ...
-                    'keepout circle radii must equal antipadDiameter/2');
-            end
-        end
+        verifyFalse(testCase, isfile(keepFile), sprintf('obsolete antipad keepout must not exist: %s', keepFile));
     end
 end
 end
@@ -975,7 +959,7 @@ verifyEqual(testCase, char(rootZone.getTagName), 'svg');
 verifyExportedTerminalMetadata(testCase, result);
 tPadVia = readtable(csvPadVia);
 verifyGreaterThanOrEqual(testCase, height(tPadVia), 2);
-verifyTrue(testCase, any(strcmp(tPadVia.Properties.VariableNames, 'antipadDiameterMm')));
+verifyFalse(testCase, any(strcmp(tPadVia.Properties.VariableNames, 'antipadDiameterMm')));
 verifyTrue(testCase, any(strcmp(tPadVia.Properties.VariableNames, 'role')));
 tLayer = readtable(csvLayerMap);
 verifyEqual(testCase, height(tLayer), cfg.boardLayerCount);
@@ -1046,7 +1030,7 @@ if isfile(csvManifest)
     verifyFalse(testCase, any(strcmp(rel8, 'reports/08_file_manifest.csv')), ...
         '08 manifest must not list itself');
     roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', ...
-        'antipad_keepout', 'preview', 'report', 'generation_status'};
+        'preview', 'report', 'generation_status'};
     verifyTrue(testCase, all(ismember(string(t8.role), roles8)), ...
         '08 manifest roles must come from the fixed vocabulary');
     verifyFalse(testCase, any(startsWith(rel8, '/')), ...
@@ -1526,11 +1510,11 @@ if ~isfile(csvPath)
     return;
 end
 t = readtable(csvPath);
-expectedColumns = {'name', 'xMm', 'yMm', 'diameterMm', 'drillMm', 'antipadDiameterMm', ...
+expectedColumns = {'name', 'xMm', 'yMm', 'diameterMm', 'drillMm', ...
     'layer', 'fromLayer', 'toLayer', 'removable', 'role', ...
     'placementRegion', 'bridgeAngleDeg'};
 verifyEqual(testCase, t.Properties.VariableNames, expectedColumns, ...
-    'CSV columns must be the old 11 followed by placementRegion and bridgeAngleDeg');
+    'CSV columns must describe only physical pads/vias and terminal placement metadata');
 if ~all(ismember({'placementRegion', 'bridgeAngleDeg'}, t.Properties.VariableNames))
     return;
 end
