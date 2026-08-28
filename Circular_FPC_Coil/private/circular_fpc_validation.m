@@ -19,8 +19,9 @@ function cfg = validateConfig(cfg)
 % 必须为正的有限标量数值的字段（长度/直径/净距/厚度/电阻率/采样数等）。
 numFields = {'boardOuterDiameter', 'coilInnerDiameter', 'centerPlatformWidth', ...
     'centerPlatformHeight', 'bridgeTargetWidth', 'geometryScale', 'turnsPerCoilLayer', ...
-    'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', 'platformSlotMargin', ...
-    'padPairSpacing', ...
+    'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', 'boardOutlineLineWidth', ...
+    'platformSlotMargin', ...
+    'padPairSpacing', 'terminalLeadSpacing', 'terminalLeadLength', ...
     'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', 'antipadDiameter', ...
     'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax', ...
     'minCopperInteriorAngleDeg', 'minBoardInteriorAngleDeg', 'angleToleranceDeg'};
@@ -72,21 +73,21 @@ for m = {'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
         error('CircularFPC:InvalidConfig', '%s must be empty or an Nx2 finite numeric matrix.', m{1});
     end
 end
-% 平台圆角：允许 0（直角，角度规则 >=90° 已放开）；上限在缩放后由
-% sampleRoundedRect 按 min(W,H)/2 自动截断，此处只查非负有限。
-if ~isscalar(cfg.platformCornerRadius) || ~isnumeric(cfg.platformCornerRadius) || ...
-        ~isfinite(cfg.platformCornerRadius) || cfg.platformCornerRadius < 0
-    error('CircularFPC:InvalidConfig', 'platformCornerRadius must be a nonnegative finite scalar.');
-end
-if cfg.platformCornerRadius >= min(cfg.centerPlatformWidth, cfg.centerPlatformHeight) / 2
-    error('CircularFPC:InvalidConfig', ...
-        'platformCornerRadius must be smaller than half of the smaller platform dimension.');
+if strcmp(cfg.terminalPlacementMode, 'auto') && ...
+        cfg.terminalLeadSpacing < cfg.padDiameter + cfg.terminalClearance - 1e-9
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        ['terminalLeadSpacing d=%.6f mm is too small for PAD diameter %.6f mm ', ...
+         'plus terminal clearance %.6f mm.'], ...
+        cfg.terminalLeadSpacing, cfg.padDiameter, cfg.terminalClearance);
 end
 if ~islogical(cfg.enablePreview) || ~isscalar(cfg.enablePreview)
     error('CircularFPC:InvalidConfig', 'enablePreview must be a logical scalar.');
 end
 if ~islogical(cfg.enableFigure) || ~isscalar(cfg.enableFigure)
     error('CircularFPC:InvalidConfig', 'enableFigure must be a logical scalar.');
+end
+if ~islogical(cfg.analysisOnly) || ~isscalar(cfg.analysisOnly)
+    error('CircularFPC:InvalidConfig', 'analysisOnly must be a logical scalar.');
 end
 if ~ischar(cfg.designName) || isempty(regexp(cfg.designName, '^[A-Za-z0-9_-]+$', 'once'))
     error('CircularFPC:InvalidConfig', 'designName must match [A-Za-z0-9_-]+.');
@@ -100,23 +101,36 @@ function assertFeasible(cfg, eff)
 % 生成前可行性校验（只做快速失败的硬检查，最终几何质量由 validate_result 实测把关）：
 %   1) 线圈所需径向跨度（线宽 + (匝数-1)*节距）必须小于环区可用跨度；
 %   2) 平台最大半径不得超过 板外半径 - edgeClearance（配置荒谬时立即失败）。
-% 平台与线圈内径的"内接"关系不再硬性要求：矩形平台的四个尖角指向四条连接桥轴，
-% 超出内接圆时角部进入桥区走廊（该处铜线本就跨越桥体），是否可行取决于实测
-% 铜-槽净距；引擎会在超差时生成 ADVISORY 建议文本（见 engine>platformFitAdvisories）。
+% 平台与线圈内径必须保留完整的槽余量。否则矩形四角会直接粘到圆环，
+% 再叠加随 connectionAngleDeg 旋转的四条桥后产生八槽；若切开该粘连又会
+% 切到圆形线圈下方。该条件必须在布尔运算前明确拒绝。
 coilPitch = eff.coilPitch;
 requiredSpan = cfg.traceWidth + (cfg.turnsPerCoilLayer - 1) * coilPitch;
-availableSpan = eff.boardOuterDiameter / 2 - cfg.edgeClearance - eff.coilInnerDiameter / 2;
+boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+availableSpan = boardEdgeInnerR - cfg.edgeClearance - eff.coilInnerDiameter / 2;
 if availableSpan < requiredSpan - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
         'Coil radial span %.6f mm exceeds available annulus span %.6f mm.', requiredSpan, availableSpan);
 end
-platReach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, eff.platformCornerR);
-if platReach >= eff.boardOuterDiameter / 2 - cfg.edgeClearance - 1e-9
+platReach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, 0);
+usableInnerR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
+requiredInnerR = platReach + cfg.platformSlotMargin;
+if usableInnerR < requiredInnerR - 1e-9
+    minCoilInnerDiameter = 2 * (requiredInnerR + cfg.edgeClearance);
+    error('CircularFPC:GeometryInfeasible', ...
+        ['coilInnerDiameter %.6f mm is too small for the complete axis-aligned ', ...
+         '%.3f x %.3f mm platform, %.3f mm slot margin, and %.3f mm copper-to-slot ', ...
+         'clearance. Use at least %.6f mm; otherwise the platform corners create ', ...
+         'four unintended bridges and the rotated bridge set produces eight slots.'], ...
+        eff.coilInnerDiameter, eff.centerPlatformWidth, eff.centerPlatformHeight, ...
+        cfg.platformSlotMargin, cfg.edgeClearance, minCoilInnerDiameter);
+end
+if platReach >= boardEdgeInnerR - cfg.edgeClearance - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
         ['Central platform %.3f x %.3f mm reaches %.3f mm from center, beyond ', ...
          'the board outer radius minus edge clearance (%.3f mm).'], ...
         eff.centerPlatformWidth, eff.centerPlatformHeight, platReach, ...
-        eff.boardOuterDiameter / 2 - cfg.edgeClearance);
+        boardEdgeInnerR - cfg.edgeClearance);
 end
 if eff.bridgeTargetWidth <= 0
     error('CircularFPC:GeometryInfeasible', 'Bridge width must be positive.');
@@ -126,7 +140,8 @@ end
 function rMax = roundedRectMaxRadius(w, h, cornerR)
 % 圆角矩形平台边界到中心的最大半径：最远点位于四段圆角弧上，
 % = 弧心到中心的距离 + 圆角半径；cornerR=0 时退化为尖角半对角线。
-% 与 sampleRoundedRect 的形状定义一致；engine>platformFitAdvisories 使用同一公式。
+% 正向矩形平台 cornerR=0 时为尖角半对角线；engine>platformFitAdvisories
+% 使用同一公式。
 halfW = w / 2;
 halfH = h / 2;
 r = min(cornerR, min(halfW, halfH));
@@ -141,6 +156,9 @@ function v = validateResult(cfg, eff, geom)
 %   closedBoardLoopCount   : 板框闭环数（必须为 5 = 1 外边界 + 4 孔槽）
 %   minCopperSpacingMm     : 铜线之间最小净距（须 ≥ traceSpacing）
 %   minCopperToBoardMm     : 铜到板外缘最小距离（须 ≥ edgeClearance）
+%   minViaToBoardMm        : 过孔焊盘切线到板框线内侧的最小距离
+%   minDrillToBoardMm      : 钻孔切线到板框线内侧的最小距离
+%   minViaToNonConnectedCopperMm : 通孔钻孔切线到非连接层铜的最小距离
 %   minCopperToSlotsMm     : 铜/端子到孔槽最小距离（须 ≥ edgeClearance）
 %   minPadViaClearanceMm   : 焊盘/过孔端子间最小净距
 %   actualBridgeWidthMm    : 实际桥宽（须 ≥ bridgeTargetWidth）
@@ -202,7 +220,10 @@ for k = 1:numel(geom.vias)
 end
 v.closedBoardLoopCount = numel(geom.boardLoops);
 v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
-v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths, geom.vias);
+v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
+v.minViaToBoardMm = computeViaToBoard(cfg, eff, geom.vias);
+v.minDrillToBoardMm = computeDrillToBoard(cfg, eff, geom.vias);
+v.minViaToNonConnectedCopperMm = computeViaToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, geom.vias);
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
 v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
@@ -213,6 +234,16 @@ v.actualBridgeWidthMm = geom.actualBridgeWidth;
     checkSeriesRoute(geom.seriesRoute, geom.activeLayers, geom.vias);
 v.maxConnectionTurnDeg = computeMaxConnectionTurnDeg(geom.connectionPaths, geom.seriesRoute, geom.coils);
 v.viaOverlapFree = checkViaOverlap(cfg, geom.vias);
+outerViaMask = strcmp({geom.vias.role}, 'OUTER_TRANSITION');
+outerViaSweeps = [geom.vias(outerViaMask).contactSweepDeg];
+outerViaSweeps = outerViaSweeps(isfinite(outerViaSweeps));
+if isempty(outerViaSweeps)
+    v.minOuterViaContactSweepDeg = inf;
+    v.maxOuterViaContactSweepDeg = 0;
+else
+    v.minOuterViaContactSweepDeg = min(outerViaSweeps);
+    v.maxOuterViaContactSweepDeg = max(outerViaSweeps);
+end
 if ~v.finiteCoordinates
     v.messages{end + 1} = 'non-finite coordinates found'; %#ok<AGROW>
 end
@@ -231,18 +262,34 @@ end
 if v.minCopperToBoardMm < cfg.edgeClearance - 1e-9
     v.messages{end + 1} = 'copper-to-board clearance below edgeClearance'; %#ok<AGROW>
 end
+if v.minViaToBoardMm < cfg.edgeClearance - 1e-9
+    v.messages{end + 1} = 'via-pad tangent-to-board clearance below edgeClearance'; %#ok<AGROW>
+end
+mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
+if v.minDrillToBoardMm < mfRules.minDrillToBoardMm - 1e-9
+    v.messages{end + 1} = 'drill-to-board clearance below manufacturing rule'; %#ok<AGROW>
+end
+if v.minViaToNonConnectedCopperMm < mfRules.minDrillToCopperMm - 1e-9
+    v.messages{end + 1} = 'through-via drill-to-non-connected-layer copper clearance below manufacturing rule'; %#ok<AGROW>
+end
 if v.minCopperToSlotsMm < cfg.edgeClearance - 1e-9
     v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
 end
 if v.minViaCoilSpacingMm < cfg.viaCoilSpacing - 1e-9
     v.messages{end + 1} = 'via-to-coil spacing below viaCoilSpacing'; %#ok<AGROW>
 end
-% 角度规则（>= 阈值合法，含直角）：低于 阈值-容差 才算违规。
-if v.minCopperInteriorAngleDeg < cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg
-    v.messages{end + 1} = 'copper path interior angle below the minimum'; %#ok<AGROW>
+% 全局角度规则：必须严格大于 阈值+数值容差；90° 直角本身不合法。
+% 生成器应以圆弧/平滑曲线消除恰好 90° 或更尖锐的接续。
+copperAngleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
+boardAngleFloor = cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg;
+if v.minCopperInteriorAngleDeg <= copperAngleFloor
+    v.messages{end + 1} = 'copper path interior angle must be strictly greater than the minimum'; %#ok<AGROW>
 end
-if v.minBoardInteriorAngleDeg < cfg.minBoardInteriorAngleDeg - cfg.angleToleranceDeg
-    v.messages{end + 1} = 'board outline interior angle below the minimum'; %#ok<AGROW>
+if v.minBoardInteriorAngleDeg <= boardAngleFloor
+    v.messages{end + 1} = 'board outline interior angle must be strictly greater than the minimum'; %#ok<AGROW>
+end
+if v.minOuterViaContactSweepDeg <= copperAngleFloor || v.maxOuterViaContactSweepDeg > 150
+    v.messages{end + 1} = 'outer via contact arc sweep must be >90 degrees and <=150 degrees'; %#ok<AGROW>
 end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>
@@ -263,10 +310,15 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.closedBoardLoopCount == 5 && ...
     v.minCopperSpacingMm >= cfg.traceSpacing - 1e-9 && ...
     v.minCopperToBoardMm >= cfg.edgeClearance - 1e-9 && ...
+    v.minViaToBoardMm >= cfg.edgeClearance - 1e-9 && ...
+    v.minDrillToBoardMm >= mfRules.minDrillToBoardMm - 1e-9 && ...
+    v.minViaToNonConnectedCopperMm >= mfRules.minDrillToCopperMm - 1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
-    v.minCopperInteriorAngleDeg >= cfg.minCopperInteriorAngleDeg - cfg.angleToleranceDeg && ...
-    v.minBoardInteriorAngleDeg >= cfg.minBoardInteriorAngleDeg - cfg.angleToleranceDeg && ...
+    v.minCopperInteriorAngleDeg > copperAngleFloor && ...
+    v.minBoardInteriorAngleDeg > boardAngleFloor && ...
+    v.minOuterViaContactSweepDeg > copperAngleFloor && ...
+    v.maxOuterViaContactSweepDeg <= 150 && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
     v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree;
@@ -274,7 +326,7 @@ end
 
 function degMin = computeMinCopperInteriorAngle(coils, connectionPaths)
 % 所有铜走线路径（线圈 + 连接路径）的最小内角 [°]（180° = 直线，90° = 直角拐弯）。
-% 规则：>= 阈值（默认 90°）合法，低于 阈值-容差 违规；圆弧/贝塞尔平滑路径应远大于 90°。
+% 规则：必须严格大于 阈值+容差（默认 >90.1°）；圆弧/贝塞尔平滑路径应远大于 90°。
 degMin = 180;
 for li = 1:numel(coils)
     xy = coils{li};
@@ -290,7 +342,7 @@ end
 
 function degMin = computeMinBoardInteriorAngle(boardLoops)
 % 板框（外边界 + 挖空槽）所有闭环的最小内角 [°]。
-% 规则：>= 阈值（默认 90°）合法；尖角已由 filletHoleCorners 轻微圆角化。
+% 规则：必须严格大于 阈值+容差；尖角由 filletHoleCorners 自动轻微圆角化。
 degMin = 180;
 for k = 1:numel(boardLoops)
     xy = boardLoops(k).xy;
@@ -537,8 +589,10 @@ end
 s = dMin - cfg.traceWidth;
 end
 
-function s = computeCopperToBoard(cfg, eff, coils, connectionPaths, vias)
-outerR = eff.boardOuterDiameter / 2;
+function s = computeCopperToBoard(cfg, eff, coils, connectionPaths, pads, vias)
+% 板框 DXF/SVG 轮廓以中心线表示，实体内侧边界位于中心线内
+% boardOutlineLineWidth/2。所有铜均按实际外缘计算到该内侧边界的净距。
+boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
 dMin = inf;
 for li = 1:numel(coils)
     pts = coils{li};
@@ -550,13 +604,82 @@ for li = 1:numel(coils)
         continue;
     end
     r = sqrt(sum(pts.^2, 2));
-    dMin = min(dMin, min(outerR - r) - cfg.traceWidth / 2); % 走线中心线减半线宽
+    dMin = min(dMin, min(boardEdgeInnerR - r) - cfg.traceWidth / 2); % 走线中心线减半线宽
+end
+for k = 1:numel(pads)
+    dMin = min(dMin, boardEdgeInnerR - (norm(pads(k).xy) + pads(k).diameter / 2));
 end
 for k = 1:numel(vias)
-    % 过孔焊环也是铜：焊环外缘到板边净距（padRadius 已含半宽，不再减线宽）
-    dMin = min(dMin, outerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
+    dMin = min(dMin, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
 end
 s = dMin;
+end
+
+function s = computeViaToBoard(cfg, eff, vias)
+% 过孔焊盘切线到板框线内侧边界的距离；这是四层通孔外移后的板径约束。
+boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+s = inf;
+for k = 1:numel(vias)
+    s = min(s, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
+end
+end
+
+function s = computeDrillToBoard(cfg, eff, vias)
+% 钻孔切线到板框线内侧边界的距离（嘉立创规则：默认至少 0.176 mm）。
+boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+s = inf;
+for k = 1:numel(vias)
+    s = min(s, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).drillDiameter / 2));
+end
+end
+
+function s = computeViaToNonConnectedCopper(cfg, coils, connectionPaths, vias)
+% 通孔会穿过所有物理层：在未连接层上只有钻孔/反焊盘，
+% 因此按“钻孔切线到铜边”检查，不能只检查过孔自身连接的两层。
+s = inf;
+for k = 1:numel(vias)
+    v = vias(k);
+    connected = [v.fromLayer, v.toLayer];
+    for li = 1:numel(coils)
+        if ismember(li, connected)
+            continue;
+        end
+        copper = coils{li};
+        paths = connectionPaths{li};
+        if ~isempty(copper)
+            s = min(s, pointToCopperEdge(v.xy, copper) - v.drillDiameter / 2 - cfg.traceWidth / 2);
+        end
+        for p = 1:numel(paths)
+            if ~isempty(paths{p})
+                s = min(s, pointToCopperEdge(v.xy, paths{p}) - v.drillDiameter / 2 - cfg.traceWidth / 2);
+            end
+        end
+    end
+end
+end
+
+function d = pointToCopperEdge(point, xy)
+% 点到折线中心线的最短距离；调用者再扣除钻孔/反焊盘和铜线半径。
+if size(xy, 1) < 2
+    d = inf;
+    return;
+end
+a = xy(1:end - 1, :);
+b = xy(2:end, :);
+ab = b - a;
+len2 = sum(ab.^2, 2);
+valid = len2 > eps;
+if ~any(valid)
+    d = inf;
+    return;
+end
+a = a(valid, :);
+ab = ab(valid, :);
+len2 = len2(valid);
+t = ((point(1) - a(:, 1)) .* ab(:, 1) + (point(2) - a(:, 2)) .* ab(:, 2)) ./ len2;
+t = max(0, min(1, t));
+q = a + t .* ab;
+d = min(sqrt(sum((q - point).^2, 2)));
 end
 
 function s = computeCopperToSlots(cfg, boardLoops, coils, connectionPaths, pads, vias)

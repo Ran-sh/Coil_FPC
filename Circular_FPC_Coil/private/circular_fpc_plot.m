@@ -26,7 +26,11 @@ nL = numel(result.layerPaths);
 nSub = nL + 1; % 总览 + 每层
 cols = min(3, nSub);
 rows = ceil(nSub / cols);
-colors = lines(max(nL, 1));
+baseColors = [0.90 0.10 0.10; ... % top: red
+              0.95 0.45 0.05; ... % inner1: orange
+              0.10 0.60 0.20; ... % inner2: green
+              0.10 0.30 0.90];    % bottom: blue
+colors = baseColors(mod((0:max(nL, 1) - 1), size(baseColors, 1)) + 1, :);
 
 % --- 总览：所有层叠放 ---
 subplot(rows, cols, 1);
@@ -34,7 +38,7 @@ hold on;
 axis equal;
 grid on;
 box on;
-plotBoardLoops(result, 'k');
+plotBoardOutline(result);
 for li = 1:nL
     lp = result.layerPaths(li);
     if ~isempty(lp.coilXY)
@@ -54,7 +58,7 @@ for li = 1:nL
     axis equal;
     grid on;
     box on;
-    plotBoardLoops(result, [0.55 0.55 0.55]);
+    plotBoardOutline(result);
     lp = result.layerPaths(li);
     if ~isempty(lp.coilXY)
         plot(lp.coilXY(:, 1), lp.coilXY(:, 2), 'Color', colors(li, :), 'LineWidth', 1.0);
@@ -78,11 +82,23 @@ drawnow;
 
 end
 
-% ----------------------------------------------------------------------
-function plotBoardLoops(result, color)
+function plotBoardOutline(result)
+% 板框实体为极淡黄色；槽为稍深的透明玻璃色填充且黑色描边；
+% 外圆板框单独使用紫色描边。
+slotGlassColor = [0.55 0.80 0.86];
+boardYellow = [1.00 0.82 0.05];
+boardPurple = [0.55 0.10 0.75];
 for j = 1:numel(result.boardLoops)
-    xy = result.boardLoops(j).xy;
-    plot(xy(:, 1), xy(:, 2), 'Color', color, 'LineWidth', 1.0);
+    loop = result.boardLoops(j);
+    xy = loop.xy;
+    if loop.isHole
+        patch(xy(:, 1), xy(:, 2), slotGlassColor, ...
+            'FaceAlpha', 0.32, 'EdgeColor', 'k', 'LineWidth', 1.0);
+    else
+        patch(xy(:, 1), xy(:, 2), boardYellow, ...
+            'FaceAlpha', 0.45, 'EdgeColor', 'none');
+        plot(xy(:, 1), xy(:, 2), 'Color', boardPurple, 'LineWidth', 1.3);
+    end
 end
 end
 
@@ -92,30 +108,33 @@ th = linspace(0, 2 * pi, 65);
 for k = 1:numel(result.pads)
     xy = result.pads(k).xy;
     r = result.pads(k).diameter / 2;
-    plot(xy(1) + r * cos(th), xy(2) + r * sin(th), 'k-', 'LineWidth', 1.2);
+    patch(xy(1) + r * cos(th), xy(2) + r * sin(th), [0.90 0.10 0.10], ...
+        'FaceColor', [0.90 0.10 0.10], 'EdgeColor', 'k', 'LineWidth', 1.2);
     text(xy(1), xy(2) + r + 0.25, result.pads(k).name, ...
-        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', 'FontSize', 8);
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', ...
+        'FontSize', 8, 'Color', 'k');
 end
 end
 
 % ----------------------------------------------------------------------
 function plotVias(result, layerNumber)
+% 过孔贯穿层叠：每个物理层视图都显示完整过孔集合。
+% layerNumber 保留在接口中以兼容现有调用，但不再用于过滤。
+ %#ok<INUSD>
 th = linspace(0, 2 * pi, 65);
 for k = 1:numel(result.vias)
     v = result.vias(k);
-    if ~isempty(layerNumber) && ...
-            ~ismember(layerNumber, [v.fromLayer, v.toLayer])
-        continue;
-    end
     xy = v.xy;
     rPad = v.padDiameter / 2;
     rDrill = v.drillDiameter / 2;
-    plot(xy(1) + rPad * cos(th), xy(2) + rPad * sin(th), 'Color', [0.2 0.2 0.2], ...
-        'LineWidth', 0.8);
-    plot(xy(1) + rDrill * cos(th), xy(2) + rDrill * sin(th), 'Color', [0.6 0.6 0.6], ...
-        'LineWidth', 0.8, 'LineStyle', '--');
+    viaDarkGray = [0.28 0.28 0.28];
+    patch(xy(1) + rPad * cos(th), xy(2) + rPad * sin(th), viaDarkGray, ...
+        'FaceColor', viaDarkGray, 'EdgeColor', 'k', 'LineWidth', 1.0);
+    patch(xy(1) + rDrill * cos(th), xy(2) + rDrill * sin(th), [1 1 1], ...
+        'FaceColor', [1 1 1], 'EdgeColor', 'k', 'LineWidth', 0.9);
     text(xy(1), xy(2) + rPad + 0.25, v.name, ...
-        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', 'FontSize', 7);
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', ...
+        'FontSize', 7, 'Color', 'k');
 end
 end
 

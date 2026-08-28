@@ -12,11 +12,10 @@ cfg = struct( ...
     'coilLayerCount', 4, ... % 活动线圈层数：支持 2/1、2/2、4/1、4/2、4/4
     'boardOuterDiameter', 25.0, ... % 固定板径模式下的圆形板外径 [mm]
     'boardSizingMode', 'auto', ... % 'auto' 匝数决定板径；'fixed' 使用 boardOuterDiameter
-    'coilInnerDiameter', 18.63, ... % 螺旋最内圈直径 [mm]
+    'coilInnerDiameter', 20.21, ... % 螺旋最内圈直径 [mm]；容纳默认 13x14 平台、槽余量和铜到槽净距
     'centerPlatformWidth', 13.0, ... % 中央平台宽度 [mm]
     'centerPlatformHeight', 14.0, ... % 中央平台高度 [mm]
-    'platformCornerRadius', 0.2, ... % 中央平台圆角 [mm]
-    'platformSlotMargin', 0.25, ... % 平台/槽建议性余量 [mm]
+    'platformSlotMargin', 0.25, ... % 平台角点到线圈内侧的硬约束槽余量 [mm]
     'bridgeTargetWidth', 1.5, ... % 连接桥目标宽度 [mm]
     'geometryScale', 1.0, ... % 宏观几何缩放系数
     'turnsPerCoilLayer', 8, ... % 每活动层目标匝数
@@ -24,9 +23,10 @@ cfg = struct( ...
     'traceSpacing', 0.15, ... % 铜线净距 [mm]
     'pitchMargin', 0.005, ... % 节距附加余量 [mm]
     'edgeClearance', 0.30, ... % 铜到板框/槽净距 [mm]
+    'boardOutlineLineWidth', 0.10, ... % 板框/槽轮廓线宽；auto 定径计入其内侧半宽 [mm]
     'samplePointsPerTurn', 360, ... % 每匝采样点数
     'turnScanMax', 16, ... % 匝数扫描上限
-    'connectionAngleDeg', 135.0, ... % 连接桥局部 u 轴方位角 [deg]
+    'connectionAngleDeg', 135.0, ... % 端子/线圈/连接桥局部 u 轴方位角 [deg]；不旋转正向平台
     'padPairSpacing', 2.0, ... % 兼容旧参数；自动模式下与 terminalLeadSpacing 同步
     'terminalLeadSpacing', 2.0, ... % mm，两条平行端子引出线中心线间距 d
     'terminalLeadLength', 1.5, ... % mm，单次圆弧切点到 PAD 中心的直线长度 L；VOUT 到 PAD_B 同为 L
@@ -36,11 +36,11 @@ cfg = struct( ...
     'manualSeriesViaXY', zeros(0, 2), ... % manual 模式串联过孔坐标
     'padDiameter', 0.6096, ... % PAD_A/PAD_B 直径 [mm]
     'viaPadDiameter', 0.55, ... % 过孔焊环外径 [mm]
-    'viaDrillDiameter', 0.3, ... % 过孔钻孔内径 [mm]
+    'viaDrillDiameter', 0.31, ... % 过孔钻孔内径 [mm]
     'viaCoilSpacing', 0.152, ... % 过孔焊环到线圈铜边净距 [mm]
-    'minCopperInteriorAngleDeg', 90.0, ... % 铜走线最小内角 [deg]
-    'minBoardInteriorAngleDeg', 90.0, ... % 板框最小内角 [deg]
-    'angleToleranceDeg', 0.1, ... % 角度容差 [deg]
+    'minCopperInteriorAngleDeg', 90.0, ... % 铜走线内角必须严格大于该值 [deg]
+    'minBoardInteriorAngleDeg', 90.0, ... % 板框/槽边内角必须严格大于该值 [deg]
+    'angleToleranceDeg', 0.1, ... % 严格角度规则的数值安全余量 [deg]
     'antipadDiameter', 1.2, ... % 非连接层反焊盘直径 [mm]
     'terminalClearance', 0.25, ... % 焊盘/过孔端子间最小净距 [mm]
     'copperThickness', 0.035, ... % 铜厚 [mm]
@@ -50,6 +50,7 @@ cfg = struct( ...
     'manufacturingRuleOverrides', struct(), ...
     'enablePreview', true, ...
     'enableFigure', true, ...
+    'analysisOnly', false, ... % 仅分析/验证，不导出文件（由主入口使用）
     'outputRoot', fullfile(pwd, 'circular_fpc_output'), ...
     'designName', 'auto');
 

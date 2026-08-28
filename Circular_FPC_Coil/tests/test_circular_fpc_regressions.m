@@ -16,7 +16,7 @@ verifyEqual(testCase, cfg.boardLayerCount, 4);
 verifyEqual(testCase, cfg.coilLayerCount, 4);
 verifyEqual(testCase, cfg.boardOuterDiameter, 25.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.boardSizingMode, 'auto'); % 默认匝数驱动板框尺寸
-verifyEqual(testCase, cfg.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.coilInnerDiameter, 20.21, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.bridgeTargetWidth, 1.5, 'AbsTol', 1e-9);
@@ -25,13 +25,14 @@ verifyEqual(testCase, cfg.traceWidth, 0.20, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.traceSpacing, 0.15, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.pitchMargin, 0.005, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.edgeClearance, 0.30, 'AbsTol', 1e-9); % = DRC 铜-板框
+verifyEqual(testCase, cfg.boardOutlineLineWidth, 0.10, 'AbsTol', 1e-9); % 板框轮廓线宽
 verifyEqual(testCase, cfg.connectionAngleDeg, 135.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.viaPadDiameter, 0.55, 'AbsTol', 1e-9); % 过孔默认外径（JLC 常规推荐）
-verifyEqual(testCase, cfg.viaDrillDiameter, 0.3, 'AbsTol', 1e-9); % 过孔默认内径
+verifyEqual(testCase, cfg.viaDrillDiameter, 0.31, 'AbsTol', 1e-9); % 过孔默认内径
 verifyEqual(testCase, cfg.viaCoilSpacing, 0.152, 'AbsTol', 1e-9); % 过孔-线圈净距 = DRC 6mil
 verifyEqual(testCase, cfg.padDiameter, 0.6096, 'AbsTol', 1e-9); % 焊盘 24 mil
-verifyEqual(testCase, cfg.minCopperInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 走线最小内角阈值（>= 合法，含直角）
-verifyEqual(testCase, cfg.minBoardInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 板框最小内角阈值（>= 合法）
+verifyEqual(testCase, cfg.minCopperInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 实际走线必须严格 >90°
+verifyEqual(testCase, cfg.minBoardInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 实际板框/槽边必须严格 >90°
 verifyEqual(testCase, cfg.geometryScale, 1.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.terminalPlacementMode, 'auto');
 verifyEmpty(testCase, cfg.manualPadAXY);
@@ -42,8 +43,7 @@ verifyTrue(testCase, isfield(cfg, 'viaDrillDiameter'));
 verifyTrue(testCase, isfield(cfg, 'viaPadDiameter'));
 verifyTrue(testCase, isfield(cfg, 'outputRoot'));
 verifyTrue(testCase, isfield(cfg, 'designName'));
-verifyEqual(testCase, cfg.platformCornerRadius, 0.2, 'AbsTol', 1e-9); % 平台轻微工艺圆角
-verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % ADVISORY 建议值用槽宽余量
+verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % 平台到内圆环的硬槽宽余量
 verifyTrue(testCase, cfg.enablePreview);
 verifyTrue(testCase, isfield(cfg, 'padPairSpacing'), 'default config missing padPairSpacing');
 if isfield(cfg, 'padPairSpacing')
@@ -53,8 +53,10 @@ verifyError(testCase, @() circular_fpc_default_config(struct('padPairSpacing', 0
 verifyError(testCase, @() circular_fpc_default_config(struct('padPairSpacing', NaN)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('padPairSpacing', Inf)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('padPairSpacing', [1 2])), 'CircularFPC:InvalidConfig');
-verifyError(testCase, @() circular_fpc_default_config(struct('platformCornerRadius', -0.1)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('platformSlotMargin', 0)), 'CircularFPC:InvalidConfig');
+verifyError(testCase, @() circular_fpc_default_config(struct('boardOutlineLineWidth', 0)), 'CircularFPC:InvalidConfig');
+verifyError(testCase, @() circular_fpc_default_config(struct('terminalLeadSpacing', 0.7)), ...
+    'CircularFPC:TerminalPlacementInvalid');
 cfg24 = circular_fpc_default_config(struct('padPairSpacing', 2.4));
 if isfield(cfg24, 'padPairSpacing')
     verifyEqual(testCase, cfg24.padPairSpacing, 2.4, 'AbsTol', 1e-9);
@@ -87,7 +89,7 @@ verifyError(testCase, @() circular_fpc_default_config(struct('boardSizingMode', 
     'CircularFPC:InvalidConfig');
 outRoot = createTempOutput(testCase);
 rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board'));
-verifyEqual(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 25.294, 'AbsTol', 1e-6);
+verifyEqual(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 27.503001, 'AbsTol', 1e-6);
 verifyTrue(testCase, contains(fileread(fullfile(rAuto.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: auto'));
 turnTxt = fileread(fullfile(rAuto.outputPath, 'reports', '04_turn_scan.csv'));
 verifyTrue(testCase, contains(turnTxt, 'requiredBoardDiameterMm'));
@@ -95,14 +97,15 @@ verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 5 * 0.355))); % 6
 % 匝数扫描只列出几何生成器支持的范围：至少两个径向采样层级。
 verifyEmpty(testCase, regexp(turnTxt, '(?m)^1,', 'once'));
 verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
-% fixed 25.0（小于 auto 所需 25.294）：强制 0.30 mm 板边制造规则失败，原子导出不留正式目录。
+% fixed 25.0（小于 auto 所需 27.503001）：环区径向空间不足，
+% 在几何可行性阶段明确拒绝，原子导出不留正式目录。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
-    'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:ValidationFailed');
+    'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
-% fixed 25.3（大于 auto 所需 25.294）：成功，板径/制造报告/扫描契约保持。
-rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_253', ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 25.3));
-verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 25.3, 'AbsTol', 1e-9);
+% fixed 28.0（大于 auto 所需）：成功，板径/制造报告/扫描契约保持。
+rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_280', ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 28.0));
+verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 28.0, 'AbsTol', 1e-9);
 verifyTrue(testCase, rFixed.manufacturing.passed);
 verifyTrue(testCase, contains(fileread(fullfile(rFixed.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: fixed'));
 fixedTurnTxt = fileread(fullfile(rFixed.outputPath, 'reports', '04_turn_scan.csv'));
@@ -111,24 +114,23 @@ verifyNotEmpty(testCase, regexp(fixedTurnTxt, '(?m)^2,', 'once'));
 end
 
 function testPlatformRectangleBridgeCorridorAndAdvisory(testCase)
-% 平台矩形化 + 软内接判据（>=90° 角度规则配套）：
-%   1) 13x14 平台尖角伸入桥区走廊：应能生成，ADVISORY 提示超出量，
-%      实测铜-槽净距仍须达标（角部被桥走廊覆盖）；
+% 平台矩形化 + 内径硬约束（严格 >90° 角度规则配套）：
+%   1) 默认 20.21 mm 内径完整容纳 13x14 平台、槽余量和铜到槽净距；
+%   2) 过小内径必须在布尔运算前明确拒绝，不能形成天然四角桥；
 %   2) 平台远超板外半径：预检硬错误 GeometryInfeasible；
-%   3) 超大平台越过走廊（20x11）：预检放行，由实测铜-槽净距在结果验证阶段拒绝。
-res = circular_fpc_analyze(struct('centerPlatformWidth', 13.0, 'centerPlatformHeight', 14.0));
+%   3) 超大平台越过走廊（20x11）：统一桥宽参与最终布尔运算后，槽拓扑直接失败。
+res = analyzeInternal(struct('centerPlatformWidth', 13.0, 'centerPlatformHeight', 14.0));
 verifyTrue(testCase, res.validation.passed);
 verifyGreaterThanOrEqual(testCase, res.validation.minCopperToSlotsMm, cfgEdgeClearanceForCheck(testCase) - 1e-9);
-verifyFalse(testCase, isempty(res.validation.advisories), '13x14 should emit an inscribed-circle advisory');
-verifyTrue(testCase, any(contains(res.validation.advisories, 'inscribed circle')));
+verifyEmpty(testCase, res.validation.advisories);
 verifyEqual(testCase, res.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
-verifyError(testCase, @() circular_fpc_analyze(struct('centerPlatformWidth', 30.0, ...
+verifyError(testCase, @() analyzeInternal(struct('coilInnerDiameter', 20.20)), ...
+    'CircularFPC:GeometryInfeasible');
+verifyError(testCase, @() analyzeInternal(struct('centerPlatformWidth', 30.0, ...
     'centerPlatformHeight', 30.0)), 'CircularFPC:GeometryInfeasible');
-% 超大平台（20x11）：预检放行、实测铜-槽净距仍达标，仅输出 ADVISORY 量化建议。
-resBig = circular_fpc_analyze(struct('centerPlatformWidth', 20.0, 'centerPlatformHeight', 11.0));
-verifyTrue(testCase, resBig.validation.passed);
-verifyTrue(testCase, any(contains(resBig.validation.advisories, 'inscribed circle')));
-verifyGreaterThanOrEqual(testCase, resBig.validation.minCopperToSlotsMm, cfgEdgeClearanceForCheck(testCase) - 1e-9);
+% 超大平台（20x11）：四条桥统一加宽后由最终布尔槽拓扑拒绝。
+verifyError(testCase, @() analyzeInternal(struct('centerPlatformWidth', 20.0, ...
+    'centerPlatformHeight', 11.0)), 'CircularFPC:GeometryInfeasible');
 end
 
 function ec = cfgEdgeClearanceForCheck(~)
@@ -136,31 +138,70 @@ ec = 0.30; % 默认 edgeClearance（与嘉立创铜-板框 DRC 对应）
 end
 
 function testInnerTransitionDetour(testCase)
-% 4/4 分数匝直连方案（用户设计约定）：L2 绕 8.25 匝使内端直接落到 225° 的
-% V23、L4 绕 7.75 匝使内端直接落到 135° 的 VOUT——内端无任何过渡走线
-% （L3 无连接路径，L2/L4 仅剩外端 ≤0.3mm 的径向微调段），
-% 四层平均匝数恰为 turnsPerCoilLayer。
-res = circular_fpc_analyze(struct('boardLayerCount', 4, 'coilLayerCount', 4));
+% 4/4 分数匝方案：V12/V34 两侧线圈必须在同一个过孔中心汇合；上游使用
+% 110° 圆弧，下游自动选择 >90° 且 <=150° 的单圆弧切向并入螺旋。
+% 不允许直线弦锐接、S 形或 180° 回头钩。
+res = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
 verifyTrue(testCase, res.validation.passed, ...
     sprintf('4/4 validation failed: %s', strjoin(res.validation.messages, ' | ')));
+verifyGreaterThanOrEqual(testCase, res.validation.minViaToNonConnectedCopperMm, 0.176 - 1e-9);
+verifyGreaterThanOrEqual(testCase, res.validation.minViaToBoardMm, res.config.edgeClearance - 1e-9);
+verifyGreaterThanOrEqual(testCase, res.validation.minDrillToBoardMm, 0.176 - 1e-9);
 verifyEmpty(testCase, res.layerPaths(3).connectionPaths, 'L3 must have no transition traces');
-for li = [2, 4]
-    for k = 1:numel(res.layerPaths(li).connectionPaths)
-        p = res.layerPaths(li).connectionPaths{k};
-        pathLen = sum(sqrt(sum(diff(p, 1, 1).^2, 2)));
-        verifyLessThanOrEqual(testCase, pathLen, 0.3, ...
-            sprintf('L%d connection traces must be micro jogs only (len %.3f)', li, pathLen));
-    end
+verifyGreaterThan(testCase, res.validation.minCopperInteriorAngleDeg, ...
+    res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg);
+verifyGreaterThan(testCase, res.validation.minBoardInteriorAngleDeg, ...
+    res.config.minBoardInteriorAngleDeg + res.config.angleToleranceDeg);
+verifyGreaterThan(testCase, res.validation.minOuterViaContactSweepDeg, ...
+    res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg);
+verifyLessThanOrEqual(testCase, res.validation.maxOuterViaContactSweepDeg, 150);
+for item = {1, 2, 'V12'; 3, 4, 'V34'}.'
+    fromLayer = item{1};
+    toLayer = item{2};
+    viaName = item{3};
+    v = res.vias(strcmp({res.vias.name}, viaName));
+    upstream = res.layerPaths(fromLayer).coilXY;
+    downstream = res.layerPaths(toLayer).coilXY;
+    verifyEqual(testCase, upstream(end, :), v.xy, 'AbsTol', 1e-9);
+    verifyEqual(testCase, downstream(1, :), v.xy, 'AbsTol', 1e-9);
+    verifyGreaterThan(testCase, v.contactSweepDeg, ...
+        res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg);
+    verifyLessThanOrEqual(testCase, v.contactSweepDeg, 150);
+    % 圆弧扫角 <180° 时，到过孔中心的弦长应沿离孔方向单调增加；
+    % 该断言可直接阻止回头钩/S 形重新出现。
+    sampleCount = min(73, size(downstream, 1));
+    distanceFromVia = sqrt(sum((downstream(1:sampleCount, :) - v.xy).^2, 2));
+    verifyGreaterThanOrEqual(testCase, min(diff(distanceFromVia)), -1e-9);
 end
-% 分数匝：L2 外半径多 0.25 节距、L4 外半径少 0.25 节距（内半径均 = rStart），
-% 均含外端过孔延伸区 E
+% L4->VOUT is deliberately the new single-bend output path, not the old
+% micro-jog-only inner-transition contract.
+verifyEqual(testCase, res.terminalRouting.outputBendCount, 1);
+outputPath = res.terminalRouting.outputPath;
+verifyGreaterThan(testCase, size(outputPath, 1), 2);
+outputLen = sum(sqrt(sum(diff(outputPath, 1, 1).^2, 2)));
+verifyEqual(testCase, outputLen, pi * res.config.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+verifyEqual(testCase, outputPath(1, :), res.layerPaths(4).coilXY(end, :), 'AbsTol', 1e-9);
+verifyEqual(testCase, outputPath(end, :), res.vias(strcmp({res.vias.name}, 'VOUT')).xy, 'AbsTol', 1e-9);
+% V34 到 L4 的圆弧已直接并入线圈，不应残留独立 registration jog。
+for k = 1:numel(res.layerPaths(4).connectionPaths)
+    p = res.layerPaths(4).connectionPaths{k};
+    if norm(p(1, :) - outputPath(1, :)) <= 1e-9 && norm(p(end, :) - outputPath(end, :)) <= 1e-9
+        continue;
+    end
+    pathLen = sum(sqrt(sum(diff(p, 1, 1).^2, 2)));
+    verifyLessThanOrEqual(testCase, pathLen, 0.3, ...
+        sprintf('Only non-outer local L4 micro connections may remain (len %.3f)', pathLen));
+end
+% 两侧圆弧都汇合到同一个外端过孔，故每对层的最大半径相同。
 rStart = res.effectiveDimensions.coilInnerDiameter / 2 + res.config.traceWidth / 2;
 pitch = res.effectiveDimensions.coilPitch;
-ext = res.effectiveDimensions.viaEndExtension;
+rMaxL1 = max(sqrt(sum(res.layerPaths(1).coilXY.^2, 2)));
 rMaxL2 = max(sqrt(sum(res.layerPaths(2).coilXY.^2, 2)));
+rMaxL3 = max(sqrt(sum(res.layerPaths(3).coilXY.^2, 2)));
 rMaxL4 = max(sqrt(sum(res.layerPaths(4).coilXY.^2, 2)));
-verifyEqual(testCase, rMaxL2, rStart + 7.25 * pitch + ext, 'AbsTol', 1e-6);
-verifyEqual(testCase, rMaxL4, rStart + 6.75 * pitch + ext, 'AbsTol', 1e-6);
+verifyEqual(testCase, rMaxL2, rMaxL1, 'AbsTol', 1e-9);
+verifyEqual(testCase, rMaxL4, rMaxL3, 'AbsTol', 1e-9);
+verifyGreaterThan(testCase, rMaxL2, rStart + 7.25 * pitch);
 % V23 位置：theta+90 桥轴、半径 = rStart - (viaCoil + 焊环/2 + 线宽/2 - 0.25节距)
 v23 = res.vias(strcmp({res.vias.name}, 'V23'));
 verifyEqual(testCase, numel(v23), 1);
@@ -171,12 +212,12 @@ expectedRV23 = rStart - (res.config.viaCoilSpacing + res.config.viaPadDiameter /
     res.config.traceWidth / 2 - 0.25 * pitch);
 verifyEqual(testCase, norm(v23.xy), expectedRV23, 'AbsTol', 1e-6);
 % 13x14 平台下 4/4 仍可生成
-resBig = circular_fpc_analyze(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
+resBig = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
     'centerPlatformWidth', 13.0, 'centerPlatformHeight', 14.0));
 verifyTrue(testCase, resBig.validation.passed, ...
     sprintf('4/4 + 13x14 validation failed: %s', strjoin(resBig.validation.messages, ' | ')));
 % 极限档小过孔（分数匝 + 板框按最大外端定径 + 端子附着带间距判定）：应通过
-resX = circular_fpc_analyze(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
+resX = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
     'manufacturingTier', 'extreme', 'viaPadDiameter', 0.35, 'viaDrillDiameter', 0.15));
 verifyTrue(testCase, resX.validation.passed, ...
     sprintf('4/4 extreme validation failed: %s', strjoin(resX.validation.messages, ' | ')));
@@ -188,7 +229,7 @@ names = {res.vias.name};
 [~, i3] = ismember('V34', names);
 [~, i4] = ismember('VOUT', names);
 mxy = [res.vias(i1).xy; res.vias(i2).xy; res.vias(i3).xy; res.vias(i4).xy];
-resM = circular_fpc_analyze(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
+resM = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
     'terminalPlacementMode', 'manual', ...
     'manualPadAXY', res.pads(1).xy, ...
     'manualPadBXY', res.pads(2).xy, ...
@@ -231,7 +272,7 @@ cfg4Ls = circular_fpc_default_config(struct('boardLayerCount', 4, 'viaDrillDiame
 verifyEqual(testCase, cfg4Ls.viaDrillDiameter, 0.3, 'AbsTol', 1e-9);
 % 默认 0.30/0.55 成功；0.55 过孔 + 密绕（0.15 线距、8 匝）：延伸区保证净距，配置合法
 cfgDef = circular_fpc_default_config();
-verifyEqual(testCase, cfgDef.viaDrillDiameter, 0.3, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfgDef.viaDrillDiameter, 0.31, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfgDef.viaPadDiameter, 0.55, 'AbsTol', 1e-9);
 cfgOK = circular_fpc_default_config(struct('traceSpacing', 0.15, 'turnsPerCoilLayer', 8, 'viaPadDiameter', 0.55));
 verifyEqual(testCase, cfgOK.viaCoilSpacing, 0.152, 'AbsTol', 1e-9);
@@ -268,12 +309,12 @@ cfgOv = circular_fpc_default_config(struct('traceWidth', 0.15, 'manufacturingRul
 verifyEqual(testCase, cfgOv.traceWidth, 0.15, 'AbsTol', 1e-9);
 verifyError(testCase, @() circular_fpc_default_config(struct('traceWidth', 0.149, 'manufacturingRuleOverrides', ruleOv)), ...
     'CircularFPC:InvalidConfig');
-resOv = circular_fpc_analyze(struct('traceWidth', 0.15, 'manufacturingRuleOverrides', ruleOv));
+resOv = analyzeInternal(struct('traceWidth', 0.15, 'manufacturingRuleOverrides', ruleOv));
 chkOv = findManufacturingCheck(resOv.manufacturing, 'TRACE_WIDTH');
 verifyEqual(testCase, chkOv.limitMm, 0.15, 'AbsTol', 1e-9);
 verifyEqual(testCase, chkOv.source, 'override');
 % 默认 analyze 制造报告结构
-res = circular_fpc_analyze();
+res = analyzeInternal();
 mf = res.manufacturing;
 verifyEqual(testCase, mf.profile, 'jlc_fpc_1oz');
 verifyEqual(testCase, mf.tier, 'standard');
@@ -283,7 +324,7 @@ verifyTrue(testCase, mf.passed);
 verifyTrue(testCase, isempty(mf.failures));
 ids = {mf.checks.id};
 verifyTrue(testCase, all(ismember({'TRACE_WIDTH', 'TRACE_SPACING', 'VIA_DRILL', 'VIA_PAD', ...
-    'VIA_PAD_DRILL_DIFFERENCE', 'COPPER_THICKNESS'}, ids)));
+    'VIA_PAD_DRILL_DIFFERENCE', 'DRILL_TO_BOARD', 'COPPER_THICKNESS'}, ids)));
 % 默认 TRACE_WIDTH 有余量 -> PASS；VIA_DRILL 恰在 standard 极限 -> WARN
 chkTw = findManufacturingCheck(mf, 'TRACE_WIDTH');
 verifyEqual(testCase, chkTw.limitMm, 0.102, 'AbsTol', 1e-9);
@@ -292,7 +333,7 @@ verifyEqual(testCase, chkTw.status, 'PASS');
 chkVd = findManufacturingCheck(mf, 'VIA_DRILL');
 verifyEqual(testCase, chkVd.status, 'WARN');
 % extreme 层 2L 0.10/0.30、4L 0.15/0.35：analyze 成功且对应 via 检查为 WARN + HIGH_COST_EXTREME
-    resX2 = circular_fpc_analyze(struct('manufacturingTier', 'extreme', 'boardLayerCount', 2, ...
+    resX2 = analyzeInternal(struct('manufacturingTier', 'extreme', 'boardLayerCount', 2, ...
         'coilLayerCount', 1, 'viaDrillDiameter', 0.1, 'viaPadDiameter', 0.3));
 verifyTrue(testCase, resX2.manufacturing.passed);
 chkX2d = findManufacturingCheck(resX2.manufacturing, 'VIA_DRILL');
@@ -301,7 +342,7 @@ verifyEqual(testCase, chkX2d.status, 'WARN');
 verifyEqual(testCase, chkX2p.status, 'WARN');
 verifyTrue(testCase, contains(chkX2d.message, 'HIGH_COST_EXTREME') || contains(chkX2d.code, 'HIGH_COST_EXTREME'));
 verifyTrue(testCase, contains(chkX2p.message, 'HIGH_COST_EXTREME') || contains(chkX2p.code, 'HIGH_COST_EXTREME'));
-resX4 = circular_fpc_analyze(struct('manufacturingTier', 'extreme', 'boardLayerCount', 4, ...
+resX4 = analyzeInternal(struct('manufacturingTier', 'extreme', 'boardLayerCount', 4, ...
     'viaDrillDiameter', 0.15, 'viaPadDiameter', 0.35));
 verifyTrue(testCase, resX4.manufacturing.passed);
 chkX4d = findManufacturingCheck(resX4.manufacturing, 'VIA_DRILL');
@@ -321,7 +362,7 @@ function testAnalyzeIsReadOnlyAndLayerMatrix(testCase)
 combos = [2 1; 2 2; 4 1; 4 2; 4 4];
 for k = 1:size(combos, 1)
     root = nonexistentTempRoot();
-    res = circular_fpc_analyze(struct('outputRoot', root, 'designName', 'red_readonly', ...
+    res = analyzeInternal(struct('outputRoot', root, 'designName', 'red_readonly', ...
         'boardLayerCount', combos(k, 1), 'coilLayerCount', combos(k, 2)));
     verifyEqual(testCase, res.outputPath, '');
     verifyEqual(testCase, res.boardLayerCount, combos(k, 1));
@@ -333,16 +374,16 @@ end
 % 角度旋转保持（显式 2/1 + 13x11 安全平台：4/4 的绕行过渡在非默认连接角下
 % 可能实测铜-槽净距不足而报错，属预期保护；旋转覆盖用无绕行的 2/1 组合）
 for ang = [0 45 135 225]
-    resA = circular_fpc_analyze(struct('connectionAngleDeg', ang, 'boardLayerCount', 2, ...
+    resA = analyzeInternal(struct('connectionAngleDeg', ang, 'boardLayerCount', 2, ...
         'coilLayerCount', 1, 'centerPlatformHeight', 11.0, 'outputRoot', nonexistentTempRoot()));
     verifyEqual(testCase, resA.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
     verifyEqual(testCase, resA.effectiveDimensions.centerPlatformHeight, 11.0, 'AbsTol', 1e-9);
 end
-res135 = circular_fpc_analyze(struct('connectionAngleDeg', 135, 'outputRoot', nonexistentTempRoot()));
+res135 = analyzeInternal(struct('connectionAngleDeg', 135, 'outputRoot', nonexistentTempRoot()));
 padA = findTerminalByName(res135.pads, 'PAD_A');
 verifyTrue(testCase, padA.xy(1) < 0 && padA.xy(2) > 0);
 % 无效配置沿 analyze 传播
-verifyError(testCase, @() circular_fpc_analyze(struct('traceWidth', 0.101)), 'CircularFPC:InvalidConfig');
+verifyError(testCase, @() analyzeInternal(struct('traceWidth', 0.101)), 'CircularFPC:InvalidConfig');
 end
 
 function testDefaultBoardGeometry(testCase)
@@ -356,11 +397,17 @@ verifyEmpty(testCase, warningId);
 verifyEqual(testCase, result.boardLayerCount, 4);
 verifyEqual(testCase, result.coilLayerCount, 4);
 verifyEqual(testCase, result.activeCoilLayers, [1 2 3 4]);
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 25.294, 'AbsTol', 1e-6); % auto：2*(9.415+0.1+0.355*7+0.172+0.275+0.3)
-verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
+verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 27.503001, 'AbsTol', 1e-6); % auto：含平台内径约束、外端圆弧、过孔与板框线宽
+verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 20.21, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 1.5, 'AbsTol', 1e-9);
+platformXY = result.layoutRegions.platformLoop(1:end - 1, :);
+verifyEqual(testCase, max(abs(platformXY(:, 1))), 6.5, 'AbsTol', 1e-9);
+verifyEqual(testCase, max(abs(platformXY(:, 2))), 7.0, 'AbsTol', 1e-9);
+verifyTrue(testCase, all(abs(abs(platformXY(:, 1)) - 6.5) < 1e-9 | ...
+    abs(abs(platformXY(:, 2)) - 7.0) < 1e-9), ...
+    'Central 13x14 platform must remain an axis-aligned rectangle.');
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 8);
 verifyGreaterThanOrEqual(testCase, result.effectiveDimensions.actualBridgeWidth, 1.5);
@@ -398,10 +445,15 @@ verifyEqual(testCase, result.validation.closedBoardLoopCount, 5);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperSpacingMm, 0.15);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperToBoardMm, cfg.edgeClearance);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperToSlotsMm, cfg.edgeClearance);
-verifyTrue(testCase, result.validation.minCopperInteriorAngleDeg >= 89.9, ...
-    sprintf('copper path min interior angle must be >= 90 - tolerance (got %.3f)', result.validation.minCopperInteriorAngleDeg));
-verifyTrue(testCase, result.validation.minBoardInteriorAngleDeg >= 89.9, ...
-    sprintf('board min interior angle must be >= 90 - tolerance (got %.3f)', result.validation.minBoardInteriorAngleDeg));
+verifyGreaterThanOrEqual(testCase, result.validation.minViaToNonConnectedCopperMm, 0.176 - 1e-9);
+verifyTrue(testCase, result.validation.minCopperInteriorAngleDeg > ...
+    cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg, ...
+    sprintf('copper path min interior angle must be strictly > 90.1 (got %.3f)', result.validation.minCopperInteriorAngleDeg));
+verifyTrue(testCase, result.validation.minBoardInteriorAngleDeg > ...
+    cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg, ...
+    sprintf('board min interior angle must be strictly > 90.1 (got %.3f)', result.validation.minBoardInteriorAngleDeg));
+verifyGreaterThan(testCase, result.validation.minOuterViaContactSweepDeg, 90.1);
+verifyLessThanOrEqual(testCase, result.validation.maxOuterViaContactSweepDeg, 150);
 verifyGreaterThanOrEqual(testCase, result.validation.actualBridgeWidthMm, 1.5);
 verifyTrue(testCase, result.validation.uniqueSeriesNetwork);
 verifyTrue(testCase, result.validation.viaOverlapFree);
@@ -435,8 +487,8 @@ if isfield(base, 'padPairSpacing') && isfield(scaled, 'padPairSpacing')
 end
 outRoot = createTempOutput(testCase);
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'scaled_geometry', 'geometryScale', 2.0));
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 43.924, 'AbsTol', 1e-6); % auto+scale2：2*(18.63+0.1+0.355*7+0.172+0.275+0.3)
-verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 37.26, 'AbsTol', 1e-9);
+verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 48.013769, 'AbsTol', 1e-6); % auto+scale2：含严格圆弧接触与跨层净距
+verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 40.42, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 26.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
@@ -446,15 +498,14 @@ fullSvg = fullfile(result.outputPath, 'previews', '01_preview_full.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
-    verifyTrue(testCase, contains(svgTxt, 'viewBox="-22.462000 -22.462000 44.924000 44.924000"')); % auto+scale2 板径 43.924/2+0.5
+    verifyTrue(testCase, contains(svgTxt, 'viewBox="-24.506884 -24.506884 49.013769 49.013769"')); % auto+scale2 板径/2+0.5
 end
 end
 
 function testInvalidGeometryRejected(testCase)
 outRoot = createTempOutput(testCase);
 % 平台远超板外半径：可行性预检快速失败，不留正式输出目录。
-% （超大但有限的平台如 20x11 现已合法并带 ADVISORY，见
-%   testPlatformRectangleBridgeCorridorAndAdvisory。）
+% 超大但有限的平台同样由平台/内径硬约束明确拒绝。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'invalid_platform', ...
     'centerPlatformWidth', 30.0, 'centerPlatformHeight', 30.0)), 'CircularFPC:GeometryInfeasible');
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'invalid_scale', 'geometryScale', 0.05)), 'CircularFPC:GeometryInfeasible');
@@ -465,7 +516,7 @@ verifyError(testCase, @() circular_fpc_default_config(struct('turnsPerCoilLayer'
     'CircularFPC:InvalidConfig');
 cfgMinTurns = circular_fpc_default_config(struct('turnsPerCoilLayer', 2));
 verifyEqual(testCase, cfgMinTurns.turnsPerCoilLayer, 2);
-% >=90° 角度规则下，60° 连接角不再产生尖角失败：应正常生成并通过全部实测验证。
+% 严格 >90° 角度规则下，60° 连接方位仍应由圆弧化几何正常生成。
 r60 = circular_fpc_main(struct('outputRoot', outRoot, ...
     'designName', 'sharp_angle_60', 'connectionAngleDeg', 60, 'centerPlatformHeight', 11.0));
 verifyTrue(testCase, r60.validation.passed);
@@ -691,13 +742,19 @@ for k = 1:size(combos, 1)
 end
 outRootBad = createTempOutput(testCase);
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRootBad, 'designName', 'pad_pair_infeasible', ...
-    'padPairSpacing', 20)), 'CircularFPC:TerminalPlacementInvalid');
+    'padPairSpacing', 20)), 'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRootBad, 'pad_pair_infeasible')));
+end
+
+function testBridgeWidthUpperBoundComesFromFinalSlotTopology(testCase)
+% 桥宽不使用独立解析上限；只有最终布尔板框不再是 4 个槽时才拒绝。
+verifyError(testCase, @() circular_fpc_main(struct('bridgeTargetWidth', 20, ...
+    'analysisOnly', true)), 'CircularFPC:GeometryInfeasible');
 end
 
 function testTerminalRotationAndScaleContract(testCase)
 outRoot = createTempOutput(testCase);
-angles = [0 45 135 225];
+angles = [0 45 90 135 225];
 for a = angles
     cfg = circular_fpc_default_config(struct('boardLayerCount', 2, 'coilLayerCount', 1, ...
         'connectionAngleDeg', a, 'centerPlatformHeight', 11.0, ...
@@ -722,28 +779,54 @@ resultPlatform = circular_fpc_main(cfgPlatform);
 verifyAutomaticBridgeLayout(testCase, cfgPlatform, resultPlatform, {'V12', 'V34'}, {'V23'});
 end
 
+function testFourTwoRotationKeepsDefaultBoardTopology(testCase)
+% 默认 13x14 平台始终正向且完整；四条等宽桥随端子/线圈参考系旋转，
+% 但不得与矩形四角的天然重叠叠加成八槽。
+for angleDeg = [0 45 90 135 225]
+    result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
+        'connectionAngleDeg', angleDeg));
+    verifyTrue(testCase, result.validation.passed, ...
+        sprintf('4/2 angle %g validation failed: %s', angleDeg, ...
+        strjoin(result.validation.messages, ' | ')));
+    verifyEqual(testCase, numel(result.boardLoops), 5, ...
+        sprintf('4/2 angle %g must keep 1 outer loop + 4 slots', angleDeg));
+    verifyEqual(testCase, result.validation.closedBoardLoopCount, 5);
+    platformXY = result.layoutRegions.platformLoop(1:end - 1, :);
+    verifyEqual(testCase, max(abs(platformXY(:, 1))), 6.5, 'AbsTol', 1e-9);
+    verifyEqual(testCase, max(abs(platformXY(:, 2))), 7.0, 'AbsTol', 1e-9);
+    verifyEqual(testCase, result.layoutRegions.bridgeAnglesDeg, ...
+        mod(angleDeg + [-90 0 90 180], 360), 'AbsTol', 1e-9);
+    verifyEqual(testCase, norm(result.pads(2).xy - result.pads(1).xy), ...
+        result.config.terminalLeadSpacing, 'AbsTol', 1e-6);
+    verifyEqual(testCase, norm(result.pads(2).xy - ...
+        result.vias(strcmp({result.vias.name}, 'VOUT')).xy), ...
+        result.config.terminalLeadLength, 'AbsTol', 1e-6);
+end
+end
+
 function testManualCoordinatesRoundTrip(testCase)
 outRoot = createTempOutput(testCase);
-cfg0 = circular_fpc_default_config();
-pitch = cfg0.traceWidth + cfg0.traceSpacing + cfg0.pitchMargin;
-outerCenterRadius = cfg0.coilInnerDiameter / 2 + cfg0.traceWidth / 2 + (cfg0.turnsPerCoilLayer - 1) * pitch;
-% 外端过孔延伸区：线圈端点沿径向向外延伸 viaEndExtension（与引擎公式一致）
-ext = max(0, cfg0.viaCoilSpacing + cfg0.viaPadDiameter / 2 + cfg0.traceWidth / 2 - pitch);
-outerXY = (outerCenterRadius + ext) * [cosd(cfg0.connectionAngleDeg), sind(cfg0.connectionAngleDeg)];
+% 先从自动模式读取一组已经满足严格圆弧接触角的坐标，再原样回填 manual。
+% 手动模式不应悄悄改写用户端子坐标。
+seed = analyzeInternal(struct('boardLayerCount', 2, 'coilLayerCount', 2));
+seedV12 = seed.vias(strcmp({seed.vias.name}, 'V12'));
+seedVout = seed.vias(strcmp({seed.vias.name}, 'VOUT'));
+outerXY = seedV12.xy;
+voutXY = seedVout.xy;
 overrides = struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
     'terminalPlacementMode', 'manual', ...
-    'manualPadAXY', [-3 2.5], 'manualPadBXY', [3 2.5], ...
-    'manualSeriesViaXY', [outerXY; 2.5 -2.5], ...
+    'manualPadAXY', seed.pads(1).xy, 'manualPadBXY', seed.pads(2).xy, ...
+    'manualSeriesViaXY', [outerXY; voutXY], ...
     'outputRoot', outRoot, 'designName', 'manual_ok');
 result = circular_fpc_main(overrides);
 padA = result.pads(strcmp({result.pads.name}, 'PAD_A'));
 padB = result.pads(strcmp({result.pads.name}, 'PAD_B'));
-verifyEqual(testCase, padA.xy, [-3 2.5], 'AbsTol', 1e-9);
-verifyEqual(testCase, padB.xy, [3 2.5], 'AbsTol', 1e-9);
+verifyEqual(testCase, padA.xy, seed.pads(1).xy, 'AbsTol', 1e-9);
+verifyEqual(testCase, padB.xy, seed.pads(2).xy, 'AbsTol', 1e-9);
 via12 = result.vias(strcmp({result.vias.name}, 'V12'));
 viaOut = result.vias(strcmp({result.vias.name}, 'VOUT'));
 verifyEqual(testCase, via12.xy, outerXY, 'AbsTol', 1e-9);
-verifyEqual(testCase, viaOut.xy, [2.5 -2.5], 'AbsTol', 1e-9);
+verifyEqual(testCase, viaOut.xy, voutXY, 'AbsTol', 1e-9);
 verifyTrue(testCase, isfield(padA, 'placementRegion'), 'PAD_A missing placementRegion');
 if isfield(padA, 'placementRegion')
     verifyEqual(testCase, padA.placementRegion, 'MANUAL');
@@ -842,6 +925,15 @@ while k + 1 <= numel(lines)
     end
 end
 verifyEqual(testCase, closedCount, 5);
+% 板框轮廓采用 0.1 mm 实际线宽，五个闭环必须一致写入 DXF group 43。
+boardLines = strtrim(strsplit(boardTxt, newline));
+boardWidths = [];
+for bi = 1:numel(boardLines) - 1
+    if strcmp(boardLines{bi}, '43')
+        boardWidths(end + 1) = str2double(boardLines{bi + 1}); %#ok<AGROW>
+    end
+end
+verifyEqual(testCase, boardWidths, repmat(cfg.boardOutlineLineWidth, 1, 5), 'AbsTol', 1e-9);
 l1Dxf = fullfile(out, 'dxf', 'L1', '01_copper_L1.dxf');
 l1Txt = fileread(l1Dxf);
 % 契约：铜层 DXF 不写焊盘/过孔圆（CIRCLE）与文字（TEXT），只含走线多段线；
@@ -1068,9 +1160,11 @@ verifyTrue(testCase, isfile(readmePath));
 verifyTrue(testCase, isfile(gitignorePath));
 if isfile(readmePath)
     readmeTxt = fileread(readmePath);
-    for kw = {'geometryScale', 'manualSeriesViaXY', 'PAD_A', 'Gerber', '2/1', '2/2', '4/1', '4/2', '4/4', ...
-            'padPairSpacing', 'placementRegion', 'bridgeAngleDeg', 'ENTRY_BRIDGE', 'RETURN_BRIDGE', ...
-            'OUTER_COIL_ENDPOINT', '双通道'}
+    for kw = {'circular_fpc_default_config', 'circular_fpc_main', 'geometryScale', ...
+            'terminalLeadSpacing', 'terminalLeadLength', 'connectionAngleDeg', ...
+            'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY', ...
+            'PAD_A', 'PAD_B', 'VOUT', 'Gerber', 'DXF', ...
+            '2/1', '2/2', '4/1', '4/2', '4/4'}
         verifyTrue(testCase, contains(readmeTxt, kw{1}));
     end
 end
@@ -1256,7 +1350,6 @@ function verifyAutomaticBridgeLayout(testCase, cfg, result, expectedOuterNames, 
 theta = cfg.connectionAngleDeg;
 u = [cosd(theta), sind(theta)];
 t = [-sind(theta), cosd(theta)];
-halfChannel = (cfg.traceWidth + cfg.traceSpacing) / 2;
 padA = findTerminalByName(result.pads, 'PAD_A');
 padB = findTerminalByName(result.pads, 'PAD_B');
 verifyEqual(testCase, numel(padA), 1, 'PAD_A must be unique');
@@ -1273,6 +1366,13 @@ verifyTrue(testCase, isfield(padA, 'placementRegion'), 'PAD_A missing placementR
 verifyTrue(testCase, isfield(padA, 'bridgeAngleDeg'), 'PAD_A missing bridgeAngleDeg');
 verifyTrue(testCase, isfield(padB, 'placementRegion'), 'PAD_B missing placementRegion');
 verifyTrue(testCase, isfield(padB, 'bridgeAngleDeg'), 'PAD_B missing bridgeAngleDeg');
+verifyTrue(testCase, isfield(result, 'layoutRegions'), 'result missing layoutRegions');
+if isfield(result, 'layoutRegions') && isfield(result.layoutRegions, 'bridgeWidths')
+    bridgeWidths = result.layoutRegions.bridgeWidths;
+    verifyEqual(testCase, numel(bridgeWidths), 4, 'all four bridge widths must be reported');
+    verifyEqual(testCase, bridgeWidths, repmat(bridgeWidths(1), 1, 4), 'AbsTol', 1e-9, ...
+        'all four connection bridges must have the same width');
+end
 d = norm(padB.xy - padA.xy);
 if isfield(cfg, 'padPairSpacing')
     verifyEqual(testCase, d, cfg.padPairSpacing, 'AbsTol', 1e-6);
@@ -1309,7 +1409,7 @@ end
 if isfield(vout, 'bridgeAngleDeg')
     verifyAngleMod360(testCase, vout.bridgeAngleDeg, theta, 'VOUT bridgeAngleDeg');
 end
-verifyEqual(testCase, dot(vout.xy, t), halfChannel, 'AbsTol', 1e-6);
+verifyEqual(testCase, dot(vout.xy, t), cfg.terminalLeadSpacing / 2, 'AbsTol', 1e-6);
 for k = 1:numel(expectedOuterNames)
     v = findTerminalByName(result.vias, expectedOuterNames{k});
     verifyEqual(testCase, numel(v), 1, sprintf('exactly one %s via', expectedOuterNames{k}));
@@ -1365,12 +1465,26 @@ verifyTrue(testCase, ~isempty(path), 'TRACE_L1_ENTRY path must exist in L1 conne
 if isempty(path)
     return;
 end
-rProj = path * u.';
-rVout = dot(vout.xy, u);
-[~, idx] = min(abs(rProj - rVout));
-tProj = dot(path(idx, :), t);
-verifyTrue(testCase, abs(tProj - (-halfChannel)) <= 0.03, ...
-    sprintf('L1 entry must follow negative channel near VOUT radial section: tangent %.6f, expected %.6f', tProj, -halfChannel));
+verifyEqual(testCase, result.terminalRouting.entryBendCount, 1);
+verifyEqual(testCase, result.terminalRouting.exitBendCount, 0);
+entryLen = sum(sqrt(sum(diff(result.terminalRouting.entryPath, 1, 1).^2, 2)));
+verifyEqual(testCase, entryLen, cfg.terminalLeadLength + pi * cfg.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+exitPath = result.terminalRouting.exitPath;
+exitLen = sum(sqrt(sum(diff(exitPath, 1, 1).^2, 2)));
+verifyEqual(testCase, exitLen, cfg.terminalLeadLength, 'AbsTol', 1e-6);
+verifyLessThanOrEqual(testCase, max(abs((exitPath - exitPath(1, :)) * t.')), 1e-9, ...
+    'VOUT-to-PAD_B must remain a straight local-u segment');
+verifyEqual(testCase, abs(dot(padB.xy - padA.xy, t)), cfg.terminalLeadSpacing, 'AbsTol', 1e-6);
+verifyEqual(testCase, abs(dot(padB.xy - vout.xy, u)), cfg.terminalLeadLength, 'AbsTol', 1e-6);
+if numel(result.activeCoilLayers) > 1
+    verifyEqual(testCase, result.terminalRouting.outputBendCount, 1);
+    outputPath = result.terminalRouting.outputPath;
+    outputLen = sum(sqrt(sum(diff(outputPath, 1, 1).^2, 2)));
+    verifyEqual(testCase, outputLen, pi * cfg.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+else
+    verifyEqual(testCase, result.terminalRouting.outputBendCount, 0);
+    verifyEmpty(testCase, result.terminalRouting.outputPath);
+end
 end
 
 function t = findTerminalByName(terminals, name)
@@ -1680,4 +1794,13 @@ if isnan(expected)
 else
     verifyEqual(testCase, actual, expected, 'AbsTol', 1e-6, label);
 end
+end
+
+function result = analyzeInternal(overrides)
+% 测试适配器：通过唯一公共主入口进入只读分析模式。
+if nargin < 1
+    overrides = struct();
+end
+overrides.analysisOnly = true;
+result = circular_fpc_main(overrides);
 end
