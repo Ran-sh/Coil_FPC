@@ -304,14 +304,30 @@ if li == 1
     end
 end
 for k = 1:numel(result.vias)
-    v = result.vias(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
+    writeSvgLayerVia(fid, cfg, result.vias(k), li);
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
+end
+
+function writeSvgLayerVia(fid, cfg, v, li)
+% The drilled hole exists on every physical layer.  Copper annulus exists
+% only on the two connected layers; every other layer shows the solid-line
+% antipad/no-copper envelope instead of inventing a copper ring.
+connected = v.fromLayer == li || v.toLayer == li;
+if connected
+    fprintf(fid, ['<circle data-via-name="%s" data-via-role="copper-ring" ', ...
+        'cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n'], ...
+        v.name, v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+else
+    fprintf(fid, ['<circle data-via-name="%s" data-via-role="antipad" ', ...
+        'cx="%.6f" cy="%.6f" r="%.6f" fill="#ffcc1a" fill-opacity="0.60" ', ...
+        'stroke="#000000" stroke-width="0.12"/>\n'], ...
+        v.name, v.xy(1), -v.xy(2), cfg.antipadDiameter / 2);
+end
+fprintf(fid, ['<circle data-via-name="%s" data-via-role="drill" ', ...
+    'cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n'], ...
+    v.name, v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
 end
 
 function role = svgLayerRole(result, li)
@@ -527,6 +543,7 @@ fprintf(fid, 'PASS minCopperToBoardMm: %.6f\n', v.minCopperToBoardMm);
 fprintf(fid, 'PASS minViaToBoardMm: %.6f\n', v.minViaToBoardMm);
 fprintf(fid, 'PASS minDrillToBoardMm: %.6f\n', v.minDrillToBoardMm);
 fprintf(fid, 'PASS minViaToNonConnectedCopperMm: %.6f\n', v.minViaToNonConnectedCopperMm);
+fprintf(fid, 'PASS minAntipadToNonConnectedCopperMm: %.6f\n', v.minAntipadToNonConnectedCopperMm);
 fprintf(fid, 'PASS minCopperToSlotsMm: %.6f\n', v.minCopperToSlotsMm);
 fprintf(fid, 'PASS minPadViaClearanceMm: %.6f\n', v.minPadViaClearanceMm);
 fprintf(fid, 'PASS actualBridgeWidthMm: %.6f\n', v.actualBridgeWidthMm);

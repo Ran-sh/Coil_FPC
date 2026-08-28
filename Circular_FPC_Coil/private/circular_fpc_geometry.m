@@ -619,8 +619,13 @@ else
         % 焊环边缘距 L1 铜边 = viaCoilSpacing（与 VOUT 同款约束）；
         % L2 的内端延伸弧直接落到 V23 中心（无过渡走线，用户设计约定）。
         % clamp 下限：禁止公式在极端参数下为负（负值会让过孔跑到对侧轴线）。
-        rV23 = max(0.1, layoutRegions.rStart - (cfg.viaCoilSpacing + ...
-            cfg.viaPadDiameter / 2 + cfg.traceWidth / 2) + 0.25 * eff.coilPitch);
+        % V23 also drills through the unconnected L1/L4 copper.  Its radial
+        % offset must therefore satisfy the larger of the connected-layer
+        % via-pad clearance and the unconnected-layer antipad envelope.
+        keepoutR = max(cfg.viaCoilSpacing + cfg.viaPadDiameter / 2, ...
+            cfg.antipadDiameter / 2);
+        rV23 = max(0.1, layoutRegions.rStart - (keepoutR + ...
+            cfg.traceWidth / 2 + 1e-3) + 0.25 * eff.coilPitch);
     end
 end
 pads = struct('name', {}, 'xy', {}, 'diameter', {}, 'layer', {}, 'removable', {}, ...

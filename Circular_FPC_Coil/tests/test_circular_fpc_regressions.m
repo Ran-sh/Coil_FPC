@@ -89,7 +89,7 @@ verifyError(testCase, @() circular_fpc_default_config(struct('boardSizingMode', 
     'CircularFPC:InvalidConfig');
 outRoot = createTempOutput(testCase);
 rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board'));
-verifyEqual(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 27.503001, 'AbsTol', 1e-6);
+verifyEqual(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 28.063360125, 'AbsTol', 1e-6);
 verifyTrue(testCase, contains(fileread(fullfile(rAuto.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: auto'));
 turnTxt = fileread(fullfile(rAuto.outputPath, 'reports', '04_turn_scan.csv'));
 verifyTrue(testCase, contains(turnTxt, 'requiredBoardDiameterMm'));
@@ -102,10 +102,15 @@ verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
     'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
-% fixed 28.0（大于 auto 所需）：成功，板径/制造报告/扫描契约保持。
-rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_280', ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 28.0));
-verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 28.0, 'AbsTol', 1e-9);
+% fixed 28.0 虽能容纳基础线圈，但不足以同时满足最终 antipad/过孔板边闭合。
+verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
+    'designName', 'fixed_board_280', 'boardSizingMode', 'fixed', ...
+    'boardOuterDiameter', 28.0)), 'CircularFPC:ValidationFailed');
+verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board_280')));
+% fixed 29.0 大于最终 auto 所需：成功，板径/制造报告/扫描契约保持。
+rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_290', ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 29.0));
+verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 29.0, 'AbsTol', 1e-9);
 verifyTrue(testCase, rFixed.manufacturing.passed);
 verifyTrue(testCase, contains(fileread(fullfile(rFixed.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: fixed'));
 fixedTurnTxt = fileread(fullfile(rFixed.outputPath, 'reports', '04_turn_scan.csv'));
@@ -202,14 +207,16 @@ rMaxL4 = max(sqrt(sum(res.layerPaths(4).coilXY.^2, 2)));
 verifyEqual(testCase, rMaxL2, rMaxL1, 'AbsTol', 1e-9);
 verifyEqual(testCase, rMaxL4, rMaxL3, 'AbsTol', 1e-9);
 verifyGreaterThan(testCase, rMaxL2, rStart + 7.25 * pitch);
-% V23 位置：theta+90 桥轴、半径 = rStart - (viaCoil + 焊环/2 + 线宽/2 - 0.25节距)
+% V23 位置：theta+90 桥轴；径向偏移使用连接层焊环净距与非连接层
+% antipad 包络二者中较大的约束，并留 1 um 数值裕量。
 v23 = res.vias(strcmp({res.vias.name}, 'V23'));
 verifyEqual(testCase, numel(v23), 1);
 uAxis = [cosd(res.config.connectionAngleDeg), sind(res.config.connectionAngleDeg)];
 verifyTrue(testCase, abs(dot(v23.xy, uAxis)) <= 1e-6, ...
     'V23 must lie on the theta+90 bridge axis');
-expectedRV23 = rStart - (res.config.viaCoilSpacing + res.config.viaPadDiameter / 2 + ...
-    res.config.traceWidth / 2 - 0.25 * pitch);
+keepoutR = max(res.config.viaCoilSpacing + res.config.viaPadDiameter / 2, ...
+    res.config.antipadDiameter / 2);
+expectedRV23 = rStart - (keepoutR + res.config.traceWidth / 2 + 1e-3 - 0.25 * pitch);
 verifyEqual(testCase, norm(v23.xy), expectedRV23, 'AbsTol', 1e-6);
 % 13x14 平台下 4/4 仍可生成
 resBig = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
@@ -397,7 +404,7 @@ verifyEmpty(testCase, warningId);
 verifyEqual(testCase, result.boardLayerCount, 4);
 verifyEqual(testCase, result.coilLayerCount, 4);
 verifyEqual(testCase, result.activeCoilLayers, [1 2 3 4]);
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 27.503001, 'AbsTol', 1e-6); % auto：含平台内径约束、外端圆弧、过孔与板框线宽
+verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 28.063360125, 'AbsTol', 1e-6); % auto：闭合最终 antipad、外端过孔与板边净距
 verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 20.21, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
@@ -487,7 +494,7 @@ if isfield(base, 'padPairSpacing') && isfield(scaled, 'padPairSpacing')
 end
 outRoot = createTempOutput(testCase);
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'scaled_geometry', 'geometryScale', 2.0));
-verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 48.013769, 'AbsTol', 1e-6); % auto+scale2：含严格圆弧接触与跨层净距
+verifyEqual(testCase, result.effectiveDimensions.boardOuterDiameter, 48.258162828, 'AbsTol', 1e-6); % auto+scale2：含最终 antipad 与跨层净距
 verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 40.42, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 26.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'AbsTol', 1e-9);
@@ -498,7 +505,7 @@ fullSvg = fullfile(result.outputPath, 'previews', '01_preview_full.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
-    verifyTrue(testCase, contains(svgTxt, 'viewBox="-24.506884 -24.506884 49.013769 49.013769"')); % auto+scale2 板径/2+0.5
+    verifyTrue(testCase, contains(svgTxt, 'viewBox="-24.629081 -24.629081 49.258163 49.258163"')); % auto+scale2 板径/2+0.5
 end
 end
 

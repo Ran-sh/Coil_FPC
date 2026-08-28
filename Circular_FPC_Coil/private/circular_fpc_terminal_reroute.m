@@ -86,6 +86,18 @@ end
 padB = voutXY - L * u;
 exitPath = sampleSegment(voutXY, padB, 0.05);
 
+% Both pad disks must remain wholly on the positive entry side of the coil.
+% Otherwise increasing L silently pulls the pads through the centre and
+% reverses the intended PAD_A/PAD_B/VOUT arrangement.
+sideFloor = cfg.padDiameter / 2;
+minPadProjection = min(dot(padA, u), dot(padB, u));
+if minPadProjection <= sideFloor + 1e-9
+    maxLeadLength = min(dot(qA, u), dot(voutXY, u)) - sideFloor;
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        ['terminalLeadLength %.6f mm moves a pad across the positive entry-side ', ...
+         'boundary; maximum for this d/geometry is %.6f mm.'], L, maxLeadLength);
+end
+
 % Update terminal coordinates.
 idxA = find(strcmp({result.pads.name}, 'PAD_A'), 1);
 idxB = find(strcmp({result.pads.name}, 'PAD_B'), 1);
@@ -172,6 +184,11 @@ end
 result.seriesRoute = route;
 result.seriesSequence = buildSeriesSequence(route);
 
+% The engine sizes the board before this deterministic post-route exists.
+% Close auto sizing over the final copper envelope and regenerate the board
+% loops if d/L moved any terminal or route farther out than the base network.
+result = closeAutoBoardAroundFinalCopper(cfg, result);
+
 % Re-run the same result/manufacturing checks used by the engine after the
 % post-route change, so invalid d/L values can never be exported.
 coils = cell(1, cfg.boardLayerCount);
@@ -219,6 +236,43 @@ result.terminalRouting = struct( ...
     'outputBendCount', double(numel(active) > 1), ...
     'exitBendCount', 0);
 result.config = cfg;
+end
+
+function result = closeAutoBoardAroundFinalCopper(cfg, result)
+if ~strcmp(cfg.boardSizingMode, 'auto')
+    return;
+end
+maxCopperR = 0;
+for li = 1:numel(result.layerPaths)
+    xy = result.layerPaths(li).coilXY;
+    if ~isempty(xy)
+        maxCopperR = max(maxCopperR, max(sqrt(sum(xy.^2, 2))) + cfg.traceWidth / 2);
+    end
+    for k = 1:numel(result.layerPaths(li).connectionPaths)
+        xy = result.layerPaths(li).connectionPaths{k};
+        if ~isempty(xy)
+            maxCopperR = max(maxCopperR, max(sqrt(sum(xy.^2, 2))) + cfg.traceWidth / 2);
+        end
+    end
+end
+for k = 1:numel(result.pads)
+    maxCopperR = max(maxCopperR, norm(result.pads(k).xy) + result.pads(k).diameter / 2);
+end
+for k = 1:numel(result.vias)
+    maxCopperR = max(maxCopperR, norm(result.vias(k).xy) + result.vias(k).padDiameter / 2);
+end
+requiredDiameter = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
+if requiredDiameter <= result.effectiveDimensions.boardOuterDiameter + 1e-9
+    return;
+end
+eff = result.effectiveDimensions;
+eff.boardOuterDiameter = requiredDiameter;
+circular_fpc_validation('validate_feasibility', cfg, eff);
+[boardLoops, actualBridgeWidth, layoutRegions] = circular_fpc_geometry('board', cfg, eff);
+eff.actualBridgeWidth = actualBridgeWidth;
+result.effectiveDimensions = eff;
+result.boardLoops = boardLoops;
+result.layoutRegions = layoutRegions;
 end
 
 function xy = quarterArc(C, R, u, t, a0, a1, n)

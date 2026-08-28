@@ -159,6 +159,7 @@ function v = validateResult(cfg, eff, geom)
 %   minViaToBoardMm        : 过孔焊盘切线到板框线内侧的最小距离
 %   minDrillToBoardMm      : 钻孔切线到板框线内侧的最小距离
 %   minViaToNonConnectedCopperMm : 通孔钻孔切线到非连接层铜的最小距离
+%   minAntipadToNonConnectedCopperMm : 反焊盘边界到非连接层铜的最小距离
 %   minCopperToSlotsMm     : 铜/端子到孔槽最小距离（须 ≥ edgeClearance）
 %   minPadViaClearanceMm   : 焊盘/过孔端子间最小净距
 %   actualBridgeWidthMm    : 实际桥宽（须 ≥ bridgeTargetWidth）
@@ -224,6 +225,11 @@ v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectio
 v.minViaToBoardMm = computeViaToBoard(cfg, eff, geom.vias);
 v.minDrillToBoardMm = computeDrillToBoard(cfg, eff, geom.vias);
 v.minViaToNonConnectedCopperMm = computeViaToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, geom.vias);
+antipadVias = geom.vias;
+if isfield(geom, 'antipadValidationVias')
+    antipadVias = geom.antipadValidationVias;
+end
+v.minAntipadToNonConnectedCopperMm = computeAntipadToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, antipadVias);
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
 v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
@@ -272,6 +278,9 @@ end
 if v.minViaToNonConnectedCopperMm < mfRules.minDrillToCopperMm - 1e-9
     v.messages{end + 1} = 'through-via drill-to-non-connected-layer copper clearance below manufacturing rule'; %#ok<AGROW>
 end
+if v.minAntipadToNonConnectedCopperMm < -1e-9
+    v.messages{end + 1} = 'antipad overlaps non-connected-layer copper'; %#ok<AGROW>
+end
 if v.minCopperToSlotsMm < cfg.edgeClearance - 1e-9
     v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
 end
@@ -313,6 +322,7 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minViaToBoardMm >= cfg.edgeClearance - 1e-9 && ...
     v.minDrillToBoardMm >= mfRules.minDrillToBoardMm - 1e-9 && ...
     v.minViaToNonConnectedCopperMm >= mfRules.minDrillToCopperMm - 1e-9 && ...
+    v.minAntipadToNonConnectedCopperMm >= -1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
     v.minCopperInteriorAngleDeg > copperAngleFloor && ...
@@ -474,15 +484,35 @@ tf = false;
 end
 
 function tf = segmentsIntersect(a1, a2, b1, b2, tol)
+% Robust orientation test.  The previous denominator-based implementation
+% ignored parallel/collinear overlap and also lost the denominator sign.
 d1 = a2 - a1;
 d2 = b2 - b1;
-denom = d1(1) * d2(:, 2) - d1(2) * d2(:, 1);
-par = abs(denom) <= 1e-12;
-r = b1 - a1;
-t = (r(:, 1) .* d2(:, 2) - r(:, 2) .* d2(:, 1)) ./ max(abs(denom), eps);
-u = (r(:, 1) * d1(2) - r(:, 2) * d1(1)) ./ max(abs(denom), eps);
-ok = ~par & t >= -tol & t <= 1 + tol & u >= -tol & u <= 1 + tol;
-tf = any(ok);
+o1 = cross2(d1, b1 - a1);
+o2 = cross2(d1, b2 - a1);
+o3 = cross2(d2, a1 - b1);
+o4 = cross2(d2, a2 - b1);
+proper = ((o1 > tol & o2 < -tol) | (o1 < -tol & o2 > tol)) & ...
+    ((o3 > tol & o4 < -tol) | (o3 < -tol & o4 > tol));
+touch = (abs(o1) <= tol & pointsOnSegment(b1, a1, a2, tol)) | ...
+    (abs(o2) <= tol & pointsOnSegment(b2, a1, a2, tol)) | ...
+    (abs(o3) <= tol & pointOnSegments(a1, b1, b2, tol)) | ...
+    (abs(o4) <= tol & pointOnSegments(a2, b1, b2, tol));
+tf = proper | touch;
+end
+
+function z = cross2(a, b)
+z = a(:, 1) .* b(:, 2) - a(:, 2) .* b(:, 1);
+end
+
+function tf = pointsOnSegment(p, a, b, tol)
+tf = p(:, 1) >= min(a(1), b(1)) - tol & p(:, 1) <= max(a(1), b(1)) + tol & ...
+    p(:, 2) >= min(a(2), b(2)) - tol & p(:, 2) <= max(a(2), b(2)) + tol;
+end
+
+function tf = pointOnSegments(p, a, b, tol)
+tf = p(1) >= min(a(:, 1), b(:, 1)) - tol & p(1) <= max(a(:, 1), b(:, 1)) + tol & ...
+    p(2) >= min(a(:, 2), b(:, 2)) - tol & p(2) <= max(a(:, 2), b(:, 2)) + tol;
 end
 
 function s = computeCopperSpacing(cfg, eff, coils, connectionPaths, pads, vias)
@@ -509,15 +539,20 @@ for li = 1:numel(coils)
     if isempty(xy)
         continue;
     end
-    n = size(xy, 1);
-    for i = 1:n
-        idx = i + per * (1:cfg.turnsPerCoilLayer - 1);
-        idx = idx(idx <= n);
-        if isempty(idx)
-            continue;
+    % A spiral's closest distinct copper is on the immediately adjacent
+    % turn.  Compare the actual piecewise-linear segments at the matching
+    % phase and its two neighbouring samples, rather than only vertices.
+    nSeg = size(xy, 1) - 1;
+    for phaseOffset = -2:2
+        i = (1:nSeg).';
+        j = i + per + phaseOffset;
+        keepPair = j >= 1 & j <= nSeg;
+        if any(keepPair)
+            i = i(keepPair);
+            j = j(keepPair);
+            dMin = min(dMin, min(segmentPairDistances( ...
+                xy(i, :), xy(i + 1, :), xy(j, :), xy(j + 1, :))));
         end
-        d = sqrt(sum((xy(i, :) - xy(idx, :)).^2, 2));
-        dMin = min(dMin, min(d));
     end
 end
 for li = 1:numel(connectionPaths)
@@ -553,11 +588,7 @@ for li = 1:numel(connectionPaths)
                 Qa = Qa(1:max(1, size(Qa, 1) - per), :);
             end
             if ~isempty(Qa)
-                D = sqrt((P(:, 1) - Qa(:, 1).').^2 + (P(:, 2) - Qa(:, 2).').^2);
-                mask = D > 1e-6;
-                if any(mask(:))
-                    dMin = min(dMin, min(D(mask)));
-                end
+                dMin = min(dMin, polylineDistance(P, Qa));
             end
         end
         for k2 = k + 1:numel(paths)
@@ -578,15 +609,77 @@ for li = 1:numel(connectionPaths)
             if size(R2, 1) < 2 || size(P, 1) < 2
                 continue;
             end
-            D = sqrt((P(:, 1) - R2(:, 1).').^2 + (P(:, 2) - R2(:, 2).').^2);
-            mask = D > 1e-6;
-            if any(mask(:))
-                dMin = min(dMin, min(D(mask)));
-            end
+            dMin = min(dMin, polylineDistance(P, R2));
         end
     end
 end
 s = dMin - cfg.traceWidth;
+end
+
+function dMin = polylineDistance(p, q)
+% Exact minimum distance between all finite segments of two polylines.
+if size(p, 1) < 2 || size(q, 1) < 2
+    dMin = inf;
+    return;
+end
+pa = p(1:end - 1, :);
+pb = p(2:end, :);
+qa = q(1:end - 1, :);
+qb = q(2:end, :);
+dMin = inf;
+chunkSize = 128;
+for first = 1:chunkSize:size(pa, 1)
+    last = min(size(pa, 1), first + chunkSize - 1);
+    nP = last - first + 1;
+    nQ = size(qa, 1);
+    a1 = repelem(pa(first:last, :), nQ, 1);
+    a2 = repelem(pb(first:last, :), nQ, 1);
+    b1 = repmat(qa, nP, 1);
+    b2 = repmat(qb, nP, 1);
+    dMin = min(dMin, min(segmentPairDistances(a1, a2, b1, b2)));
+end
+end
+
+function d = segmentPairDistances(a1, a2, b1, b2)
+% Exact Euclidean distance for corresponding 2-D segment pairs.
+d = min([pointSegmentDistances(a1, b1, b2), ...
+    pointSegmentDistances(a2, b1, b2), ...
+    pointSegmentDistances(b1, a1, a2), ...
+    pointSegmentDistances(b2, a1, a2)], [], 2);
+% Endpoint distances alone are nonzero for a proper crossing.
+d(segmentsIntersectRows(a1, a2, b1, b2, 1e-12)) = 0;
+end
+
+function d = pointSegmentDistances(p, a, b)
+ab = b - a;
+len2 = sum(ab.^2, 2);
+t = zeros(size(len2));
+valid = len2 > eps;
+t(valid) = sum((p(valid, :) - a(valid, :)) .* ab(valid, :), 2) ./ len2(valid);
+t = max(0, min(1, t));
+q = a + t .* ab;
+d = sqrt(sum((p - q).^2, 2));
+end
+
+function tf = segmentsIntersectRows(a1, a2, b1, b2, tol)
+d1 = a2 - a1;
+d2 = b2 - b1;
+o1 = cross2(d1, b1 - a1);
+o2 = cross2(d1, b2 - a1);
+o3 = cross2(d2, a1 - b1);
+o4 = cross2(d2, a2 - b1);
+proper = ((o1 > tol & o2 < -tol) | (o1 < -tol & o2 > tol)) & ...
+    ((o3 > tol & o4 < -tol) | (o3 < -tol & o4 > tol));
+touch = (abs(o1) <= tol & pointRowsOnSegments(b1, a1, a2, tol)) | ...
+    (abs(o2) <= tol & pointRowsOnSegments(b2, a1, a2, tol)) | ...
+    (abs(o3) <= tol & pointRowsOnSegments(a1, b1, b2, tol)) | ...
+    (abs(o4) <= tol & pointRowsOnSegments(a2, b1, b2, tol));
+tf = proper | touch;
+end
+
+function tf = pointRowsOnSegments(p, a, b, tol)
+tf = p(:, 1) >= min(a(:, 1), b(:, 1)) - tol & p(:, 1) <= max(a(:, 1), b(:, 1)) + tol & ...
+    p(:, 2) >= min(a(:, 2), b(:, 2)) - tol & p(:, 2) <= max(a(:, 2), b(:, 2)) + tol;
 end
 
 function s = computeCopperToBoard(cfg, eff, coils, connectionPaths, pads, vias)
@@ -655,6 +748,36 @@ for k = 1:numel(vias)
             end
         end
     end
+end
+end
+
+function s = computeAntipadToNonConnectedCopper(cfg, coils, connectionPaths, vias)
+% Antipad is the actual no-copper envelope on every unconnected layer.
+s = computeViaKeepoutToNonConnectedCopper(cfg, coils, connectionPaths, vias, cfg.antipadDiameter / 2);
+end
+
+function s = computeViaKeepoutToNonConnectedCopper(cfg, coils, connectionPaths, vias, keepoutRadius)
+s = inf;
+for k = 1:numel(vias)
+    v = vias(k);
+    viaMin = inf;
+    connected = [v.fromLayer, v.toLayer];
+    for li = 1:numel(coils)
+        if ismember(li, connected)
+            continue;
+        end
+        copper = coils{li};
+        paths = connectionPaths{li};
+        if ~isempty(copper)
+            viaMin = min(viaMin, pointToCopperEdge(v.xy, copper) - keepoutRadius - cfg.traceWidth / 2);
+        end
+        for p = 1:numel(paths)
+            if ~isempty(paths{p})
+                viaMin = min(viaMin, pointToCopperEdge(v.xy, paths{p}) - keepoutRadius - cfg.traceWidth / 2);
+            end
+        end
+    end
+    s = min(s, viaMin);
 end
 end
 

@@ -118,21 +118,28 @@ end
 
 % ----------------------------------------------------------------------
 function plotVias(result, layerNumber)
-% 过孔贯穿层叠：每个物理层视图都显示完整过孔集合。
-% layerNumber 保留在接口中以兼容现有调用，但不再用于过滤。
- %#ok<INUSD>
+% 过孔贯穿层叠：每个物理层视图都显示钻孔；连接层显示深灰铜环，
+% 非连接层显示实体黑边的 antipad 禁铜范围（不使用虚线）。
 th = linspace(0, 2 * pi, 65);
 for k = 1:numel(result.vias)
     v = result.vias(k);
     xy = v.xy;
-    rPad = v.padDiameter / 2;
     rDrill = v.drillDiameter / 2;
-    viaDarkGray = [0.28 0.28 0.28];
-    patch(xy(1) + rPad * cos(th), xy(2) + rPad * sin(th), viaDarkGray, ...
-        'FaceColor', viaDarkGray, 'EdgeColor', 'k', 'LineWidth', 1.0);
+    if isempty(layerNumber) || v.fromLayer == layerNumber || v.toLayer == layerNumber
+        rOuter = v.padDiameter / 2;
+        outerColor = [0.28 0.28 0.28];
+        outerAlpha = 1;
+    else
+        rOuter = result.config.antipadDiameter / 2;
+        outerColor = [1.00 0.82 0.05];
+        outerAlpha = 0.60;
+    end
+    patch(xy(1) + rOuter * cos(th), xy(2) + rOuter * sin(th), outerColor, ...
+        'FaceColor', outerColor, 'FaceAlpha', outerAlpha, ...
+        'EdgeColor', 'k', 'LineWidth', 1.0, 'LineStyle', '-');
     patch(xy(1) + rDrill * cos(th), xy(2) + rDrill * sin(th), [1 1 1], ...
-        'FaceColor', [1 1 1], 'EdgeColor', 'k', 'LineWidth', 0.9);
-    text(xy(1), xy(2) + rPad + 0.25, v.name, ...
+        'FaceColor', [1 1 1], 'EdgeColor', 'k', 'LineWidth', 0.9, 'LineStyle', '-');
+    text(xy(1), xy(2) + rOuter + 0.25, v.name, ...
         'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', ...
         'FontSize', 7, 'Color', 'k');
 end

@@ -44,6 +44,12 @@ for sizingPass = 1:maxOuterSizingPasses
     geom.connectionPaths = connectionPaths;
     geom.pads = pads;
     geom.vias = vias;
+    if strcmp(cfg.terminalPlacementMode, 'auto')
+        % VOUT is only a provisional search result here and is replaced by
+        % circular_fpc_terminal_reroute.  Do not let that throw-away point
+        % drive the antipad sizing loop; final validation checks real VOUT.
+        geom.antipadValidationVias = vias(~strcmp({vias.name}, 'VOUT'));
+    end
     geom.seriesRoute = seriesRoute;
     geom.seriesSequence = seriesSequence;
     geom.activeLayers = activeLayers;
@@ -53,15 +59,17 @@ for sizingPass = 1:maxOuterSizingPasses
     end
     mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
     deltaDrill = 0;
+    deltaAntipad = 0;
     if crossLayerSizing
         deltaDrill = mfRules.minDrillToCopperMm - validation.minViaToNonConnectedCopperMm;
+        deltaAntipad = -validation.minAntipadToNonConnectedCopperMm;
     end
     angleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
     contactArcInvalid = contactArcSizing && ...
         (validation.minOuterViaContactSweepDeg <= angleFloor || ...
         validation.maxOuterViaContactSweepDeg > 150);
     deltaContact = 0.05 * contactArcInvalid;
-    requiredExtension = max([0, deltaDrill, deltaContact]);
+    requiredExtension = max([0, deltaDrill, deltaAntipad, deltaContact]);
     if requiredExtension <= 1e-9
         break;
     end
@@ -69,11 +77,12 @@ for sizingPass = 1:maxOuterSizingPasses
     eff.viaEndExtension = eff.viaEndExtension + requiredExtension + 1e-6;
 end
 mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
-if crossLayerSizing && validation.minViaToNonConnectedCopperMm < ...
-        mfRules.minDrillToCopperMm - 1e-9
+if crossLayerSizing && (validation.minViaToNonConnectedCopperMm < ...
+        mfRules.minDrillToCopperMm - 1e-9 || ...
+        validation.minAntipadToNonConnectedCopperMm < -1e-9)
     error('CircularFPC:GeometryInfeasible', ...
-        ['4/4 through-via placement cannot clear non-connected-layer copper ', ...
-        'within %d automatic sizing passes.'], maxOuterSizingPasses);
+        ['4/4 through-via drill/antipad cannot clear non-connected-layer copper ', ...
+         'within %d automatic sizing passes.'], maxOuterSizingPasses);
 end
 if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
         cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg || ...
