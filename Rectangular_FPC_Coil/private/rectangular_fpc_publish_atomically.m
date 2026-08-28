@@ -1,12 +1,24 @@
-function rectangular_fpc_publish_atomically( ...
+function varargout = rectangular_fpc_publish_atomically( ...
     tempOutputFolder, outputFolder, moveFolder)
 %RECTANGULAR_FPC_PUBLISH_ATOMICALLY Publish one minute-version atomically.
 %   RECTANGULAR_FPC_PUBLISH_ATOMICALLY(STAGING, OUTPUT) replaces OUTPUT
 %   with STAGING while retaining a recoverable backup until publication
 %   succeeds. An optional MOVEFOLDER function handle supports deterministic
 %   failure-path testing and defaults to @movefile.
-%   The sibling *_publish.lock directory is the commit barrier: readers must
-%   retry while it exists and only open OUTPUT after observing it absent.
+%   The sibling *_publish.lock directory is the commit barrier. Readers use
+%   the acquire_access operation through rectangular_fpc_read_committed so
+%   checking and reading occur while holding the same exclusive lock.
+
+if nargin >= 1 && ischar(tempOutputFolder) && ...
+        strcmp(tempOutputFolder, 'acquire_access')
+    if nargin ~= 2
+        error('RectangularFPC:InvalidPublishRequest', ...
+            'acquire_access requires exactly one output folder.');
+    end
+    varargout{1} = acquirePublishLock( ...
+        [outputFolder '_publish.lock'], @movefile);
+    return;
+end
 
 if nargin < 2
     error('RectangularFPC:InvalidPublishRequest', ...
@@ -204,17 +216,15 @@ if isfile(ownerFile)
         'tokens', 'once');
     hostMatch = regexp(ownerText, '(?m)^host=([^\r\n]+)$', ...
         'tokens', 'once');
-    if isempty(pidMatch) || isempty(hostMatch) || ...
-            ~strcmpi(strtrim(hostMatch{1}), localHostIdentity())
+    if isempty(pidMatch) || isempty(hostMatch)
+        stale = isExpiredIncompleteLock(ownerText, ownerFile);
+    elseif ~strcmpi(strtrim(hostMatch{1}), localHostIdentity())
         stale = false;
     else
         stale = ~isProcessAlive(str2double(pidMatch{1}));
     end
 else
-    % An ownerless lock is ambiguous (legacy or currently initializing),
-    % so fail closed. A dead recorded PID is the only automatic takeover
-    % condition.
-    stale = false;
+    stale = isExpiredIncompleteLock('', lockFolder);
 end
 
 end
@@ -222,7 +232,7 @@ end
 
 function alive = isProcessAlive(pid)
 
-alive = false;
+alive = true;
 if ~isfinite(pid) || pid < 1 || pid ~= floor(pid)
     return;
 end
@@ -231,13 +241,54 @@ if ispc
         process = System.Diagnostics.Process.GetProcessById(int32(pid));
         alive = ~process.HasExited;
         process.Dispose();
-    catch
-        alive = false;
+    catch probeError
+        if ~isempty(probeError.ExceptionObject) && strcmp( ...
+                char(probeError.ExceptionObject.GetType().FullName), ...
+                'System.ArgumentException')
+            alive = false;
+        else
+            alive = true;
+        end
     end
-else
-    [status, ~] = system(sprintf('kill -0 %d 2>/dev/null', pid));
-    alive = status == 0;
+elseif isunix
+    [status, ~] = system(sprintf('ps -p %d -o pid=', pid));
+    if status == 0
+        alive = true;
+    elseif status == 1
+        alive = false;
+    else
+        alive = true;
+    end
 end
+
+end
+
+
+function expired = isExpiredIncompleteLock(ownerText, fallbackPath)
+
+gracePeriod = minutes(5);
+created = NaT;
+match = regexp(ownerText, '(?m)^created=([^\r\n]+)$', ...
+    'tokens', 'once');
+if ~isempty(match)
+    try
+        created = datetime(match{1}, ...
+            'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX', ...
+            'TimeZone', 'UTC');
+    catch
+        created = NaT;
+    end
+end
+if isnat(created)
+    info = dir(fallbackPath);
+    if isempty(info)
+        expired = false;
+        return;
+    end
+    created = datetime(info(1).datenum, 'ConvertFrom', 'datenum', ...
+        'TimeZone', 'UTC');
+end
+expired = datetime('now', 'TimeZone', 'UTC') - created > gracePeriod;
 
 end
 
@@ -276,6 +327,16 @@ end
 function recoverOrphanBackup(outputFolder, moveFolder)
 
 if isfolder(outputFolder)
+    if hasOrphanBackups(outputFolder)
+        if isCommittedOutput(outputFolder)
+            removeOrphanBackups(outputFolder);
+        else
+            error('RectangularFPC:AtomicRecoveryFailed', ...
+                ['Formal output is incomplete while a recovery backup ', ...
+                'exists; both were preserved for manual inspection: %s'], ...
+                outputFolder);
+        end
+    end
     return;
 end
 if isfile(outputFolder)
@@ -299,6 +360,81 @@ if ~restored
         'Unable to recover interrupted publication from %s: %s', ...
         backupFolder, message);
 end
+
+end
+
+
+function present = hasOrphanBackups(outputFolder)
+
+[parentFolder, outputName] = fileparts(outputFolder);
+backups = dir(fullfile(parentFolder, [outputName '_backup_*']));
+present = any([backups.isdir]);
+
+end
+
+
+function committed = isCommittedOutput(outputFolder)
+
+committed = false;
+statusFile = fullfile(outputFolder, 'generation_status.txt');
+manifestFile = fullfile(outputFolder, 'reports', '08_file_manifest.csv');
+if ~isfile(statusFile) || ~isfile(manifestFile) || ...
+        isempty(regexp(fileread(statusFile), ...
+        '(?m)^Status:\s*SUCCESS\s*$', 'once'))
+    return;
+end
+try
+    manifest = readtable(manifestFile, 'TextType', 'string');
+    required = {'relativePath', 'sizeBytes', 'sha256'};
+    if ~all(ismember(required, manifest.Properties.VariableNames))
+        return;
+    end
+    for rowIndex = 1:height(manifest)
+        artifact = fullfile(outputFolder, strrep( ...
+            char(manifest.relativePath(rowIndex)), '/', filesep));
+        info = dir(artifact);
+        if isempty(info) || info(1).isdir || ...
+                info(1).bytes ~= manifest.sizeBytes(rowIndex) || ...
+                ~strcmpi(sha256File(artifact), ...
+                char(manifest.sha256(rowIndex)))
+            return;
+        end
+    end
+catch
+    return;
+end
+committed = true;
+
+end
+
+
+function removeOrphanBackups(outputFolder)
+
+[parentFolder, outputName] = fileparts(outputFolder);
+backups = dir(fullfile(parentFolder, [outputName '_backup_*']));
+for backupIndex = 1:numel(backups)
+    if backups(backupIndex).isdir
+        rmdir(fullfile(backups(backupIndex).folder, ...
+            backups(backupIndex).name), 's');
+    end
+end
+
+end
+
+
+function hash = sha256File(filename)
+
+fid = fopen(filename, 'rb');
+if fid == -1
+    hash = '';
+    return;
+end
+cleanup = onCleanup(@() fclose(fid));
+bytes = fread(fid, Inf, '*uint8');
+clear cleanup;
+digest = java.security.MessageDigest.getInstance('SHA-256');
+hashBytes = typecast(digest.digest(bytes), 'uint8');
+hash = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
 
 end
 

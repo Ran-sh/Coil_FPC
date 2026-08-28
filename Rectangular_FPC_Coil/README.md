@@ -17,7 +17,8 @@ result = rectangular_fpc_main(struct( ...
 analysis = rectangular_fpc_main(struct('analysisOnly', true));
 ```
 
-公共入口：`rectangular_fpc_default_config(overrides)`、`rectangular_fpc_main(overrides)`。
+公共入口：`rectangular_fpc_default_config(overrides)`、`rectangular_fpc_main(overrides)`、
+`rectangular_fpc_read_committed(outputPath, reader)`。
 旧入口 `fpc_coil_default_config`、`fpc_coil_main` 仍可用，但会发出 `RectangularFPC:DeprecatedAPI`。
 
 ## 输出版本
@@ -29,7 +30,7 @@ rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/
 ```
 
 - 同一分钟同名设计原子替换，失败时恢复旧版本。
-- 读取前确认同名 `*_publish.lock` 不存在；若存在，等待其消失后再读。
+- 读取必须通过 `rectangular_fpc_read_committed` 持有访问锁；并发占用时稍后重试。
 - 跨分钟保留历史版本。
 - `analysisOnly=true` 不创建文件或目录。
 - 历史 `fpc_coil_output/` 不迁移、不删除。
@@ -51,6 +52,6 @@ addpath('tests');
 run_all_verification();
 ```
 
-当前套件共 52 项测试，覆盖回归、制造、导出与原子回滚。
+当前套件共 56 项测试，覆盖回归、制造、导出与原子回滚。
 
 DXF 是工程几何，不是完整生产文件；制造前请复核叠层、材料和电气参数。

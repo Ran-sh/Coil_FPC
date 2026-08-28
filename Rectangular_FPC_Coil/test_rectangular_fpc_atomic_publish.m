@@ -76,6 +76,69 @@ verifyFalse(testCase, isfolder(paths.staging));
 clear cleanup;
 end
 
+function testCommittedReaderHoldsExclusiveAccessLock(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+
+reader = @(folder) verifyPublishBlockedDuringRead(testCase, folder, paths);
+marker = rectangular_fpc_read_committed(paths.output, reader);
+
+verifyEqual(testCase, marker, 'old_marker');
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testExpiredMalformedLockCanBeRecovered(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+fileCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear fileCleanup;
+
+rectangular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(lockFolder));
+clear cleanup;
+end
+
+function testCommittedOutputCleansOrphanBackup(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+orphanBackup = [paths.output '_backup_committed_crash'];
+mkdir(orphanBackup);
+writeMarker(fullfile(orphanBackup, 'orphan_marker.txt'));
+
+rectangular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(orphanBackup));
+verifyEmpty(testCase, dir(paths.backupPattern));
+clear cleanup;
+end
+
+function testIncompleteOutputPreservesRecoveryBackup(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+orphanBackup = [paths.output '_backup_rollback_failed'];
+mkdir(orphanBackup);
+writeMarker(fullfile(orphanBackup, 'last_good_marker.txt'));
+
+verifyError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'RectangularFPC:AtomicRecoveryFailed');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyTrue(testCase, isfile(fullfile( ...
+    orphanBackup, 'last_good_marker.txt')));
+verifyFalse(testCase, isfolder(paths.staging));
+clear cleanup;
+end
+
 function paths = makeFixture()
 paths.root = tempname;
 paths.output = fullfile(paths.root, 'design_20000101_0000');
@@ -130,11 +193,52 @@ fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear cleanup;
 end
 
+function marker = verifyPublishBlockedDuringRead(testCase, folder, paths)
+verifyTrue(testCase, isfolder([paths.output '_publish.lock']));
+verifyError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
+verifyTrue(testCase, isfolder(folder));
+marker = erase(fileread(fullfile(folder, 'old_marker.txt')), 'marker');
+marker = ['old_' marker 'marker'];
+end
+
 function writeMarker(filename)
 fid = fopen(filename, 'w');
 cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'marker');
 clear cleanup;
+end
+
+function writeCommitEvidence(outputFolder)
+statusFile = fullfile(outputFolder, 'generation_status.txt');
+fid = fopen(statusFile, 'w');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'Status: SUCCESS\n');
+clear cleanup;
+reportsFolder = fullfile(outputFolder, 'reports');
+mkdir(reportsFolder);
+manifestFile = fullfile(reportsFolder, '08_file_manifest.csv');
+oldMarker = fullfile(outputFolder, 'old_marker.txt');
+oldInfo = dir(oldMarker);
+statusInfo = dir(statusFile);
+fid = fopen(manifestFile, 'w');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'relativePath,role,sizeBytes,sha256\n');
+fprintf(fid, 'old_marker.txt,test,%d,%s\n', ...
+    oldInfo.bytes, sha256File(oldMarker));
+fprintf(fid, 'generation_status.txt,status,%d,%s\n', ...
+    statusInfo.bytes, sha256File(statusFile));
+clear cleanup;
+end
+
+function hash = sha256File(filename)
+fid = fopen(filename, 'rb');
+cleanup = onCleanup(@() fclose(fid));
+bytes = fread(fid, Inf, '*uint8');
+clear cleanup;
+digest = java.security.MessageDigest.getInstance('SHA-256');
+hashBytes = typecast(digest.digest(bytes), 'uint8');
+hash = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
 end
 
 function removeFixture(root)
