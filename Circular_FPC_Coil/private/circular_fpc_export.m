@@ -52,7 +52,7 @@ dxfDir = fullfile(outDir, 'dxf');
 reportsDir = fullfile(outDir, 'reports');
 mkdir(dxfDir);
 mkdir(reportsDir);
-writeBoardDxf(fullfile(dxfDir, '00_board_outline.dxf'), result.boardLoops);
+writeBoardDxf(fullfile(dxfDir, '00_board_outline.dxf'), cfg, result.boardLoops);
 writeDrillMapDxf(fullfile(dxfDir, '00_drill_map.dxf'), result);
 for li = 1:cfg.boardLayerCount
     layerDir = fullfile(dxfDir, sprintf('L%d', li));
@@ -76,12 +76,12 @@ writeStatus(cfg, result, fullfile(outDir, 'generation_status.txt'));
 writeFileManifest(fullfile(reportsDir, '08_file_manifest.csv'), outDir);
 end
 
-function writeBoardDxf(filename, boardLoops)
-% 板框 DXF：5 个闭合 LWPOLYLINE（1 外边界 + 4 孔槽）。
+function writeBoardDxf(filename, cfg, boardLoops)
+% 板框 DXF：5 个闭合、带可配置实际线宽的 LWPOLYLINE（1 外边界 + 4 孔槽）。
 fid = openOutputFile(filename);
 writeDxfHeader(fid, {'BOARD'});
 for k = 1:numel(boardLoops)
-    writeLwPolyline(fid, boardLoops(k).xy, 'BOARD', true);
+    writeLwPolyline(fid, boardLoops(k).xy, 'BOARD', true, cfg.boardOutlineLineWidth);
 end
 writeDxfFooter(fid);
 fclose(fid);
@@ -222,9 +222,15 @@ extent = result.effectiveDimensions.boardOuterDiameter / 2 + max(cfg.edgeClearan
 fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.6f">\n', ...
     -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
-    fprintf(fid, '<polygon points="%s" fill="none" stroke="black" stroke-width="0.15"/>\n', pointsAttr(result.boardLoops(k).xy));
+    if result.boardLoops(k).isHole
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    else
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    end
 end
-colors = {'#d62728', '#1f77b4', '#2ca02c', '#9467bd'};
+colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
 for li = 1:numel(result.layerPaths)
     cidx = mod(li - 1, 4) + 1;
     if ~isempty(result.layerPaths(li).coilXY)
@@ -242,15 +248,17 @@ writeSvgLegendBackground(fid, bg);
 idx = 0;
 for k = 1:numel(result.pads)
     p = result.pads(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
         p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, p, labelX, labelY(idx));
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
         v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
+        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, v, labelX, labelY(idx));
 end
@@ -269,9 +277,15 @@ extent = result.effectiveDimensions.boardOuterDiameter / 2 + max(cfg.edgeClearan
 fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.6f">\n', ...
     -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
-    fprintf(fid, '<polygon points="%s" fill="none" stroke="black" stroke-width="0.15"/>\n', pointsAttr(result.boardLoops(k).xy));
+    if result.boardLoops(k).isHole
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    else
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    end
 end
-colors = {'#d62728', '#1f77b4', '#2ca02c', '#9467bd'};
+colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
 cidx = mod(li - 1, 4) + 1;
 if ~isempty(result.layerPaths(li).coilXY)
     fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
@@ -285,17 +299,16 @@ end
 if li == 1
     for k = 1:numel(result.pads)
         p = result.pads(k);
-        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
             p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     end
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
-    if li ~= v.fromLayer && li ~= v.toLayer
-        continue;
-    end
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
         v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
+        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
@@ -346,13 +359,21 @@ svgYMax = -yMin;
 fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.3f">\n', ...
     xMin, svgYMin, xMax - xMin, svgYMax - svgYMin);
 for k = 1:numel(result.boardLoops)
-    fprintf(fid, '<polygon points="%s" fill="none" stroke="black" stroke-width="0.15"/>\n', pointsAttr(result.boardLoops(k).xy));
+    if result.boardLoops(k).isHole
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    else
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    end
 end
+colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
 for li = 1:numel(result.layerPaths)
     paths = result.layerPaths(li).connectionPaths;
     for k = 1:numel(paths)
-        fprintf(fid, '<polyline points="%s" fill="none" stroke="#1f77b4" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-            pointsAttr(paths{k}), cfg.traceWidth);
+        cidx = mod(li - 1, numel(colors)) + 1;
+        fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
+            pointsAttr(paths{k}), colors{cidx}, cfg.traceWidth);
     end
 end
 [labelX, labelY, bg] = svgLegendLayout(xMin, svgYMin, xMax, svgYMax, numel(result.pads) + numel(result.vias));
@@ -360,15 +381,17 @@ writeSvgLegendBackground(fid, bg);
 idx = 0;
 for k = 1:numel(result.pads)
     p = result.pads(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#d62728"/>\n', ...
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
         p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, p, labelX, labelY(idx));
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="none" stroke="#7f7f7f" stroke-width="0.1"/>\n', ...
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
         v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
+        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
     idx = idx + 1;
     writeSvgTerminalText(fid, v, labelX, labelY(idx));
 end
@@ -426,6 +449,7 @@ fprintf(fid, 'coilPitch: %.6f mm\n', eff.coilPitch);
 fprintf(fid, 'traceWidth: %.6f mm\n', cfg.traceWidth);
 fprintf(fid, 'traceSpacing: %.6f mm\n', cfg.traceSpacing);
 fprintf(fid, 'edgeClearance: %.6f mm\n', cfg.edgeClearance);
+fprintf(fid, 'boardOutlineLineWidth: %.6f mm\n', cfg.boardOutlineLineWidth);
 fprintf(fid, 'viaPadDiameter: %.6f mm\n', cfg.viaPadDiameter);
 fprintf(fid, 'viaDrillDiameter: %.6f mm\n', cfg.viaDrillDiameter);
 fprintf(fid, 'viaCoilSpacing: %.6f mm\n', cfg.viaCoilSpacing);
@@ -440,7 +464,11 @@ else
 end
 fprintf(fid, 'maxSeriesContinuityErrorMm: %.9f\n', result.validation.maxSeriesContinuityErrorMm);
 fprintf(fid, 'maxConnectionTurnDeg: %.6f\n', result.validation.maxConnectionTurnDeg);
+fprintf(fid, 'minOuterViaContactSweepDeg: %.6f\n', result.validation.minOuterViaContactSweepDeg);
+fprintf(fid, 'maxOuterViaContactSweepDeg: %.6f\n', result.validation.maxOuterViaContactSweepDeg);
 fprintf(fid, 'connectionAngleDeg: %.6f\n', cfg.connectionAngleDeg);
+fprintf(fid, 'terminalLeadSpacing: %.6f\n', cfg.terminalLeadSpacing);
+fprintf(fid, 'terminalLeadLength: %.6f\n', cfg.terminalLeadLength);
 fprintf(fid, 'padPairSpacing: %.6f\n', cfg.padPairSpacing);
 for k = 1:numel(result.pads)
     p = result.pads(k);
@@ -469,17 +497,19 @@ if strcmp(cfg.boardSizingMode, 'auto')
         if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
             spanMax = (t - 1) + 0.25; % 4/4 的 L2 多绕 1/4 圈
         end
-        termBase = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
-            eff.coilPitch * (t - 1) + eff.viaEndExtension + ...
-            max(cfg.traceWidth, cfg.viaPadDiameter) / 2;
+        baseR = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
+            eff.coilPitch * (t - 1);
+        termBase = hypot(baseR + eff.viaEndExtension, eff.viaEndExtension) + ...
+            cfg.viaPadDiameter / 2;
         termFrac = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
-            eff.coilPitch * spanMax + eff.viaEndExtension + cfg.traceWidth / 2;
-        boardD = 2 * (max(termBase, termFrac) + cfg.edgeClearance);
+            eff.coilPitch * spanMax + cfg.traceWidth / 2;
+        boardD = 2 * (max(termBase, termFrac) + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
         fprintf(fid, '%d,%.6f,%.6f\n', t, req, boardD);
     end
 else
     fprintf(fid, 'turns,requiredRadialWidthMm,fitsBoard\n');
-    available = eff.boardOuterDiameter / 2 - cfg.edgeClearance - eff.coilInnerDiameter / 2;
+    available = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2 - ...
+        cfg.edgeClearance - eff.coilInnerDiameter / 2;
     for t = 2:cfg.turnScanMax
         req = cfg.traceWidth + (t - 1) * eff.coilPitch;
         fprintf(fid, '%d,%.6f,%d\n', t, req, req <= available + 1e-9);
@@ -494,12 +524,17 @@ fprintf(fid, 'PASS noSelfIntersections: %d\n', v.noSelfIntersections);
 fprintf(fid, 'PASS closedBoardLoopCount: %d\n', v.closedBoardLoopCount);
 fprintf(fid, 'PASS minCopperSpacingMm: %.6f\n', v.minCopperSpacingMm);
 fprintf(fid, 'PASS minCopperToBoardMm: %.6f\n', v.minCopperToBoardMm);
+fprintf(fid, 'PASS minViaToBoardMm: %.6f\n', v.minViaToBoardMm);
+fprintf(fid, 'PASS minDrillToBoardMm: %.6f\n', v.minDrillToBoardMm);
+fprintf(fid, 'PASS minViaToNonConnectedCopperMm: %.6f\n', v.minViaToNonConnectedCopperMm);
 fprintf(fid, 'PASS minCopperToSlotsMm: %.6f\n', v.minCopperToSlotsMm);
 fprintf(fid, 'PASS minPadViaClearanceMm: %.6f\n', v.minPadViaClearanceMm);
 fprintf(fid, 'PASS actualBridgeWidthMm: %.6f\n', v.actualBridgeWidthMm);
 fprintf(fid, 'PASS uniqueSeriesNetwork: %d\n', v.uniqueSeriesNetwork);
 fprintf(fid, 'PASS maxSeriesContinuityErrorMm: %.9f\n', v.maxSeriesContinuityErrorMm);
 fprintf(fid, 'PASS maxConnectionTurnDeg: %.6f\n', v.maxConnectionTurnDeg);
+fprintf(fid, 'PASS minOuterViaContactSweepDeg: %.6f\n', v.minOuterViaContactSweepDeg);
+fprintf(fid, 'PASS maxOuterViaContactSweepDeg: %.6f\n', v.maxOuterViaContactSweepDeg);
 fprintf(fid, 'PASS viaOverlapFree: %d\n', v.viaOverlapFree);
 for m = v.messages
     fprintf(fid, 'FAIL %s\n', m{1});
@@ -623,6 +658,12 @@ if ~checkInsUnitsMm(txt)
 end
 if countClosedLwpolylines(txt) ~= 5
     error('CircularFPC:ExportReadbackFailed', 'Board DXF must contain exactly 5 closed LWPOLYLINE entities.');
+end
+[~, boardWidths, boardPolyCount] = readDxfEntities(txt);
+if boardPolyCount ~= 5 || numel(boardWidths) ~= 5 || ...
+        any(abs(boardWidths - cfg.boardOutlineLineWidth) > 1e-9)
+    error('CircularFPC:ExportReadbackFailed', ...
+        'Board DXF outline width must be %.6f mm on all five loops.', cfg.boardOutlineLineWidth);
 end
 drillFile = fullfile(tempDir, 'dxf', '00_drill_map.dxf');
 if ~isfile(drillFile)

@@ -9,44 +9,101 @@ eff.viaEndExtension = max(0, cfg.viaCoilSpacing + cfg.viaPadDiameter / 2 + cfg.t
 if strcmp(cfg.boardSizingMode, 'auto')
     % 板框自动定尺寸：线圈最外圈中心线 + 延伸区 + 端点过孔焊环 + 板边净距。
     eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
+    if strcmp(cfg.terminalPlacementMode, 'manual')
+        % 手动模式仍允许 auto 板径，但必须再包住用户给定的实际端子坐标；
+        % 这样 auto → manual 回读不会把已验证的外移过孔截回板边。
+        eff.boardOuterDiameter = max(eff.boardOuterDiameter, ...
+            requiredManualTerminalBoardDiameter(cfg));
+    end
 end
-circular_fpc_validation('validate_feasibility', cfg, eff);
-[boardLoops, actualBridgeWidth, layoutRegions] = circular_fpc_geometry('board', cfg, eff);
-eff.actualBridgeWidth = actualBridgeWidth;
 activeLayers = activeLayerMap(cfg);         % 层叠组合 → 活动线圈层，如 4/2 → [1 4]
 directions = ones(1, numel(activeLayers));  % 绕向：+1 = CCW 由内向外，-1 = CW 由外向内
 directions(2:2:end) = -1;                   % 奇数序号层 CCW、偶数层 CW（层间交替反向）
-[coils, connectionPaths, pads, vias, seriesRoute, returnLayer] = ...
-    circular_fpc_geometry('network', cfg, eff, activeLayers, directions, layoutRegions);
-seriesSequence = buildSeriesSequence(seriesRoute); % 只保留关键节点的串联序列（用于报告）
-geom = struct();
-geom.boardLoops = boardLoops;
-geom.actualBridgeWidth = actualBridgeWidth;
-geom.layoutRegions = layoutRegions;
-geom.coils = coils;
-geom.connectionPaths = connectionPaths;
-geom.pads = pads;
-geom.vias = vias;
-geom.seriesRoute = seriesRoute;
-geom.seriesSequence = seriesSequence;
-geom.activeLayers = activeLayers;
-validation = circular_fpc_validation('validate_result', cfg, eff, geom);
-% 任一验证指标失败（间距/净距/连续性/角度等）一律拒绝继续，杜绝带病导出。
-% 角度类指标特别检出并给出与算法一致的错误文案；其余指标由 manufacturing 复核兜底。
-if ~validation.passed
-    error('CircularFPC:ValidationFailed', ...
-        'Generated geometry failed validation: %s', strjoin(validation.messages, '; '));
+% 4/4 通孔会穿过另外两层：若非连接层的线进入钻孔/反焊盘区域，
+% 自动增加所有外端过孔的径向引出长度，并同步扩大板框。2 层线圈、
+% 4 层板但只有 1/2 层活动线圈没有这条跨活动层的约束。
+crossLayerSizing = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
+contactArcSizing = cfg.coilLayerCount > 1;
+autoOuterSizing = crossLayerSizing || contactArcSizing;
+maxOuterSizingPasses = 12;
+for sizingPass = 1:maxOuterSizingPasses
+    if sizingPass > 1 && strcmp(cfg.boardSizingMode, 'auto')
+        eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
+    end
+    circular_fpc_validation('validate_feasibility', cfg, eff);
+    [boardLoops, actualBridgeWidth, layoutRegions] = circular_fpc_geometry('board', cfg, eff);
+    eff.actualBridgeWidth = actualBridgeWidth;
+    [coils, connectionPaths, pads, vias, seriesRoute, returnLayer] = ...
+        circular_fpc_geometry('network', cfg, eff, activeLayers, directions, layoutRegions);
+    seriesSequence = buildSeriesSequence(seriesRoute); % 只保留关键节点的串联序列（用于报告）
+    geom = struct();
+    geom.boardLoops = boardLoops;
+    geom.actualBridgeWidth = actualBridgeWidth;
+    geom.layoutRegions = layoutRegions;
+    geom.coils = coils;
+    geom.connectionPaths = connectionPaths;
+    geom.pads = pads;
+    geom.vias = vias;
+    geom.seriesRoute = seriesRoute;
+    geom.seriesSequence = seriesSequence;
+    geom.activeLayers = activeLayers;
+    validation = circular_fpc_validation('validate_result', cfg, eff, geom);
+    if ~autoOuterSizing || sizingPass == maxOuterSizingPasses
+        break;
+    end
+    mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
+    deltaDrill = 0;
+    if crossLayerSizing
+        deltaDrill = mfRules.minDrillToCopperMm - validation.minViaToNonConnectedCopperMm;
+    end
+    angleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
+    contactArcInvalid = contactArcSizing && ...
+        (validation.minOuterViaContactSweepDeg <= angleFloor || ...
+        validation.maxOuterViaContactSweepDeg > 150);
+    deltaContact = 0.05 * contactArcInvalid;
+    requiredExtension = max([0, deltaDrill, deltaContact]);
+    if requiredExtension <= 1e-9
+        break;
+    end
+    % 加 1 um 防止下一轮因浮点误差反复停在边界上。
+    eff.viaEndExtension = eff.viaEndExtension + requiredExtension + 1e-6;
 end
-% 制造结果二次审查（ADR-1/9）：以实际几何结果指标替换配置值重新检查。
-manufacturing = circular_fpc_manufacturing('check_result', cfg, validation);
-if ~manufacturing.passed
-    error('CircularFPC:ValidationFailed', ...
-        'Manufacturing result checks failed: %s', strjoin(manufacturing.failures, '; '));
+mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
+if crossLayerSizing && validation.minViaToNonConnectedCopperMm < ...
+        mfRules.minDrillToCopperMm - 1e-9
+    error('CircularFPC:GeometryInfeasible', ...
+        ['4/4 through-via placement cannot clear non-connected-layer copper ', ...
+        'within %d automatic sizing passes.'], maxOuterSizingPasses);
 end
-% 建议性提示（非错误）：平台角部超出内接圆进入桥区走廊时给出量化建议，
-% 最终可行性由上面的实测验证判定。advisories 随 result.validation 输出，
-% main 入口打印到命令行，analyze 只读入口仅携带不打印。
-validation.advisories = platformFitAdvisories(cfg, eff);
+if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
+        cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg || ...
+        validation.maxOuterViaContactSweepDeg > 150)
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Outer-via circular contacts cannot satisfy the strict >90-degree ', ...
+        'and <=150-degree sweep rule within %d automatic sizing passes.'], ...
+        maxOuterSizingPasses);
+end
+% Auto 模式的基础网络只作为 terminal reroute 的输入。它仍然包含旧的
+% 端子桥路径，某些合法 d/L 组合（例如较小 d）可能只会让这套即将被
+% 替换的旧路径触发角度/净距检查；最终结果会在 circular_fpc_terminal_reroute
+% 完成后重新做完整 validation + manufacturing 检查。manual 模式没有后置
+% 重布线，因此必须在这里严格拒绝基础几何失败。
+if strcmp(cfg.terminalPlacementMode, 'manual')
+    if ~validation.passed
+        error('CircularFPC:ValidationFailed', ...
+            'Generated geometry failed validation: %s', strjoin(validation.messages, '; '));
+    end
+    manufacturing = circular_fpc_manufacturing('check_result', cfg, validation);
+    if ~manufacturing.passed
+        error('CircularFPC:ValidationFailed', ...
+            'Manufacturing result checks failed: %s', strjoin(manufacturing.failures, '; '));
+    end
+else
+    manufacturing = circular_fpc_manufacturing('check_result', cfg, validation);
+end
+% 平台/内径关系已在生成前作为硬可行性约束检查；保留空 advisories 字段，
+% 维持报告结构兼容，不再允许角部伸入环区后依赖事后 DRC 侥幸通过。
+validation.advisories = {};
 layerPaths = buildLayerPaths(cfg.boardLayerCount, activeLayers, directions, coils, connectionPaths);
 totalLengthMm = computeTotalLength(coils, connectionPaths);
 % 直流电阻粗估：R = ρ * L / (线宽 * 铜厚)，仅几何长度估算（无电气性能声明）。
@@ -58,6 +115,7 @@ result.coilLayerCount = cfg.coilLayerCount;
 result.activeCoilLayers = activeLayers;     % 实际承载线圈的活动层号
 result.effectiveDimensions = eff;           % 缩放后的有效尺寸 + coilPitch + actualBridgeWidth
 result.boardLoops = boardLoops;             % 板框：1 外边界 + 4 孔槽闭环
+result.layoutRegions = layoutRegions;       % 平台矩形、桥宽和局部布局参考系
 result.layerPaths = layerPaths;             % 按物理层组织的铜层数据（见 buildLayerPaths）
 result.pads = pads;                         % PAD_A / PAD_B
 result.vias = vias;                         % 串联过孔（VRET/V12/V23/V34/VOUT 等）
@@ -73,10 +131,11 @@ result.config = cfg;
 end
 
 function d = requiredBoardDiameter(cfg, eff)
-% 板框自动定尺寸（mm）：外径 = 2 × (最大铜外缘半径 + 板边净距)。
+% 板框自动定尺寸（mm）：boardOuterDiameter 是板框轮廓中心线直径；
+% 外径 = 2 × (最大铜外缘半径 + 板边净距 + 板框线宽/2)。
 % 最大铜外缘取两项之大：
-%   ① 基准匝数层（L1/L3）外端 + 过孔延伸区 + 端点过孔焊环半径；
-%   ② 分数匝层（4/4 的 L2 多绕 1/4 圈）外端 + 延伸区 + 半线宽。
+%   ① 基准匝数层（L1/L3）外端 + 过孔延伸区 + 端点过孔焊盘切线；
+%   ② 分数匝层（4/4 的 L2 多绕 1/4 圈）原始外端 + 半线宽。
 % 若不取 ②，极限档小焊环下 L2 外端会越过板边净距（实测 0.286 < 0.3）。
 baseSpan = cfg.turnsPerCoilLayer - 1;
 spanMax = baseSpan;
@@ -86,55 +145,32 @@ end
 rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
 coilOuterR = rStart + eff.coilPitch * baseSpan;
 coilOuterRMax = rStart + eff.coilPitch * spanMax;
-maxCopperR = max(coilOuterR + eff.viaEndExtension + max(cfg.traceWidth, cfg.viaPadDiameter) / 2, ...
-    coilOuterRMax + eff.viaEndExtension + cfg.traceWidth / 2);
-d = 2 * (maxCopperR + cfg.edgeClearance);
+% 110° 外端接触弧除径向外移 E 外还会产生切向偏移；以 E 作为切向上界
+% 取 hypot，保守包住实际弧端/过孔中心。下游分数匝层不再另加外伸弧。
+maxViaTangentR = hypot(coilOuterR + eff.viaEndExtension, eff.viaEndExtension) + ...
+    cfg.viaPadDiameter / 2;
+maxTraceTangentR = coilOuterRMax + cfg.traceWidth / 2;
+maxCopperR = max(maxViaTangentR, maxTraceTangentR);
+d = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
 end
 
-function msgs = platformFitAdvisories(cfg, eff)
-% 中央平台与线圈内径的内接关系检查（建议性，不报错）：
-% 平台圆角化后实际最大半径（roundedRectMaxRadius，与 validation 同式）
-% + platformSlotMargin 超出 可用半径(ID/2 - edgeClearance) 时，
-% 矩形平台四角进入四条连接桥的走廊——该处铜线本就跨越桥体，最终可行性
-% 由 validate_result 实测铜-槽净距判定；此处仅输出量化提示与两个修正建议：
-%   ① 当前内径下等比缩放平台的最大可行尺寸（二分法：缩放同步改变平台尺寸与圆角半径）；
-%   ② 容纳当前平台所需的最小线圈内径。
-msgs = {};
-usableR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
-reach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, eff.platformCornerR);
-if reach + cfg.platformSlotMargin < usableR - 1e-9
-    return;
+function d = requiredManualTerminalBoardDiameter(cfg)
+% 手动端子坐标的最大铜切线 + 板边净距 + 板框线宽半宽。
+maxTerminalR = -inf;
+if ~isempty(cfg.manualPadAXY)
+    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualPadAXY.^2, 2))) + cfg.padDiameter / 2);
 end
-lo = 0.0;
-hi = 1.0;
-for iter = 1:40
-    mid = (lo + hi) / 2;
-    rMid = roundedRectMaxRadius(mid * eff.centerPlatformWidth, ...
-        mid * eff.centerPlatformHeight, mid * eff.platformCornerR);
-    if rMid + cfg.platformSlotMargin < usableR
-        lo = mid;
-    else
-        hi = mid;
-    end
+if ~isempty(cfg.manualPadBXY)
+    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualPadBXY.^2, 2))) + cfg.padDiameter / 2);
 end
-over = reach + cfg.platformSlotMargin - usableR;
-minID = 2 * (reach + cfg.platformSlotMargin + cfg.edgeClearance);
-msgs{end + 1} = sprintf(['Central platform %.2f x %.2f mm exceeds the inscribed circle by ', ...
-    '%.3f mm (reach %.3f + slot margin %.3f > usable radius %.3f); its corners enter the ', ...
-    'bridge corridors, where copper already crosses the bridges - final acceptance ', ...
-    'relies on measured copper-to-slot clearance. Fix options: shrink platform to at most ', ...
-    '%.2f x %.2f mm (same aspect ratio), or increase coilInnerDiameter to at least %.2f mm.'], ...
-    eff.centerPlatformWidth, eff.centerPlatformHeight, over, reach, cfg.platformSlotMargin, ...
-    usableR, lo * eff.centerPlatformWidth, lo * eff.centerPlatformHeight, minID);
+if ~isempty(cfg.manualSeriesViaXY)
+    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualSeriesViaXY.^2, 2))) + cfg.viaPadDiameter / 2);
 end
-
-function rMax = roundedRectMaxRadius(w, h, cornerR)
-% 圆角矩形平台边界到中心的最大半径（与 validation>assertFeasible 使用同一公式：
-% 最远点位于圆角弧上 = 弧心距离 + 半径；cornerR=0 时为尖角半对角线）。
-halfW = w / 2;
-halfH = h / 2;
-r = min(cornerR, min(halfW, halfH));
-rMax = sqrt((halfW - r)^2 + (halfH - r)^2) + r;
+if isinf(maxTerminalR)
+    d = 0;
+else
+    d = 2 * (maxTerminalR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
+end
 end
 
 function active = activeLayerMap(cfg)

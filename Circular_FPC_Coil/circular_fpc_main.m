@@ -1,26 +1,29 @@
 function result = circular_fpc_main(overrides)
-% CIRCULAR_FPC_MAIN 公开生成入口（R4）：配置 → 几何计算 → 原子导出。
+% CIRCULAR_FPC_MAIN 唯一公开执行入口（R4）：分析 → 原子导出。
 %
 %   result = CIRCULAR_FPC_MAIN()                    使用默认配置生成
 %   result = CIRCULAR_FPC_MAIN(overrides)           overrides 为标量结构体，覆盖默认配置字段
 %
 %   返回 result 结构体（含 outputPath）。默认 enableFigure=true 时，在
-%   MATLAB 桌面环境自动弹出图像窗口；无头环境自动跳过，之后可手动调用
-%   circular_fpc_plot(result)。正式输出目录已存在时不会覆盖（报错）。
+%   MATLAB 桌面环境自动弹出图像窗口；无头环境自动跳过。正式输出目录
+%   已存在时不会覆盖（报错）。设置 overrides.analysisOnly=true 可只做
+%   分析与验证而不写文件；该模式供仓库内验证使用。
 if nargin < 1
     overrides = struct();
 end
-cfg = circular_fpc_default_config(overrides);   % 默认配置 + 覆盖 + 配置校验
-result = circular_fpc_engine(cfg);              % 计算几何与结果验证（不写文件）
+% 几何、端子重布线、验证与制造检查由 private/circular_fpc_analyze
+% 统一完成；公共层不暴露这些实现函数。
+result = circular_fpc_analyze(overrides);
+cfg = result.config;
+if cfg.analysisOnly
+    result.outputPath = '';
+    return;
+end
 outputPath = circular_fpc_export('write_all', cfg, result); % 原子写入 DXF/SVG/CSV/TXT
 result.outputPath = outputPath;
-% 打印建议性提示（如平台角部超出内接圆进入桥区走廊的量化建议）。
-% 只读入口 circular_fpc_analyze 不打印，advisories 随 result.validation 携带。
 for k = 1:numel(result.validation.advisories)
     fprintf('ADVISORY: %s\n', result.validation.advisories{k});
 end
-% 运行完成后在 MATLAB 桌面环境自动弹出图像窗口（可在窗口内另存为其他格式）。
-% 无头环境（如 CI 的 -batch 运行）自动跳过，需要时仍可手动调用 circular_fpc_plot(result)。
 if cfg.enableFigure && usejava('desktop')
     circular_fpc_plot(result);
 end
