@@ -12,7 +12,9 @@ addpath(projectRoot);
 behaviorResults = runtests(testsFolder, 'IncludeSubfolders', false);
 atomicResults = runtests(fullfile(projectRoot, ...
     'test_rectangular_fpc_atomic_publish.m'));
-results = [behaviorResults; atomicResults];
+privateContractResults = runtests(fullfile(projectRoot, ...
+    'test_rectangular_fpc_private_contracts.m'));
+results = [behaviorResults(:); atomicResults(:); privateContractResults(:)];
 assertSuccess(results);
 clear cleanup;
 

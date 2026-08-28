@@ -1,19 +1,19 @@
-function fig = fpc_coil_plot(result)
-%FPC_COIL_PLOT Private figure viewer for the FPC runtime.
-%   FIG = FPC_COIL_PLOT(RESULT) 是 private/ 目录内的内部实现，由
-%   fpc_coil_main 在 cfg.enableFigure 为 true（默认）且运行于 MATLAB 桌面
+function fig = rectangular_fpc_plot(result)
+%RECTANGULAR_FPC_PLOT Private figure viewer for the rectangular FPC runtime.
+%   FIG = RECTANGULAR_FPC_PLOT(RESULT) 是 private/ 目录内的内部实现，由
+%   rectangular_fpc_main 在 cfg.enableFigure 为 true（默认）且运行于 MATLAB 桌面
 %   环境时自动调用，不作为公共 API。请勿从根目录之外直接调用本函数；
 %   MATLAB 的 private 可见性规则也禁止在 private/ 的父目录之外调用。
 %
-%   根据 fpc_coil_main 返回的 RESULT 结构体弹出 layerCount+1 个图像窗口：
+%   根据 rectangular_fpc_main 返回的 RESULT 结构体弹出 layerCount+1 个图像窗口：
 %   1 个全部层叠放总览窗口 + 每层各 1 个独立窗口，与 previews/ 目录中
 %   "总览一张 + 每层一张"的 SVG 输出一致。FIG 为所有窗口的 figure 句柄
 %   数组（总览在前，其后按层序排列）。
 %
 %   总览窗口：板框、全部层铜线路径、焊盘（PAD_A/PAD_B）与过孔（V12…VOUT），
 %   并附 L1…L4 图例。
-%   每层窗口：板框、该层铜线路径，以及与该层相连的过孔；焊盘（PAD_A/PAD_B）
-%   仅出现在 L1 窗口（与 SVG 分层预览一致）。
+%   每层窗口：板框、该层铜线路径，以及贯穿该层的通孔；连接层显示焊盘，
+%   非连接层显示反焊盘。焊盘（PAD_A/PAD_B）仅出现在 L1 窗口。
 %
 %   图像窗口弹出后可直接使用窗口菜单 File > Save As（或工具栏保存按钮）
 %   另存为 PNG、JPG、SVG、EMF、PDF 等任意 MATLAB 支持的格式。
@@ -24,36 +24,36 @@ validateattributes(result, {'struct'}, {'scalar'}, mfilename, 'result', 1);
 requiredFields = {'layerCount', 'layers', 'vias', 'pads', 'outputFolder'};
 missing = requiredFields(~isfield(result, requiredFields));
 if ~isempty(missing)
-    error('FPC_Coil:PlotInvalidResult', ...
-        'result 缺少字段：%s。请传入 fpc_coil_main 的返回值。', ...
+    error('RectangularFPC:PlotInvalidResult', ...
+        'result 缺少字段：%s。请传入 rectangular_fpc_main 的返回值。', ...
         strjoin(missing, ', '));
 end
 
 layerCount = result.layerCount;
 [~, designName] = fileparts(result.outputFolder);
 colors = layerColors(layerCount);
-fig = gobjects(0, 1);
+fig = gobjects(layerCount + 1, 1);
 
 % 1) 总览窗口：全部层叠放
-fig(end + 1) = newFigure(sprintf('FPC Coil - %s - Overview', designName), 0);
+fig(1) = newFigure(sprintf('FPC Coil - %s - Overview', designName), 0);
 layerHandles = plotBoardAndCopper(result, [], colors);
 plotPads(result.pads, true);
-plotVias(result.vias, true);
+plotVias(result.vias, true, []);
 title(sprintf('All %d layers (stacked view)', layerCount), 'FontWeight', 'bold');
 legendEntries = arrayfun(@(k) sprintf('L%d', k), (1:layerCount)', ...
     'UniformOutput', false);
 legend(layerHandles, legendEntries, 'Location', 'eastoutside', 'FontSize', 8);
 
-% 2) 每层独立窗口（与 SVG 分层预览一致：焊盘仅 L1，过孔仅显示相连层）
+% 2) 每层独立窗口（与 SVG 分层预览一致：焊盘仅 L1，通孔贯穿所有层）
 for k = 1:layerCount
     role = layerRole(k, layerCount);
-    fig(end + 1) = newFigure( ...
+    fig(k + 1) = newFigure( ...
         sprintf('FPC Coil - %s - Layer %d (%s)', designName, k, role), k);
     plotBoardAndCopper(result, k, colors);
     if k == 1
         plotPads(result.pads, false);
     end
-    plotVias(viasOnLayer(result.vias, k), false);
+    plotVias(result.vias, false, k);
     title(sprintf('Layer %d (%s)', k, role), 'FontWeight', 'bold');
 end
 
@@ -91,15 +91,6 @@ elseif k == layerCount
 else
     role = sprintf('inner%d', k - 1);
 end
-end
-
-function sub = viasOnLayer(vias, k)
-% 只保留与该层相连的过孔；旧 result 无 connectedLayers 字段时全部返回。
-if isempty(vias) || ~isfield(vias, 'connectedLayers')
-    sub = vias;
-    return;
-end
-sub = vias(arrayfun(@(v) any(v.connectedLayers == k), vias));
 end
 
 function layerHandles = plotBoardAndCopper(result, layerIndex, colors)
@@ -142,15 +133,18 @@ ylabel(ax, 'mm');
 end
 
 function hLines = plotLayerPaths(ax, paths, color)
-hLines = gobjects(0, 1);
+hLines = gobjects(numel(paths), 1);
+lineCount = 0;
 for p = 1:numel(paths)
     xy = paths{p};
     if isempty(xy) || size(xy, 2) < 2
         continue;
     end
     h = plot(ax, xy(:, 1), xy(:, 2), 'Color', color, 'LineWidth', 0.5);
-    hLines(end + 1) = h; %#ok<AGROW>
+    lineCount = lineCount + 1;
+    hLines(lineCount) = h;
 end
+hLines = hLines(1:lineCount);
 end
 
 function plotPads(pads, withLabel)
@@ -171,19 +165,32 @@ for k = 1:numel(pads)
 end
 end
 
-function plotVias(vias, withLabel)
+function plotVias(vias, withLabel, layerIndex)
 ax = gca;
 for k = 1:numel(vias)
     xy = vias(k).xy;
     padR = vias(k).padDiameter / 2;
     drillR = vias(k).drillDiameter / 2;
-    % 焊盘外圈（实线）
-    drawCircle(ax, xy(1), xy(2), padR, {'Color', 'k', 'LineWidth', 1.0});
+    connected = isempty(layerIndex) || ~isfield(vias, 'connectedLayers') || ...
+        any(vias(k).connectedLayers == layerIndex);
+    if connected
+        drawCircle(ax, xy(1), xy(2), padR, ...
+            {'Color', 'k', 'LineWidth', 1.0});
+        labelR = padR;
+    elseif isfield(vias, 'type') && strcmp(vias(k).type, 'through_via') && ...
+            isfield(vias, 'antipadDiameter') && vias(k).antipadDiameter > 0
+        antipadR = vias(k).antipadDiameter / 2;
+        drawCircle(ax, xy(1), xy(2), antipadR, ...
+            {'Color', [0.6 0.2 0.2], 'LineWidth', 1.0, 'LineStyle', '--'});
+        labelR = antipadR;
+    else
+        continue
+    end
     % 钻孔内圈（虚线）
     drawCircle(ax, xy(1), xy(2), drillR, {'Color', 'k', 'LineWidth', 0.8, ...
         'LineStyle', '--'});
     if withLabel
-        text(ax, xy(1) + padR * 0.7, xy(2) + padR * 0.7, vias(k).name, ...
+        text(ax, xy(1) + labelR * 0.7, xy(2) + labelR * 0.7, vias(k).name, ...
             'FontSize', 7);
     end
 end

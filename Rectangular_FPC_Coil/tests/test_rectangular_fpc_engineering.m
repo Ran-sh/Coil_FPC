@@ -74,6 +74,13 @@ verifyEqual(testCase, result.manufacturing.applicability, ...
 verifyTrue(testCase, result.manufacturing.exportAllowed);
 verifyNotEmpty(testCase, result.manufacturing.warnings);
 verifyEqual(testCase, result.manufacturing.status, 'UNVERIFIED');
+seriesVias = result.vias(~strcmp({result.vias.name}, 'VOUT'));
+verifyEqual(testCase, {seriesVias.type}, ...
+    repmat({'adjacent_layer_via'}, 1, numel(seriesVias)));
+viaTechnology = result.manufacturing.checks( ...
+    strcmp({result.manufacturing.checks.id}, 'VIA_TECHNOLOGY'));
+verifyEqual(testCase, viaTechnology.status, 'WARN');
+verifyEqual(testCase, viaTechnology.code, 'UNVERIFIED_VIA_TECHNOLOGY');
 end
 
 function testRecommendedTurnsUseEffectiveConfigInResultAndReports(testCase)
@@ -205,6 +212,14 @@ for layerCount = [2, 4]
     verifyEqual(testCase, viaTechnology.status, 'PASS');
     verifyEqual(testCase, {result.vias.type}, ...
         repmat({'through_via'}, 1, numel(result.vias)));
+    verifyGreaterThanOrEqual(testCase, cfg.viaToCopperClearance, ...
+        result.manufacturing.rules.minViaToTraceMm);
+    verifyGreaterThanOrEqual(testCase, cfg.outputViaToCopperClearance, ...
+        result.manufacturing.rules.minViaToTraceMm);
+    viaToTrace = result.manufacturing.checks( ...
+        strcmp({result.manufacturing.checks.id}, 'VIA_TO_TRACE'));
+    assertNumElements(testCase, viaToTrace, 1);
+    verifyNotEqual(testCase, viaToTrace.status, 'FAIL');
 
     for viaIndex = 1:numel(result.vias)
         via = result.vias(viaIndex);
@@ -213,10 +228,45 @@ for layerCount = [2, 4]
             continue
         end
         verifyGreaterThanOrEqual(testCase, via.antipadDiameter, ...
-            via.padDiameter + 2 * cfg.viaToCopperClearance - ...
+            via.padDiameter + 2 * ...
+            result.manufacturing.rules.minViaToTraceMm - ...
             cfg.geometryTolerance);
     end
 end
+end
+
+function testSupportedQualificationRejectsDisabledRequiredChecks(testCase)
+outputRoot = freshOutputRoot();
+cleanup = onCleanup(@() removeOutputRoot(outputRoot));
+overrides = struct( ...
+    'analysisOnly', true, ...
+    'outputRoot', outputRoot, ...
+    'designName', 'disabled_check_contract', ...
+    'turnsPerLayer', 1, ...
+    'enableCopperClearanceCheck', false, ...
+    'enablePreview', false, ...
+    'enableFigure', false);
+
+result = rectangular_fpc_main(overrides);
+verifyFalse(testCase, result.manufacturing.verified);
+verifyFalse(testCase, result.manufacturing.exportAllowed);
+verifyEqual(testCase, result.manufacturing.status, 'FAIL');
+qualification = result.manufacturing.checks(strcmp( ...
+    {result.manufacturing.checks.id}, 'REQUIRED_VALIDATION_CHECKS'));
+assertNumElements(testCase, qualification, 1);
+verifyEqual(testCase, qualification.status, 'FAIL');
+verifyEqual(testCase, qualification.code, 'REQUIRED_CHECK_DISABLED');
+verifyFalse(testCase, isfolder(outputRoot));
+
+overrides.analysisOnly = false;
+verifyError(testCase, @() rectangular_fpc_main(overrides), ...
+    'RectangularFPC:ManufacturingFailed');
+if isfolder(outputRoot)
+    formal = dir(fullfile(outputRoot, 'disabled_check_contract_*'));
+    verifyEmpty(testCase, formal([formal.isdir]));
+end
+
+clear cleanup;
 end
 
 function testTimestampedExportContainsEngineeringArtifacts(testCase)
@@ -245,6 +295,13 @@ for layer = 1:result.layerCount
         sprintf('%02d_copper_physical_L%d.dxf', layer, layer))));
     verifyTrue(testCase, isfile(fullfile(layerFolder, ...
         sprintf('%02d_antipad_keepout_L%d.dxf', layer, layer))));
+    antipadFile = fullfile(layerFolder, ...
+        sprintf('%02d_antipad_keepout_L%d.dxf', layer, layer));
+    expectedAntipads = sum(arrayfun(@(via) ...
+        via.antipadDiameter > 0 && ...
+        ~ismember(layer, via.connectedLayers), result.vias));
+    verifyEqual(testCase, countDxfEntities(antipadFile, 'CIRCLE'), ...
+        expectedAntipads);
 end
 for reportIndex = 1:8
     pattern = fullfile(result.outputPath, 'reports', sprintf('%02d_*', reportIndex));
@@ -438,6 +495,12 @@ entries = dir(fullfile(root, '**', '*'));
 count = sum(~[entries.isdir]);
 end
 
+function count = countDxfEntities(filename, entityName)
+content = fileread(filename);
+count = numel(regexp(content, ...
+    ['(?m)^' regexptranslate('escape', entityName) '\r?$'], 'match'));
+end
+
 function hash = sha256File(filename)
 fid = fopen(filename, 'rb');
 cleanup = onCleanup(@() fclose(fid));
@@ -459,9 +522,21 @@ function writeStaleLockOwner(lockFolder)
 fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
 cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'pid=2147483647\n');
+fprintf(fid, 'host=%s\n', localHostIdentity());
 fprintf(fid, 'token=interrupted_test\n');
 fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear cleanup;
+end
+
+function host = localHostIdentity()
+host = getenv('COMPUTERNAME');
+if isempty(host)
+    host = getenv('HOSTNAME');
+end
+if isempty(host)
+    host = char(java.net.InetAddress.getLocalHost().getHostName());
+end
+host = lower(strtrim(host));
 end
 
 function removeWorkspaceRoot(workspaceRoot)

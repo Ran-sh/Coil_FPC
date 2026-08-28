@@ -43,6 +43,39 @@ verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
+function testPublicationGapIsCoveredByOwnershipLock(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+observationFile = fullfile(paths.root, 'move_observations.txt');
+mover = @(source, destination) observingMove( ...
+    source, destination, paths, observationFile);
+
+rectangular_fpc_publish_atomically(paths.staging, paths.output, mover);
+
+observations = fileread(observationFile);
+verifyTrue(testCase, contains(observations, 'PRIOR_MOVE_LOCKED'));
+verifyTrue(testCase, contains(observations, 'PUBLICATION_GAP_LOCKED'));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testForeignHostLockFailsClosed(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+writeLockOwner(lockFolder, 'definitely-not-this-host', 2147483647);
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyTrue(testCase, isfolder(lockFolder));
+verifyFalse(testCase, isfolder(paths.staging));
+clear cleanup;
+end
+
 function paths = makeFixture()
 paths.root = tempname;
 paths.output = fullfile(paths.root, 'design_20000101_0000');
@@ -65,6 +98,36 @@ if (failPublish && isPublish) || (failRestore && isRestore)
 else
     [moved, message] = movefile(source, destination);
 end
+end
+
+function [moved, message] = observingMove( ...
+    source, destination, paths, observationFile)
+lockFolder = [paths.output '_publish.lock'];
+if strcmp(source, paths.output) && startsWith(destination, ...
+        [paths.output '_backup_']) && isfolder(lockFolder)
+    appendObservation(observationFile, 'PRIOR_MOVE_LOCKED');
+elseif strcmp(source, paths.staging) && strcmp(destination, paths.output) && ...
+        ~isfolder(paths.output) && isfolder(lockFolder)
+    appendObservation(observationFile, 'PUBLICATION_GAP_LOCKED');
+end
+[moved, message] = movefile(source, destination);
+end
+
+function appendObservation(filename, observation)
+fid = fopen(filename, 'a');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, '%s\n', observation);
+clear cleanup;
+end
+
+function writeLockOwner(lockFolder, host, pid)
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=%d\n', pid);
+fprintf(fid, 'host=%s\n', host);
+fprintf(fid, 'token=foreign_host_test\n');
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear cleanup;
 end
 
 function writeMarker(filename)
