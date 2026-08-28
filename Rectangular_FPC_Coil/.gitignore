@@ -1,5 +1,6 @@
 # Generated coil artifacts
 fpc_coil_output/
+rectangular_fpc_output/
 
 # MATLAB editor and temporary files
 *.asv
@@ -8,4 +9,3 @@ fpc_coil_output/
 
 # Local tooling metadata (not part of the repo)
 .reasonix/
-

@@ -1,4 +1,4 @@
-function tests = test_fpc_coil_regressions
+function tests = test_rectangular_fpc_regressions
 % Behavior-level regression tests for the configurable multilayer generator.
 
 tests = functiontests(localfunctions);
@@ -29,12 +29,96 @@ end
 
 function testDefaultConfigurationIsAStandalonePublicEntryPoint(testCase)
 
-cfg = fpc_coil_default_config();
+cfg = rectangular_fpc_default_config();
 
 verifyTrue(testCase, isstruct(cfg));
 verifyTrue(testCase, isfield(cfg, 'layerCount'));
 verifyTrue(testCase, isfield(cfg, 'turnsPerLayer'));
 verifyTrue(testCase, isfield(cfg, 'outputRoot'));
+
+end
+
+function testDefaultFourLayerTwelveTurnGoldenRegression(testCase)
+
+result = rectangular_fpc_main(struct('analysisOnly', true));
+cfg = result.config;
+
+verifyTrue(testCase, result.passed);
+verifyTrue(testCase, result.validation.passed);
+verifyEqual(testCase, result.layerCount, 4);
+verifyEqual(testCase, result.turnsPerLayer, 12);
+verifyEqual(testCase, [ ...
+    result.widthBasedMaximumTurns, ...
+    result.lengthBasedMaximumTurns, ...
+    result.cornerRadiusMaximumTurns, ...
+    result.innerViaRegionMaximumTurns, ...
+    result.analyticalMaximumTurns, ...
+    result.fullyValidatedMaximumTurns, ...
+    result.recommendedTurns], [13, 109, 12, 13, 12, 12, 11]);
+verifyEqual(testCase, result.turnLimits.limitingFactors, ...
+    {'CORNER_RADIUS_LIMIT'});
+verifyNumElements(testCase, result.turnScan, 1);
+verifyEqual(testCase, result.turnScan.turns, 12);
+verifyTrue(testCase, result.turnScan.passed);
+
+verifyEqual(testCase, result.layerLengthMm, [ ...
+    1901.1203102664804; ...
+    1880.7016880192257; ...
+    1883.2812328989990; ...
+    1883.8998560612240], 'AbsTol', 1e-6);
+verifyEqual(testCase, result.totalTraceLengthMm, ...
+    7549.0030872459283, 'AbsTol', 1e-6);
+verifyEqual(testCase, result.estimatedDcResistanceOhm, ...
+    18.592116174874256, 'AbsTol', 1e-9);
+verifyEqual(testCase, result.minCopperSpacing, ...
+    0.149846190509252, 'AbsTol', 1e-9);
+verifyEqual(testCase, [min(result.boardXY); max(result.boardXY)], ...
+    [-40, -6; 52, 6], 'AbsTol', cfg.geometryTolerance);
+verifyEqual(testCase, localQuantizedCoordinateSha256(result.boardXY), ...
+    '82ecf87f12bf020089b319dee2ee7411c8950c5831587e726926be3b591e570a');
+
+verifyEqual(testCase, cellfun(@numel, result.layerPaths), [2; 1; 1; 1]);
+expectedPathHashes = { ...
+    '3f5d0cf9ef07d1f9faf87b25b9f44695d91602258eff7b2c2e989421c23cc5ea'; ...
+    'd0921220694384001b04a80a98bf1ce6de94375a0467a05c2852c561f06455be'; ...
+    '67768e22428b1efef606daa4a0f1b55da347ac3e3b52df968dacdb4645c95c4b'; ...
+    '6ca9a055938c269d060fb83da17f208c3eefeb9fc45011813f7e927bcb49a231'};
+for layerIndex = 1:result.layerCount
+    verifyEqual(testCase, ...
+        localQuantizedPathSetSha256(result.layerPaths{layerIndex}), ...
+        expectedPathHashes{layerIndex});
+end
+
+verifyEqual(testCase, {result.pads.name}, {'PAD_A', 'PAD_B'});
+verifyEqual(testCase, vertcat(result.pads.xy), [50.5, 1.1; 50.5, -1.1], ...
+    'AbsTol', cfg.geometryTolerance);
+verifyEqual(testCase, [result.pads.layer], [1, 1]);
+verifyEqual(testCase, {result.vias.name}, {'V12', 'V23', 'V34', 'VOUT'});
+verifyEqual(testCase, [result.vias.fromLayer], [1, 2, 3, 4]);
+verifyEqual(testCase, [result.vias.toLayer], [2, 3, 4, 1]);
+verifyEqual(testCase, vertcat(result.vias.connectedLayers), ...
+    [1, 2; 2, 3; 3, 4; 4, 1]);
+verifyEqual(testCase, {result.vias.type}, repmat({'through_via'}, 1, 4));
+verifyEqual(testCase, vertcat(result.vias.xy), [ ...
+    34.34, 0.0; 40.60, 0.0; 32.34, 0.0; 40.60, -1.10], ...
+    'AbsTol', cfg.geometryTolerance);
+verifyEqual(testCase, {result.vias.role}, { ...
+    'series_interconnect', 'series_interconnect', ...
+    'series_interconnect', 'output_return'});
+verifyEqual(testCase, result.layerPaths{1}{1}(1, :), ...
+    result.pads(1).xy, 'AbsTol', cfg.connectionTolerance);
+verifyEqual(testCase, result.layerPaths{1}{1}(end, :), ...
+    result.vias(1).xy, 'AbsTol', cfg.connectionTolerance);
+for layerIndex = 2:result.layerCount
+    verifyEqual(testCase, result.layerPaths{layerIndex}{1}(1, :), ...
+        result.vias(layerIndex - 1).xy, 'AbsTol', cfg.connectionTolerance);
+    verifyEqual(testCase, result.layerPaths{layerIndex}{1}(end, :), ...
+        result.vias(layerIndex).xy, 'AbsTol', cfg.connectionTolerance);
+end
+verifyEqual(testCase, result.layerPaths{1}{2}(1, :), ...
+    result.vias(end).xy, 'AbsTol', cfg.connectionTolerance);
+verifyEqual(testCase, result.layerPaths{1}{2}(end, :), ...
+    result.pads(2).xy, 'AbsTol', cfg.connectionTolerance);
 
 end
 
@@ -46,7 +130,7 @@ overrides = struct( ...
     'enablePreview', false, ...
     'designName', 'override_contract');
 
-cfg = fpc_coil_default_config(overrides);
+cfg = rectangular_fpc_default_config(overrides);
 
 verifyEqual(testCase, cfg.layerCount, 6);
 verifyEqual(testCase, cfg.turnsPerLayer, 7);
@@ -57,7 +141,7 @@ end
 
 function testConfigurationSurfaceContainsOnlySupportedFields(testCase)
 
-cfg = fpc_coil_default_config();
+cfg = rectangular_fpc_default_config();
 removedFields = { ...
     'outputReturnBendRadius', ...
     'manufacturingTolerance', ...
@@ -73,7 +157,7 @@ for k = 1:numel(removedFields)
     verifyFalse(testCase, isfield(cfg, removedFields{k}));
 end
 
-cfgOverride = fpc_coil_default_config(struct( ...
+cfgOverride = rectangular_fpc_default_config(struct( ...
     'requireSmoothLeadTransitions', false));
 verifyFalse(testCase, cfgOverride.requireSmoothLeadTransitions);
 
@@ -81,8 +165,8 @@ rejectedFields = [removedFields, {'requireSmoothEscapeArcs', 'notARealOption'}];
 for k = 1:numel(rejectedFields)
     overrides = struct();
     overrides.(rejectedFields{k}) = 1;
-    verifyError(testCase, @() fpc_coil_default_config(overrides), ...
-        'FPC_Coil:UnknownConfigField');
+    verifyError(testCase, @() rectangular_fpc_default_config(overrides), ...
+        'RectangularFPC:UnknownConfigField');
 end
 
 end
@@ -99,42 +183,51 @@ end
 
 rootFiles = dir(fullfile(projectRoot, '*.m'));
 rootNames = sort({rootFiles.name});
-expectedRootNames = sort({'fpc_coil_default_config.m', 'fpc_coil_main.m'});
+rootNames = rootNames(~startsWith(rootNames, 'test_'));
+expectedRootNames = sort({ ...
+    'fpc_coil_default_config.m', ...
+    'fpc_coil_main.m', ...
+    'rectangular_fpc_default_config.m', ...
+    'rectangular_fpc_main.m', ...
+    'rectangular_fpc_read_committed.m'});
 verifyEqual(testCase, rootNames, expectedRootNames);
 
 privateFiles = dir(fullfile(projectRoot, 'private', '*.m'));
 privateNames = sort({privateFiles.name});
+privateNames = privateNames(~startsWith(privateNames, 'test_'));
 expectedPrivateNames = sort({ ...
-    'fpc_coil_engine.m', ...
-    'fpc_coil_export.m', ...
-    'fpc_coil_geometry.m', ...
-    'fpc_coil_plot.m', ...
-    'fpc_coil_validation.m'});
+    'rectangular_fpc_engine.m', ...
+    'rectangular_fpc_export.m', ...
+    'rectangular_fpc_geometry.m', ...
+    'rectangular_fpc_manufacturing.m', ...
+    'rectangular_fpc_plot.m', ...
+    'rectangular_fpc_publish_atomically.m', ...
+    'rectangular_fpc_validation.m'});
 verifyEqual(testCase, privateNames, expectedPrivateNames);
 verifyEqual(testCase, exist(fullfile(projectRoot, 'tests', ...
-    'test_fpc_coil_regressions.m'), 'file'), 2);
+    'test_rectangular_fpc_regressions.m'), 'file'), 2);
 
 end
 
 function testFigureViewerCreatesFigureWithLayersAndPads(testCase)
 
 priorFigs = findall(0, 'Type', 'figure');
-result = fpc_coil_main(struct('enablePreview', false, 'enableFigure', true));
+result = rectangular_fpc_main(struct('enablePreview', false, 'enableFigure', true));
 verifyTrue(testCase, result.passed);
 
 % 新字段必须出现在 result 中，供图窗绘制使用
 verifyEqual(testCase, size(result.boardXY, 2), 2);
-cfg = fpc_coil_default_config();
+cfg = rectangular_fpc_default_config();
 verifyEqual(testCase, result.pads(1).diameter, cfg.padDiameter);
 
-% 图窗由 private/fpc_coil_plot 实现（不作为公共 API），仅在 MATLAB 桌面
-% 环境由 fpc_coil_main 自动弹出；无头 -batch 运行按设计跳过弹窗。
+% 图窗由 private/rectangular_fpc_plot 实现（不作为公共 API），仅在 MATLAB 桌面
+% 环境由 rectangular_fpc_main 自动弹出；无头 -batch 运行按设计跳过弹窗。
 newFigs = setdiff(findall(0, 'Type', 'figure'), priorFigs);
 if isempty(newFigs)
     % 无头环境：验证实现文件确实位于 private/ 目录内
     testFolder = fileparts(mfilename('fullpath'));
     verifyEqual(testCase, exist(fullfile(fileparts(testFolder), ...
-        'private', 'fpc_coil_plot.m'), 'file'), 2);
+        'private', 'rectangular_fpc_plot.m'), 'file'), 2);
     return;
 end
 
@@ -178,10 +271,10 @@ function testConfigurationValidationRejectsOddLayerCountClearly(testCase)
 cfg = fastConfig(3, testCase.TestData.outputRoot);
 
 try
-    fpc_coil_main(cfg);
+    rectangular_fpc_main(cfg);
     verifyFail(testCase, 'A three-layer winding must be rejected.');
 catch ME
-    verifyEqual(testCase, ME.identifier, 'FPC_Coil:InvalidLayerCount');
+    verifyEqual(testCase, ME.identifier, 'RectangularFPC:InvalidLayerCount');
     verifyNotEmpty(testCase, regexp(ME.message, '3', 'once'));
     verifyNotEmpty(testCase, regexp(ME.message, '(even|偶数)', 'once'));
 end
@@ -250,6 +343,12 @@ end
 verifyTrue(testCase, exist(result.coordinateCsv, 'file') == 2);
 verifyTrue(testCase, exist(result.summaryFile, 'file') == 2);
 verifyTrue(testCase, exist(result.validationReport, 'file') == 2);
+verifyFalse(testCase, result.manufacturing.verified);
+verifyEqual(testCase, result.manufacturing.applicability, ...
+    'UNVERIFIED_LAYER_COUNT');
+statusText = fileread(fullfile(result.outputFolder, 'generation_status.txt'));
+verifyNotEmpty(testCase, regexp(statusText, ...
+    'ManufacturingApplicability:\s*UNVERIFIED_LAYER_COUNT', 'once'));
 
 end
 
@@ -260,7 +359,7 @@ cfg.turnsPerLayer = 20;
 cfg.designName = 'oversized_turns_failure';
 
 try
-    fpc_coil_main(cfg);
+    rectangular_fpc_main(cfg);
     messageText = '';
 catch ME
     messageText = ME.message;
@@ -278,6 +377,12 @@ result = generatedEightLayerValidated(testCase.TestData.outputRoot);
 verifyTrue(testCase, result.passed);
 verifyEqual(testCase, result.layerCount, 8);
 verifyEqual(testCase, result.turnsPerLayer, 1);
+verifyFalse(testCase, result.manufacturing.verified);
+verifyEqual(testCase, result.manufacturing.applicability, ...
+    'UNVERIFIED_LAYER_COUNT');
+notesText = fileread(result.fabricationNotes);
+verifyNotEmpty(testCase, regexp(notesText, ...
+    'Applicability:\s*UNVERIFIED_LAYER_COUNT', 'once'));
 verifyGreaterThanOrEqual(testCase, result.fullyValidatedMaximumTurns, 1);
 verifyGreaterThanOrEqual(testCase, result.recommendedTurns, 1);
 verifyTrue(testCase, isfinite(result.totalLengthMm));
@@ -285,7 +390,9 @@ verifyGreaterThan(testCase, result.totalResistanceOhm, 0);
 
 vout = result.vias(strcmp({result.vias.name}, 'VOUT'));
 seriesVias = result.vias(~strcmp({result.vias.name}, 'VOUT'));
-verifyEqual(testCase, vout.antipadDiameter, 0.90, 'AbsTol', 1e-12);
+verifyEqual(testCase, vout.antipadDiameter, 1.00, 'AbsTol', 1e-12);
+verifyEqual(testCase, {seriesVias.type}, ...
+    repmat({'adjacent_layer_via'}, 1, 7));
 verifyEqual(testCase, [seriesVias.antipadDiameter], zeros(1, 7));
 
 end
@@ -297,8 +404,8 @@ cfg.enableViaClearanceCheck = true;
 cfg.outputViaToBoardClearance = 100;
 cfg.designName = 'vout_board_clearance_failure';
 
-verifyError(testCase, @() fpc_coil_main(cfg), ...
-    'FPC_Coil:NoValidTurnCount');
+verifyError(testCase, @() rectangular_fpc_main(cfg), ...
+    'RectangularFPC:NoValidTurnCount');
 
 end
 
@@ -309,12 +416,12 @@ cfg.enableViaClearanceCheck = true;
 cfg.outputViaAntiPadDiameter = 20;
 cfg.viaClearanceSeverity = 'error';
 cfg.designName = 'vout_antipad_error';
-verifyError(testCase, @() fpc_coil_main(cfg), ...
-    'FPC_Coil:NoValidTurnCount');
+verifyError(testCase, @() rectangular_fpc_main(cfg), ...
+    'RectangularFPC:NoValidTurnCount');
 
 cfg.viaClearanceSeverity = 'warning';
 cfg.designName = 'vout_antipad_warning';
-result = fpc_coil_main(cfg);
+result = rectangular_fpc_main(cfg);
 verifyTrue(testCase, result.passed);
 
 end
@@ -322,7 +429,7 @@ end
 function testRecommendedFourLayerDesignUsesAnglesStrictlyAboveNinety(testCase)
 
 result = generatedFourLayerValidated(testCase.TestData.outputRoot);
-cfg = fpc_coil_default_config();
+cfg = rectangular_fpc_default_config();
 
 verifyGreaterThan(testCase, result.minCopperAngle, ...
     cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg);
@@ -334,8 +441,8 @@ end
 
 function testLayerCountDoesNotChangeTurnsPerLayer(testCase)
 % 任务十七.1：只改 layerCount 不得自动修改 turnsPerLayer
-cfg4 = fpc_coil_default_config(struct('layerCount', 4));
-cfg6 = fpc_coil_default_config(struct('layerCount', 6));
+cfg4 = rectangular_fpc_default_config(struct('layerCount', 4));
+cfg6 = rectangular_fpc_default_config(struct('layerCount', 6));
 verifyEqual(testCase, cfg4.turnsPerLayer, cfg6.turnsPerLayer);
 
 end
@@ -347,7 +454,7 @@ layerList = [2 4 6 8];
 for idx = 1:4
     cfg = fastConfig(layerList(idx), testCase.TestData.outputRoot);
     cfg.designName = sprintf('width_limit_%dlayer', layerList(idx));
-    result = fpc_coil_main(cfg);
+    result = rectangular_fpc_main(cfg);
     widths(idx) = result.turnLimits.width;
 end
 verifyTrue(testCase, all(widths == widths(1)));
@@ -356,7 +463,7 @@ end
 
 function testManualViaCoordinatesMatchInput(testCase)
 % 任务十七.3：手动过孔坐标与输入一致（误差 < connectionTolerance）
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', 4, ...
     'viaPlacementMode', 'manual', ...
     'manualSeriesViaXY', [25.0, 6.0; 82.0, 6.0; 55.0, 6.0], ...
@@ -368,7 +475,7 @@ cfg = fpc_coil_default_config(struct( ...
     'enableDxfReadbackCheck', false));
 
 try
-    result = fpc_coil_main(cfg);
+    result = rectangular_fpc_main(cfg);
     tol = cfg.connectionTolerance;
     seriesNames = {'V12', 'V23', 'V34'};
     for k = 1:3
@@ -389,21 +496,21 @@ end
 
 function testManualViaRowCountRejected(testCase)
 % 任务十七.4：手动过孔行数错误必须明确拒绝
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', 4, ...
     'viaPlacementMode', 'manual', ...
     'manualSeriesViaXY', [25.0, 6.0; 82.0, 6.0], ...   % 只有 2 行，需要 3 行
     'outputRoot', testCase.TestData.outputRoot, ...
     'designName', 'manual_bad_rows'));
 
-verifyError(testCase, @() fpc_coil_main(cfg), ...
-    'FPC_Coil:InvalidManualVias');
+verifyError(testCase, @() rectangular_fpc_main(cfg), ...
+    'RectangularFPC:InvalidManualVias');
 
 end
 
 function testManualViaOutsideBoardRejected(testCase)
 % 任务十七.4：过孔在板外必须报出具体失败
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', 4, ...
     'viaPlacementMode', 'manual', ...
     'manualSeriesViaXY', [25.0, 6.0; 82.0, 60.0; 55.0, 6.0], ... % V23 在板外
@@ -413,8 +520,8 @@ cfg = fpc_coil_default_config(struct( ...
     'enableDxfReadbackCheck', false, ...
     'enableViaClearanceCheck', false));
 
-verifyError(testCase, @() fpc_coil_main(cfg), ...
-    'FPC_Coil:ViaPlanningFailed');
+verifyError(testCase, @() rectangular_fpc_main(cfg), ...
+    'RectangularFPC:ViaPlanningFailed');
 
 end
 
@@ -423,7 +530,7 @@ function testStrictConcentricRadiusNoClamp(testCase)
 cfg = fastConfig(4, testCase.TestData.outputRoot);
 cfg.cornerOffsetMode = 'strict_concentric';
 cfg.designName = 'strict_concentric_radius';
-result = fpc_coil_main(cfg);
+result = rectangular_fpc_main(cfg);
 limits = result.turnLimits;
 strictInner = limits.coilOuterRadius - cfg.turnsPerLayer * limits.pitch;
 verifyGreaterThan(testCase, strictInner, 0);
@@ -434,7 +541,7 @@ end
 
 function testFourLayerEightTurnsTarget(testCase)
 % 任务十七.9：80×12、8 匝、maximize + strict + hybrid_auto 目标场景
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'plateLength', 80.0, 'plateWidth', 12.0, ...
     'traceWidth', 0.20, 'traceSpacing', 0.15, 'pitchMargin', 0.005, ...
     'coilOuterCornerRadiusMode', 'maximize', ...
@@ -446,11 +553,11 @@ cfg = fpc_coil_default_config(struct( ...
     'enablePreview', false));
 
 try
-    result = fpc_coil_main(cfg);
+    result = rectangular_fpc_main(cfg);
     verifyTrue(testCase, result.passed);
 catch ME
-    if strcmp(ME.identifier, 'FPC_Coil:NoValidTurnCount') || ...
-            strcmp(ME.identifier, 'FPC_Coil:ViaPlanningFailed')
+    if strcmp(ME.identifier, 'RectangularFPC:NoValidTurnCount') || ...
+            strcmp(ME.identifier, 'RectangularFPC:ViaPlanningFailed')
         % 若确实无法通过，输出真实限制因素（诊断测试）
         verifyTrue(testCase, false, ...
             sprintf('4 层 8 匝目标未通过：%s', ME.message));
@@ -462,10 +569,14 @@ end
 end
 
 function testPreviewOutputUsesVectorSvgOnly(testCase)
-    cfg = fastConfig(4, testCase.TestData.outputRoot);
-    cfg.enablePreview = true;
-    cfg.designName = 'svg_preview_contract';
-    result = fpc_coil_main(cfg);
+    cfg = rectangular_fpc_default_config(struct( ...
+        'layerCount', 4, ...
+        'turnsPerLayer', 1, ...
+        'enablePreview', true, ...
+        'enableFigure', false, ...
+        'outputRoot', testCase.TestData.outputRoot, ...
+        'designName', 'svg_preview_contract'));
+    result = rectangular_fpc_main(cfg);
     previewFolder = fullfile(result.outputFolder, 'previews');
     svgFiles = dir(fullfile(previewFolder, '*.svg'));
     pngFiles = dir(fullfile(previewFolder, '*.png'));
@@ -503,7 +614,12 @@ function testPreviewOutputUsesVectorSvgOnly(testCase)
     verifyTrue(testCase, contains(padViaContent, 'V34 (L3-L4)'));
     verifyTrue(testCase, contains(padViaContent, 'VOUT (L4-L1)'));
     verifyNotEmpty(testCase, regexp(padViaContent, 'drill', 'once'));
-    verifyNotEmpty(testCase, regexp(padViaContent, 'VOUT antipad', 'once'));
+    verifyNotEmpty(testCase, regexp(padViaContent, ...
+        'non-connected-layer antipad', 'once'));
+    for viaName = {'V12', 'V23', 'V34', 'VOUT'}
+        verifyTrue(testCase, contains(padViaContent, ...
+            sprintf('%s antipad', viaName{1})));
+    end
     verifyEmpty(testCase, regexp(padViaContent, 'L1 coil', 'once'));
 
     l1Content = fileread(fullfile(previewFolder, '04_preview_layer_L1_top.svg'));
@@ -513,8 +629,8 @@ function testPreviewOutputUsesVectorSvgOnly(testCase)
     verifyNotEmpty(testCase, regexp(l1Content, 'PAD_B', 'once'));
     verifyNotEmpty(testCase, regexp(l1Content, 'V12', 'once'));
     verifyNotEmpty(testCase, regexp(l1Content, 'VOUT', 'once'));
-    verifyEmpty(testCase, regexp(l1Content, 'V23', 'once'));
-    verifyEmpty(testCase, regexp(l1Content, 'V34', 'once'));
+    verifyTrue(testCase, contains(l1Content, 'V23 antipad'));
+    verifyTrue(testCase, contains(l1Content, 'V34 antipad'));
 
     l2Content = fileread(fullfile(previewFolder, '05_preview_layer_L2_inner1.svg'));
     verifyNotEmpty(testCase, regexp(l2Content, 'L2 coil', 'once'));
@@ -522,8 +638,8 @@ function testPreviewOutputUsesVectorSvgOnly(testCase)
     verifyNotEmpty(testCase, regexp(l2Content, 'V23', 'once'));
     verifyEmpty(testCase, regexp(l2Content, 'PAD_A', 'once'));
     verifyEmpty(testCase, regexp(l2Content, 'PAD_B', 'once'));
-    verifyEmpty(testCase, regexp(l2Content, 'V34', 'once'));
-    verifyEmpty(testCase, regexp(l2Content, 'VOUT', 'once'));
+    verifyTrue(testCase, contains(l2Content, 'V34 antipad'));
+    verifyTrue(testCase, contains(l2Content, 'VOUT antipad'));
 
     l3Content = fileread(fullfile(previewFolder, '06_preview_layer_L3_inner2.svg'));
     verifyNotEmpty(testCase, regexp(l3Content, 'L3 coil', 'once'));
@@ -531,8 +647,8 @@ function testPreviewOutputUsesVectorSvgOnly(testCase)
     verifyNotEmpty(testCase, regexp(l3Content, 'V34', 'once'));
     verifyEmpty(testCase, regexp(l3Content, 'PAD_A', 'once'));
     verifyEmpty(testCase, regexp(l3Content, 'PAD_B', 'once'));
-    verifyEmpty(testCase, regexp(l3Content, 'V12', 'once'));
-    verifyEmpty(testCase, regexp(l3Content, 'VOUT', 'once'));
+    verifyTrue(testCase, contains(l3Content, 'V12 antipad'));
+    verifyTrue(testCase, contains(l3Content, 'VOUT antipad'));
 
     l4Content = fileread(fullfile(previewFolder, '07_preview_layer_L4_bottom.svg'));
     verifyNotEmpty(testCase, regexp(l4Content, 'L4 coil', 'once'));
@@ -540,13 +656,13 @@ function testPreviewOutputUsesVectorSvgOnly(testCase)
     verifyNotEmpty(testCase, regexp(l4Content, 'VOUT', 'once'));
     verifyEmpty(testCase, regexp(l4Content, 'PAD_A', 'once'));
     verifyEmpty(testCase, regexp(l4Content, 'PAD_B', 'once'));
-    verifyEmpty(testCase, regexp(l4Content, 'V12', 'once'));
-    verifyEmpty(testCase, regexp(l4Content, 'V23', 'once'));
+    verifyTrue(testCase, contains(l4Content, 'V12 antipad'));
+    verifyTrue(testCase, contains(l4Content, 'V23 antipad'));
 
     cfg6 = fastConfig(6, testCase.TestData.outputRoot);
     cfg6.enablePreview = true;
     cfg6.designName = 'svg_preview_contract_6layer';
-    result6 = fpc_coil_main(cfg6);
+    result6 = rectangular_fpc_main(cfg6);
     previewFolder6 = fullfile(result6.outputFolder, 'previews');
     svgFiles6 = dir(fullfile(previewFolder6, '*.svg'));
     pngFiles6 = dir(fullfile(previewFolder6, '*.png'));
@@ -567,7 +683,7 @@ end
 function testPadALeadUsesOrthogonalRunsAndRoundedTransition(testCase)
 
 result = generatedFourLayerValidated(testCase.TestData.outputRoot);
-cfg = fpc_coil_default_config(struct('turnsPerLayer', 1));
+cfg = rectangular_fpc_default_config(struct('turnsPerLayer', 1));
 threshold = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
 tol = cfg.connectionTolerance;
 
@@ -602,7 +718,7 @@ end
 function testViaLeadsUseOrthogonalRunsAndRoundedTransitions(testCase)
 
 result = generatedFourLayerValidated(testCase.TestData.outputRoot);
-cfg = fpc_coil_default_config(struct('turnsPerLayer', 1));
+cfg = rectangular_fpc_default_config(struct('turnsPerLayer', 1));
 threshold = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
 
 viaNames = {'V12', 'V23', 'V34', 'VOUT'};
@@ -626,7 +742,7 @@ end
 function testHybridAutoSeriesViasArePackedNearestCoilAnchors(testCase)
 
 result = generatedFourLayerValidated(testCase.TestData.outputRoot);
-cfg = fpc_coil_default_config(struct('turnsPerLayer', 1));
+cfg = rectangular_fpc_default_config(struct('turnsPerLayer', 1));
 tol = cfg.geometryTolerance;
 
 pitch = cfg.traceWidth + cfg.traceSpacing + cfg.pitchMargin;
@@ -663,7 +779,7 @@ end
 
 function testOutputViaUsesViaClearanceDuringTabViaPlanning(testCase)
 
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', 4, ...
     'turnsPerLayer', 1, ...
     'leadYOffset', 1.10, ...
@@ -671,7 +787,7 @@ cfg = fpc_coil_default_config(struct( ...
     'viaClearanceSeverity', 'error', ...
     'outputRoot', testCase.TestData.outputRoot, ...
     'designName', 'red_vout_uses_via_clearance'));
-result = fpc_coil_main(cfg);
+result = rectangular_fpc_main(cfg);
 tol = cfg.geometryTolerance;
 
 verifyTrue(testCase, result.passed);
@@ -696,7 +812,7 @@ end
 function testAutoVoutUsesNearestSafeTabLocation(testCase)
 
 result = generatedFourLayerValidated(testCase.TestData.outputRoot);
-cfg = fpc_coil_default_config(struct('turnsPerLayer', 1));
+cfg = rectangular_fpc_default_config(struct('turnsPerLayer', 1));
 tol = cfg.geometryTolerance;
 
 expectedVoutXY = [cfg.plateLength/2 + cfg.viaPadDiameter/2 + ...
@@ -729,7 +845,7 @@ cfg = fastConfig(4, testCase.TestData.outputRoot);
 cfg.designName = 'auto_vout_empty_inset_red';
 cfg.outputViaTipInset = 11.5;
 
-verifyError(testCase, @() fpc_coil_main(cfg), 'FPC_Coil:ViaPlanningFailed');
+verifyError(testCase, @() rectangular_fpc_main(cfg), 'RectangularFPC:ViaPlanningFailed');
 
 end
 
@@ -737,7 +853,7 @@ function testLeadRoutingPreservesRawSpiralCoordinates(testCase)
 
 cfg = fastConfig(4, testCase.TestData.outputRoot);
 cfg.designName = 'routing_body_fixture';
-result = fpc_coil_main(cfg);
+result = rectangular_fpc_main(cfg);
 tol = cfg.connectionTolerance;
 pointCount = cfg.turnsPerLayer * ...
     max(cfg.pointsPerTurn, cfg.minTurnPointCount) + 1;
@@ -771,7 +887,7 @@ end
 
 function testDefaultRightPadGroupIsCompactAndBalanced(testCase)
 
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', 4, ...
     'turnsPerLayer', 1, ...
     'enablePreview', false, ...
@@ -783,7 +899,7 @@ tol = cfg.geometryTolerance;
 
 verifyEqual(testCase, cfg.leadYOffset, 1.10, 'AbsTol', tol);
 
-result = fpc_coil_main(cfg);
+result = rectangular_fpc_main(cfg);
 verifyTrue(testCase, result.passed);
 
 padA = result.pads(strcmp({result.pads.name}, 'PAD_A'));
@@ -820,7 +936,7 @@ verifyLessThanOrEqual(testCase, abs(padGap - bottomEdgeGap), 0.05 + tol);
 verifyGreaterThanOrEqual(testCase, ...
     norm(v23.xy - vout.xy), cfg.viaPadDiameter + cfg.viaToViaClearance - tol);
 
-overrideCfg = fpc_coil_default_config(struct('leadYOffset', 1.30));
+overrideCfg = rectangular_fpc_default_config(struct('leadYOffset', 1.30));
 verifyEqual(testCase, overrideCfg.leadYOffset, 1.30);
 
 end
@@ -898,9 +1014,32 @@ hashText = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
 
 end
 
+function hashText = localQuantizedCoordinateSha256(xy)
+
+quantized = int64(round(xy / 1e-4));
+textValue = sprintf('%d,%d\n', quantized.');
+digest = java.security.MessageDigest.getInstance('SHA-256');
+hashBytes = typecast(digest.digest(uint8(textValue)), 'uint8');
+hashText = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
+
+end
+
+function hashText = localQuantizedPathSetSha256(paths)
+
+digest = java.security.MessageDigest.getInstance('SHA-256');
+for pathIndex = 1:numel(paths)
+    digest.update(uint8(sprintf('path=%d\n', pathIndex)));
+    quantized = int64(round(paths{pathIndex} / 1e-4));
+    digest.update(uint8(sprintf('%d,%d\n', quantized.')));
+end
+hashBytes = typecast(digest.digest(), 'uint8');
+hashText = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
+
+end
+
 function cfg = fastConfig(layerCount, outputRoot)
 
-cfg = fpc_coil_default_config(struct( ...
+cfg = rectangular_fpc_default_config(struct( ...
     'layerCount', layerCount, ...
     'turnsPerLayer', 1, ...
     'useRecommendedTurns', false, ...
@@ -919,6 +1058,9 @@ cfg = fpc_coil_default_config(struct( ...
     'enableViaClearanceCheck', false, ...
     'outputRoot', outputRoot, ...
     'designName', sprintf('behavior_%dlayer', layerCount)));
+if ismember(layerCount, [2, 4])
+    cfg.analysisOnly = true;
+end
 
 end
 
@@ -928,7 +1070,7 @@ persistent cachedOutputRoot cachedResult
 
 if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
     cfg = fastConfig(6, outputRoot);
-    cachedResult = fpc_coil_main(cfg);
+    cachedResult = rectangular_fpc_main(cfg);
     cachedOutputRoot = outputRoot;
 end
 result = cachedResult;
@@ -940,13 +1082,13 @@ function result = generatedEightLayerValidated(outputRoot)
 persistent cachedOutputRoot cachedResult
 
 if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
-    cfg = fpc_coil_default_config(struct( ...
+    cfg = rectangular_fpc_default_config(struct( ...
         'layerCount', 8, ...
         'turnsPerLayer', 1, ...
         'outputRoot', outputRoot, ...
         'designName', 'validated_8layer', ...
         'enablePreview', false));
-    cachedResult = fpc_coil_main(cfg);
+    cachedResult = rectangular_fpc_main(cfg);
     cachedOutputRoot = outputRoot;
 end
 result = cachedResult;
@@ -958,13 +1100,13 @@ function result = generatedFourLayerValidated(outputRoot)
 persistent cachedOutputRoot cachedResult
 
 if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
-    cfg = fpc_coil_default_config(struct( ...
+    cfg = rectangular_fpc_default_config(struct( ...
         'layerCount', 4, ...
         'turnsPerLayer', 1, ...
         'outputRoot', outputRoot, ...
         'designName', 'validated_4layer_strict_angle', ...
         'enablePreview', false));
-    cachedResult = fpc_coil_main(cfg);
+    cachedResult = rectangular_fpc_main(cfg);
     cachedOutputRoot = outputRoot;
 end
 result = cachedResult;

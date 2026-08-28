@@ -1,14 +1,14 @@
-function cfg = fpc_coil_default_config(overrides)
-%FPC_COIL_DEFAULT_CONFIG Return a complete, caller-overridable configuration.
-%   CFG = FPC_COIL_DEFAULT_CONFIG() returns the production defaults.
-%   CFG = FPC_COIL_DEFAULT_CONFIG(OVERRIDES) replaces supported fields
+function cfg = rectangular_fpc_default_config(overrides)
+%RECTANGULAR_FPC_DEFAULT_CONFIG Return a caller-overridable configuration.
+%   CFG = RECTANGULAR_FPC_DEFAULT_CONFIG() returns the production defaults.
+%   CFG = RECTANGULAR_FPC_DEFAULT_CONFIG(OVERRIDES) replaces supported fields
 %   from a scalar struct and rejects unknown field names.
 
 if nargin < 1
     overrides = struct();
 end
 if ~isstruct(overrides) || ~isscalar(overrides)
-    error('FPC_Coil:InvalidOverrides', ...
+    error('RectangularFPC:InvalidOverrides', ...
         'overrides must be a scalar struct.');
 end
 
@@ -63,19 +63,19 @@ cfg.padDiameter = 1.50;                                    % mm，PAD_A/PAD_B �
 cfg.padTipMargin = 0.20;                                   % mm，焊盘右缘到尾板尖端的最小间隙，仅用于配置校验
 cfg.leadTabClearance = 0.50;                               % mm，焊盘到圆弧起点之间水平引出线段的最小长度
 cfg.padToPadClearance = 0.15;                              % mm，PAD_A 与 PAD_B 之间的目标净间距
-cfg.padToCopperClearance = 0.15;                           % mm，焊盘边缘到非连接铜线的最小净距
+cfg.padToCopperClearance = 0.20;                           % mm，焊盘边缘到非连接铜线的最小净距（JLCPCB FPC 生产经验下限）
 
 % Inter-layer vias (mm).
 % 层间串联过孔参数，单位：mm
 cfg.viaDrillDiameter = 0.30;                               % mm，层间过孔钻孔直径
 cfg.viaPadDiameter = 0.60;                                 % mm，层间过孔焊盘直径
-cfg.viaToCopperClearance = 0.15;                           % mm，过孔焊盘到非连接铜层铜线的最小净距
+cfg.viaToCopperClearance = 0.20;                           % mm，过孔焊盘到非连接铜层铜线的最小净距
 cfg.viaToBoardClearance = 0.30;                            % mm，层间过孔到板框的最小净距
 cfg.viaToViaClearance = 0.20;                              % mm，相邻过孔之间的目标净间距
 cfg.viaToPadClearance = 0.20;                              % mm，过孔焊盘到 PAD_A/PAD_B 的目标净间距
 cfg.viaLandingLeadLength = 0.80;                           % mm，旧版自动模式（legacy_auto）内侧过孔朝线圈内部方向的逃逸引线长度
 cfg.viaLandingClearance = 0.15;                            % mm，内侧过孔与其连接层铜线之间的净距
-cfg.viaInnerBendRadius = 0.50;                             % mm，内侧逃逸引线圆弧半径上限
+cfg.viaInnerBendRadius = 0.60;                             % mm，内侧逃逸引线圆弧半径上限；为通孔反焊盘保留净距
 cfg.viaOuterLandingLeadLength = 1.00;                      % mm，旧版自动模式外侧过孔朝右的逃逸引线长度
 cfg.viaOuterLandingClearance = 0.15;                       % mm，外侧过孔与其连接层铜线之间的净距
 cfg.viaOuterBendRadius = 0.30;                             % mm，外侧逃逸引线圆弧半径上限
@@ -99,8 +99,8 @@ cfg.recommendedTurnMargin = 1;                             % 匝，推荐匝数�
 % 末层输出过孔与 L1 独立回路线参数，单位：mm；VOUT 为贯穿所有层的通孔，中间层需按反焊盘直径开禁铜窗
 cfg.outputViaType = 'through_via';                         % 字符串，VOUT 过孔类型，目前只支持贯穿所有层的 'through_via'
 cfg.outputViaTipInset = 4.00;                              % mm，auto 模式 VOUT 圆心到尾板右端尖端的最小水平内缩限制（实际位置可更靠左）
-cfg.outputViaAntiPadDiameter = 0.90;                       % mm，VOUT 在中间非连接层的反焊盘（禁铜开窗）直径
-cfg.outputViaToCopperClearance = 0.15;                     % mm，VOUT 到 L1 回路线铜线的最小净距
+cfg.outputViaAntiPadDiameter = 1.00;                       % mm，VOUT 在中间非连接层的反焊盘（禁铜开窗）直径
+cfg.outputViaToCopperClearance = 0.20;                     % mm，VOUT 到 L1 回路线铜线的最小净距
 cfg.outputViaToBoardClearance = 0.30;                      % mm，VOUT 到板框的最小净距
 
 % User coordinate origin and manual via coordinates.
@@ -114,7 +114,10 @@ cfg.manualOutputViaXY = zeros(0,2);                        % mm，人工 VOUT �
 % 材料与制造假设参数
 cfg.copperThickness = 0.035;                               % mm，铜箔厚度，用于直流电阻估算
 cfg.copperResistivity = 1.724e-8;                          % Ω·m，铜电阻率，用于直流电阻估算
-cfg.minAnnularRing = 0.15;                                 % mm，过孔最小环宽（= (viaPadDiameter - viaDrillDiameter)/2），仅用于配置校验
+cfg.minAnnularRing = 0.10;                                 % mm，过孔最小环宽（对应焊盘与钻孔直径差至少 0.20 mm）
+cfg.manufacturingProfile = 'jlc_fpc_1oz';                  % 字符串，制造规则档案
+cfg.manufacturingTier = 'standard';                        % 字符串，'standard' 或 'extreme'
+cfg.manufacturingRuleOverrides = struct();                 % 结构体，允许覆盖制造规则模块公开的数值规则
 
 % Geometry tolerances and discretization.
 % 几何容差与离散化参数
@@ -146,14 +149,15 @@ cfg.enableDxfReadbackCheck = true;                         % 布尔，true 时�
 
 % Output.
 % 输出目录参数
-cfg.outputRoot = fullfile(pwd, 'fpc_coil_output');         % 字符串，输出根目录，实际输出位于 <outputRoot>/<designName>/
-cfg.designName = 'fpc_coil_4layer';                        % 字符串，输出子文件夹名称，只允许字母、数字、下划线和连字符
+cfg.analysisOnly = false;                                  % 布尔，true 时只分析/验证，不创建任何文件或目录
+cfg.outputRoot = fullfile(pwd, 'rectangular_fpc_output');  % 字符串，输出根目录；正式输出为 <designName>_yyyyMMdd_HHmm
+cfg.designName = 'rectangular_fpc_4layer';                 % 字符串，逻辑设计名，只允许字母、数字、下划线和连字符
 
 names = fieldnames(overrides);
 for k = 1:numel(names)
     name = names{k};
     if ~isfield(cfg, name)
-        error('FPC_Coil:UnknownConfigField', ...
+        error('RectangularFPC:UnknownConfigField', ...
             'Unknown configuration field ''%s''.', name);
     end
     cfg.(name) = overrides.(name);
@@ -162,7 +166,7 @@ end
 % Derive only the design folder name when layerCount is overridden.
 % 层数只影响输出目录名，不再自动修改每层匝数（匝数由几何尺寸与验证决定）。
 if ~isfield(overrides, 'designName') && isfield(overrides, 'layerCount')
-    cfg.designName = sprintf('fpc_coil_%dlayer', cfg.layerCount);
+    cfg.designName = sprintf('rectangular_fpc_%dlayer', cfg.layerCount);
 end
 
 end

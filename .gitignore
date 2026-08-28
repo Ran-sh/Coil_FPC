@@ -10,4 +10,4 @@ Thumbs.db
 
 # Generated coil artifacts are covered by each subproject's own .gitignore:
 #   Circular_FPC_Coil/.gitignore  (/outputs/, /circular_fpc_output/, /outputs_previous_*/)
-#   FPC_Coil/.gitignore           (fpc_coil_output/)
+#   Rectangular_FPC_Coil/.gitignore (fpc_coil_output/, rectangular_fpc_output/)
