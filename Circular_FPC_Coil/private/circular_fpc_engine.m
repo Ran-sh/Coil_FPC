@@ -19,7 +19,7 @@ end
 activeLayers = activeLayerMap(cfg);         % 层叠组合 → 活动线圈层，如 4/2 → [1 4]
 directions = ones(1, numel(activeLayers));  % 绕向：+1 = CCW 由内向外，-1 = CW 由外向内
 directions(2:2:end) = -1;                   % 奇数序号层 CCW、偶数层 CW（层间交替反向）
-% 4/4 通孔会穿过另外两层：若非连接层的线进入钻孔/反焊盘区域，
+% 4/4 通孔会穿过另外两层：若非连接层的线进入真实钻孔区域，
 % 自动增加所有外端过孔的径向引出长度，并同步扩大板框。2 层线圈、
 % 4 层板但只有 1/2 层活动线圈没有这条跨活动层的约束。
 crossLayerSizing = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
@@ -44,12 +44,6 @@ for sizingPass = 1:maxOuterSizingPasses
     geom.connectionPaths = connectionPaths;
     geom.pads = pads;
     geom.vias = vias;
-    if strcmp(cfg.terminalPlacementMode, 'auto')
-        % VOUT is only a provisional search result here and is replaced by
-        % circular_fpc_terminal_reroute.  Do not let that throw-away point
-        % drive the antipad sizing loop; final validation checks real VOUT.
-        geom.antipadValidationVias = vias(~strcmp({vias.name}, 'VOUT'));
-    end
     geom.seriesRoute = seriesRoute;
     geom.seriesSequence = seriesSequence;
     geom.activeLayers = activeLayers;
@@ -59,17 +53,15 @@ for sizingPass = 1:maxOuterSizingPasses
     end
     mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
     deltaDrill = 0;
-    deltaAntipad = 0;
     if crossLayerSizing
         deltaDrill = mfRules.minDrillToCopperMm - validation.minViaToNonConnectedCopperMm;
-        deltaAntipad = -validation.minAntipadToNonConnectedCopperMm;
     end
     angleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
     contactArcInvalid = contactArcSizing && ...
         (validation.minOuterViaContactSweepDeg <= angleFloor || ...
         validation.maxOuterViaContactSweepDeg > 150);
     deltaContact = 0.05 * contactArcInvalid;
-    requiredExtension = max([0, deltaDrill, deltaAntipad, deltaContact]);
+    requiredExtension = max([0, deltaDrill, deltaContact]);
     if requiredExtension <= 1e-9
         break;
     end
@@ -77,11 +69,10 @@ for sizingPass = 1:maxOuterSizingPasses
     eff.viaEndExtension = eff.viaEndExtension + requiredExtension + 1e-6;
 end
 mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
-if crossLayerSizing && (validation.minViaToNonConnectedCopperMm < ...
-        mfRules.minDrillToCopperMm - 1e-9 || ...
-        validation.minAntipadToNonConnectedCopperMm < -1e-9)
+if crossLayerSizing && validation.minViaToNonConnectedCopperMm < ...
+        mfRules.minDrillToCopperMm - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
-        ['4/4 through-via drill/antipad cannot clear non-connected-layer copper ', ...
+        ['4/4 through-via drill cannot clear non-connected-layer copper ', ...
          'within %d automatic sizing passes.'], maxOuterSizingPasses);
 end
 if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
@@ -110,8 +101,8 @@ if strcmp(cfg.terminalPlacementMode, 'manual')
 else
     manufacturing = circular_fpc_manufacturing('check_result', cfg, validation);
 end
-% 平台/内径关系已在生成前作为硬可行性约束检查；保留空 advisories 字段，
-% 维持报告结构兼容，不再允许角部伸入环区后依赖事后 DRC 侥幸通过。
+% 平台水平/垂直边槽余量已预检，四角与内圆自然形成的四个连接区由
+% 最终布尔拓扑和铜到槽 DRC 检查；保留空 advisories 字段维持报告结构。
 validation.advisories = {};
 layerPaths = buildLayerPaths(cfg.boardLayerCount, activeLayers, directions, coils, connectionPaths);
 totalLengthMm = computeTotalLength(coils, connectionPaths);

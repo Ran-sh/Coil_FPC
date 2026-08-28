@@ -44,7 +44,7 @@ verifyTrue(testCase, isfield(cfg, 'viaPadDiameter'));
 verifyFalse(testCase, isfield(cfg, 'antipadDiameter'));
 verifyTrue(testCase, isfield(cfg, 'outputRoot'));
 verifyTrue(testCase, isfield(cfg, 'designName'));
-verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % 平台到内圆环的硬槽宽余量
+verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % 平台水平/垂直边到内圆的槽余量
 verifyTrue(testCase, cfg.enablePreview);
 verifyTrue(testCase, isfield(cfg, 'padPairSpacing'), 'default config missing padPairSpacing');
 if isfield(cfg, 'padPairSpacing')
@@ -103,10 +103,10 @@ verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 5 * 0.355))); % 6
 % 匝数扫描只列出几何生成器支持的范围：至少两个径向采样层级。
 verifyEmpty(testCase, regexp(turnTxt, '(?m)^1,', 'once'));
 verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
-% fixed 25.0 小于默认线圈/过孔所需尺寸：环区径向空间不足，
-% 在几何可行性阶段明确拒绝，原子导出不留正式目录。
+% fixed 25.0 小于默认线圈/过孔所需尺寸：端子到板边净距不足，
+% 在端子几何阶段明确拒绝，原子导出不留正式目录。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
-    'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:GeometryInfeasible');
+    'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:TerminalPlacementInvalid');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
 % fixed 26.5 大于默认紧凑 auto 尺寸：成功，板径/制造报告/扫描契约保持。
 rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_265', ...
@@ -148,8 +148,6 @@ res = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
 verifyTrue(testCase, res.validation.passed, ...
     sprintf('4/4 validation failed: %s', strjoin(res.validation.messages, ' | ')));
 verifyGreaterThanOrEqual(testCase, res.validation.minViaToNonConnectedCopperMm, 0.176 - 1e-9);
-verifyGreaterThanOrEqual(testCase, res.validation.minViaPadToNonConnectedCopperMm, ...
-    res.config.viaCoilSpacing - 1e-9);
 verifyGreaterThanOrEqual(testCase, res.validation.minViaToBoardMm, res.config.edgeClearance - 1e-9);
 verifyGreaterThanOrEqual(testCase, res.validation.minDrillToBoardMm, 0.176 - 1e-9);
 verifyEmpty(testCase, res.layerPaths(3).connectionPaths, 'L3 must have no transition traces');
@@ -672,7 +670,9 @@ for k = 1:size(combos, 1)
             end
             verifyTrue(testCase, all(abs(w43 - result.config.traceWidth) <= 1e-9), ...
                 sprintf('physical %s group 43 must equal cfg.traceWidth', physFile));
-            viaIds = 1:numel(result.vias);
+            % 非功能焊盘移除：钻孔贯穿并在每层预览显示，但物理铜焊环
+            % 只出现在该过孔实际连接的两层，避免无谓撑大板框。
+            viaIds = find([result.vias.fromLayer] == li | [result.vias.toLayer] == li);
             pc = dxfCircles(physTxt);
             if li == 1
                 verifyTrue(testCase, contains(physTxt, 'PAD_L1'), ...
@@ -771,9 +771,9 @@ verifyAutomaticBridgeLayout(testCase, cfgPlatform, resultPlatform, {'V12', 'V34'
 end
 
 function testFourTwoRotationKeepsDefaultBoardTopology(testCase)
-% 默认 13x14 平台始终正向且完整；四条等宽桥随端子/线圈参考系旋转，
-% 但不得与矩形四角的天然重叠叠加成八槽。
-for angleDeg = [0 45 90 135 225]
+% 默认 13x14 平台四角与 18.63 mm 内圆自然形成对角连接区；因此默认
+% 大平台只接受与四角一致的 45+90k 方位，不能再叠加轴向桥形成八槽。
+for angleDeg = [45 135 225]
     result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
         'connectionAngleDeg', angleDeg));
     verifyTrue(testCase, result.validation.passed, ...
@@ -792,6 +792,11 @@ for angleDeg = [0 45 90 135 225]
     verifyEqual(testCase, norm(result.pads(2).xy - ...
         result.vias(strcmp({result.vias.name}, 'VOUT')).xy), ...
         result.config.terminalLeadLength, 'AbsTol', 1e-6);
+end
+for angleDeg = [0 90]
+    verifyError(testCase, @() analyzeInternal(struct( ...
+        'boardLayerCount', 4, 'coilLayerCount', 2, ...
+        'connectionAngleDeg', angleDeg)), 'CircularFPC:GeometryInfeasible');
 end
 end
 

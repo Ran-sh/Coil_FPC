@@ -12,10 +12,10 @@ cfg = struct( ...
     'coilLayerCount', 4, ... % 活动线圈层数：支持 2/1、2/2、4/1、4/2、4/4
     'boardOuterDiameter', 25.0, ... % 固定板径模式下的圆形板外径 [mm]
     'boardSizingMode', 'auto', ... % 'auto' 匝数决定板径；'fixed' 使用 boardOuterDiameter
-    'coilInnerDiameter', 20.21, ... % 螺旋最内圈直径 [mm]；容纳默认 13x14 平台、槽余量和铜到槽净距
+    'coilInnerDiameter', 18.63, ... % 螺旋最内圈直径 [mm]；与正向 13x14 平台自然形成四个对角连接区
     'centerPlatformWidth', 13.0, ... % 中央平台宽度 [mm]
     'centerPlatformHeight', 14.0, ... % 中央平台高度 [mm]
-    'platformSlotMargin', 0.25, ... % 平台角点到线圈内侧的硬约束槽余量 [mm]
+    'platformSlotMargin', 0.25, ... % 平台水平/垂直边到内圆的最小槽余量 [mm]
     'bridgeTargetWidth', 1.5, ... % 连接桥目标宽度 [mm]
     'geometryScale', 1.0, ... % 宏观几何缩放系数
     'turnsPerCoilLayer', 8, ... % 每活动层目标匝数
@@ -41,7 +41,6 @@ cfg = struct( ...
     'minCopperInteriorAngleDeg', 90.0, ... % 铜走线内角必须严格大于该值 [deg]
     'minBoardInteriorAngleDeg', 90.0, ... % 板框/槽边内角必须严格大于该值 [deg]
     'angleToleranceDeg', 0.1, ... % 严格角度规则的数值安全余量 [deg]
-    'antipadDiameter', 1.2, ... % 非连接层反焊盘直径 [mm]
     'terminalClearance', 0.25, ... % 焊盘/过孔端子间最小净距 [mm]
     'copperThickness', 0.035, ... % 铜厚 [mm]
     'copperResistivity', 1.724e-8, ... % 铜电阻率 [Ohm*m]

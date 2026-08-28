@@ -22,7 +22,7 @@ numFields = {'boardOuterDiameter', 'coilInnerDiameter', 'centerPlatformWidth', .
     'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', 'boardOutlineLineWidth', ...
     'platformSlotMargin', ...
     'padPairSpacing', 'terminalLeadSpacing', 'terminalLeadLength', ...
-    'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', 'antipadDiameter', ...
+    'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', ...
     'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax', ...
     'minCopperInteriorAngleDeg', 'minBoardInteriorAngleDeg', 'angleToleranceDeg'};
 for k = 1:numel(numFields)
@@ -101,9 +101,8 @@ function assertFeasible(cfg, eff)
 % 生成前可行性校验（只做快速失败的硬检查，最终几何质量由 validate_result 实测把关）：
 %   1) 线圈所需径向跨度（线宽 + (匝数-1)*节距）必须小于环区可用跨度；
 %   2) 平台最大半径不得超过 板外半径 - edgeClearance（配置荒谬时立即失败）。
-% 平台与线圈内径必须保留完整的槽余量。否则矩形四角会直接粘到圆环，
-% 再叠加随 connectionAngleDeg 旋转的四条桥后产生八槽；若切开该粘连又会
-% 切到圆形线圈下方。该条件必须在布尔运算前明确拒绝。
+% 平台四角允许进入内圆与环区相交，这正是四个自然对角连接区；只要求
+% 平台水平/垂直边与内圆之间仍有槽余量，最终四槽拓扑由布尔结果验证。
 coilPitch = eff.coilPitch;
 requiredSpan = cfg.traceWidth + (cfg.turnsPerCoilLayer - 1) * coilPitch;
 boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
@@ -114,14 +113,14 @@ if availableSpan < requiredSpan - 1e-9
 end
 platReach = roundedRectMaxRadius(eff.centerPlatformWidth, eff.centerPlatformHeight, 0);
 usableInnerR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
-requiredInnerR = platReach + cfg.platformSlotMargin;
+platformSideReach = max(eff.centerPlatformWidth, eff.centerPlatformHeight) / 2;
+requiredInnerR = platformSideReach + cfg.platformSlotMargin;
 if usableInnerR < requiredInnerR - 1e-9
     minCoilInnerDiameter = 2 * (requiredInnerR + cfg.edgeClearance);
     error('CircularFPC:GeometryInfeasible', ...
-        ['coilInnerDiameter %.6f mm is too small for the complete axis-aligned ', ...
-         '%.3f x %.3f mm platform, %.3f mm slot margin, and %.3f mm copper-to-slot ', ...
-         'clearance. Use at least %.6f mm; otherwise the platform corners create ', ...
-         'four unintended bridges and the rotated bridge set produces eight slots.'], ...
+        ['coilInnerDiameter %.6f mm is too small to retain four slots around the ', ...
+         'axis-aligned %.3f x %.3f mm platform with %.3f mm side slot margin and ', ...
+         '%.3f mm copper-to-slot clearance. Use at least %.6f mm.'], ...
         eff.coilInnerDiameter, eff.centerPlatformWidth, eff.centerPlatformHeight, ...
         cfg.platformSlotMargin, cfg.edgeClearance, minCoilInnerDiameter);
 end
@@ -159,7 +158,6 @@ function v = validateResult(cfg, eff, geom)
 %   minViaToBoardMm        : 过孔焊盘切线到板框线内侧的最小距离
 %   minDrillToBoardMm      : 钻孔切线到板框线内侧的最小距离
 %   minViaToNonConnectedCopperMm : 通孔钻孔切线到非连接层铜的最小距离
-%   minAntipadToNonConnectedCopperMm : 反焊盘边界到非连接层铜的最小距离
 %   minCopperToSlotsMm     : 铜/端子到孔槽最小距离（须 ≥ edgeClearance）
 %   minPadViaClearanceMm   : 焊盘/过孔端子间最小净距
 %   actualBridgeWidthMm    : 实际桥宽（须 ≥ bridgeTargetWidth）
@@ -225,11 +223,6 @@ v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectio
 v.minViaToBoardMm = computeViaToBoard(cfg, eff, geom.vias);
 v.minDrillToBoardMm = computeDrillToBoard(cfg, eff, geom.vias);
 v.minViaToNonConnectedCopperMm = computeViaToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, geom.vias);
-antipadVias = geom.vias;
-if isfield(geom, 'antipadValidationVias')
-    antipadVias = geom.antipadValidationVias;
-end
-v.minAntipadToNonConnectedCopperMm = computeAntipadToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, antipadVias);
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
 v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
@@ -278,9 +271,6 @@ end
 if v.minViaToNonConnectedCopperMm < mfRules.minDrillToCopperMm - 1e-9
     v.messages{end + 1} = 'through-via drill-to-non-connected-layer copper clearance below manufacturing rule'; %#ok<AGROW>
 end
-if v.minAntipadToNonConnectedCopperMm < -1e-9
-    v.messages{end + 1} = 'antipad overlaps non-connected-layer copper'; %#ok<AGROW>
-end
 if v.minCopperToSlotsMm < cfg.edgeClearance - 1e-9
     v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
 end
@@ -322,7 +312,6 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minViaToBoardMm >= cfg.edgeClearance - 1e-9 && ...
     v.minDrillToBoardMm >= mfRules.minDrillToBoardMm - 1e-9 && ...
     v.minViaToNonConnectedCopperMm >= mfRules.minDrillToCopperMm - 1e-9 && ...
-    v.minAntipadToNonConnectedCopperMm >= -1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
     v.minCopperInteriorAngleDeg > copperAngleFloor && ...
@@ -727,8 +716,8 @@ end
 end
 
 function s = computeViaToNonConnectedCopper(cfg, coils, connectionPaths, vias)
-% 通孔会穿过所有物理层：在未连接层上只有钻孔/反焊盘，
-% 因此按“钻孔切线到铜边”检查，不能只检查过孔自身连接的两层。
+% 通孔会穿过所有物理层：非连接层移除非功能焊盘且不生成禁铜圈，
+% 仍须按“实际钻孔切线到铜边”检查，不能只检查过孔连接的两层。
 s = inf;
 for k = 1:numel(vias)
     v = vias(k);
@@ -751,38 +740,8 @@ for k = 1:numel(vias)
 end
 end
 
-function s = computeAntipadToNonConnectedCopper(cfg, coils, connectionPaths, vias)
-% Antipad is the actual no-copper envelope on every unconnected layer.
-s = computeViaKeepoutToNonConnectedCopper(cfg, coils, connectionPaths, vias, cfg.antipadDiameter / 2);
-end
-
-function s = computeViaKeepoutToNonConnectedCopper(cfg, coils, connectionPaths, vias, keepoutRadius)
-s = inf;
-for k = 1:numel(vias)
-    v = vias(k);
-    viaMin = inf;
-    connected = [v.fromLayer, v.toLayer];
-    for li = 1:numel(coils)
-        if ismember(li, connected)
-            continue;
-        end
-        copper = coils{li};
-        paths = connectionPaths{li};
-        if ~isempty(copper)
-            viaMin = min(viaMin, pointToCopperEdge(v.xy, copper) - keepoutRadius - cfg.traceWidth / 2);
-        end
-        for p = 1:numel(paths)
-            if ~isempty(paths{p})
-                viaMin = min(viaMin, pointToCopperEdge(v.xy, paths{p}) - keepoutRadius - cfg.traceWidth / 2);
-            end
-        end
-    end
-    s = min(s, viaMin);
-end
-end
-
 function d = pointToCopperEdge(point, xy)
-% 点到折线中心线的最短距离；调用者再扣除钻孔/反焊盘和铜线半径。
+% 点到折线中心线的最短距离；调用者再扣除钻孔和铜线半径。
 if size(xy, 1) < 2
     d = inf;
     return;

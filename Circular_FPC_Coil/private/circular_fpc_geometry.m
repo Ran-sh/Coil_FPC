@@ -45,8 +45,8 @@ annulus = subtract(outerP, innerP); % 线圈所在的圆环区域
 % 并集自然形成；端子走线仍在自己的 u/t 局部坐标系中随 connectionAngleDeg 旋转。
 platformXY = sampleRectangle(eff.centerPlatformWidth, eff.centerPlatformHeight);
 platP = polyshape(platformXY);
-% 可行性校验保证平台四角连同 platformSlotMargin 完全位于内圆环以内，
-% 因此平台不会自行粘到环区；板框只通过下面四条显式等宽桥相连。
+% 平台水平/垂直边与内圆保留 platformSlotMargin；四角允许伸入环区，
+% 并与下面同方位的四个等宽连接区共同自然形成四槽。
 polys = [annulus, platP]; % 中央平台：焊盘与进出线所在的连接区
 % 四条桥臂随 connectionAngleDeg 旋转，连接固定正向平台与外部环区。
 % 四条桥使用同一个统一宽度；该宽度必须同时容纳目标桥宽、过孔净距、
@@ -619,11 +619,9 @@ else
         % 焊环边缘距 L1 铜边 = viaCoilSpacing（与 VOUT 同款约束）；
         % L2 的内端延伸弧直接落到 V23 中心（无过渡走线，用户设计约定）。
         % clamp 下限：禁止公式在极端参数下为负（负值会让过孔跑到对侧轴线）。
-        % V23 also drills through the unconnected L1/L4 copper.  Its radial
-        % offset must therefore satisfy the larger of the connected-layer
-        % via-pad clearance and the unconnected-layer antipad envelope.
-        keepoutR = max(cfg.viaCoilSpacing + cfg.viaPadDiameter / 2, ...
-            cfg.antipadDiameter / 2);
+        % V23 是与其余过孔相同的 0.55/0.31 mm 贯通过孔；按真实焊环
+        % 到相邻匝的 viaCoilSpacing 定位，不引入额外禁铜圈。
+        keepoutR = cfg.viaCoilSpacing + cfg.viaPadDiameter / 2;
         rV23 = max(0.1, layoutRegions.rStart - (keepoutR + ...
             cfg.traceWidth / 2 + 1e-3) + 0.25 * eff.coilPitch);
     end

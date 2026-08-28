@@ -2,9 +2,9 @@ function varargout = circular_fpc_export(operation, varargin)
 % Atomic DXF/SVG/CSV/TXT export with lightweight readback (R4).
 % Dual-track DXF: legacy centerline files (dxf/Ln/NN_copper_Ln.dxf) keep
 % their byte contract; physical CAM-reference files
-% (dxf/Ln/NN_copper_physical_Ln.dxf) add group-43 trace width and pad/via
-% circles. Antipad keepout files (dxf/Ln/NN_antipad_keepout_Ln.dxf) are
-% reference-only and never copper. Engineering coordinates are +X right,
+% (dxf/Ln/NN_copper_physical_Ln.dxf) add group-43 trace width and functional
+% via-pad circles. Drills are through-holes; non-functional pads are removed.
+% Engineering coordinates are +X right,
 % +Y up; only SVG display flips Y. The file manifest
 % (reports/08_file_manifest.csv) lists every generated regular file except
 % itself.
@@ -44,7 +44,7 @@ end
 
 function writeAllFiles(cfg, result, outDir)
 % 输出文件树：
-%   dxf/         板框 + 每物理层铜层（4 层板含反焊盘层）
+%   dxf/         板框 + 每物理层铜层 + 功能过孔焊环 + 贯穿钻孔图
 %   previews/    全板/连接区/每层 SVG 预览（enablePreview=true 时）
 %   reports/     坐标 CSV、层映射、摘要、匝数扫描、验证报告
 %   generation_status.txt
@@ -59,7 +59,6 @@ for li = 1:cfg.boardLayerCount
     mkdir(layerDir);
     writeCopperDxf(fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li)), result, li);
     writePhysicalCopperDxf(fullfile(layerDir, sprintf('%02d_copper_physical_L%d.dxf', li, li)), cfg, result, li);
-    writeAntipadKeepoutDxf(fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li)), cfg, result, li);
 end
 if cfg.enablePreview
     prevDir = fullfile(outDir, 'previews');
@@ -185,23 +184,6 @@ end
 writeDxfFooter(fid);
 end
 
-function writeAntipadKeepoutDxf(filename, cfg, result, li)
-% Reference-only keepout layer: circles for vias NOT connected to layer li.
-% Never emitted as copper. File stays valid even with zero circles.
-layerName = sprintf('ANTIPAD_KEEPOUT_L%d', li);
-fid = openOutputFile(filename);
-c = onCleanup(@() fclose(fid));
-writeDxfHeader(fid, {layerName});
-for k = 1:numel(result.vias)
-    v = result.vias(k);
-    if v.fromLayer == li || v.toLayer == li
-        continue;
-    end
-    writeCircle(fid, v.xy, cfg.antipadDiameter / 2, layerName);
-end
-writeDxfFooter(fid);
-end
-
 function writeCircle(fid, xy, radius, layer)
 % CIRCLE with engineering +X/+Y coordinates (no display Y flip).
 fprintf(fid, '0\r\nCIRCLE\r\n8\r\n%s\r\n10\r\n%.9f\r\n20\r\n%.9f\r\n40\r\n%.9f\r\n', ...
@@ -304,27 +286,18 @@ if li == 1
     end
 end
 for k = 1:numel(result.vias)
-    writeSvgLayerVia(fid, cfg, result.vias(k), li);
+    writeSvgLayerVia(fid, cfg, result.vias(k));
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
 end
 
-function writeSvgLayerVia(fid, cfg, v, li)
-% The drilled hole exists on every physical layer.  Copper annulus exists
-% only on the two connected layers; every other layer shows the solid-line
-% antipad/no-copper envelope instead of inventing a copper ring.
-connected = v.fromLayer == li || v.toLayer == li;
-if connected
-    fprintf(fid, ['<circle data-via-name="%s" data-via-role="copper-ring" ', ...
-        'cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n'], ...
-        v.name, v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
-else
-    fprintf(fid, ['<circle data-via-name="%s" data-via-role="antipad" ', ...
-        'cx="%.6f" cy="%.6f" r="%.6f" fill="#ffcc1a" fill-opacity="0.60" ', ...
-        'stroke="#000000" stroke-width="0.12"/>\n'], ...
-        v.name, v.xy(1), -v.xy(2), cfg.antipadDiameter / 2);
-end
+function writeSvgLayerVia(fid, cfg, v)
+% Every layer preview shows the same nominal through-via annulus and drill.
+% Physical DXF may remove non-functional pads, but never draws a larger keepout.
+fprintf(fid, ['<circle data-via-name="%s" data-via-role="copper-ring" ', ...
+    'cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n'], ...
+    v.name, v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
 fprintf(fid, ['<circle data-via-name="%s" data-via-role="drill" ', ...
     'cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n'], ...
     v.name, v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
@@ -427,16 +400,16 @@ function writeReports(cfg, result, reportsDir)
 %   04_turn_scan.csv            匝数可行性扫描（每匝所需径向宽度是否放得下）
 %   05_validation_report.txt    验证报告（各 PASS 指标 + 失败信息）
 fid = fopen(fullfile(reportsDir, '01_pad_via_coordinates.csv'), 'w');
-fprintf(fid, 'name,xMm,yMm,diameterMm,drillMm,antipadDiameterMm,layer,fromLayer,toLayer,removable,role,placementRegion,bridgeAngleDeg\n');
+fprintf(fid, 'name,xMm,yMm,diameterMm,drillMm,layer,fromLayer,toLayer,removable,role,placementRegion,bridgeAngleDeg\n');
 for k = 1:numel(result.pads)
     p = result.pads(k);
-    fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,NaN,%d,%d,%d,%d,%s,%s,%.6f\n', ...
+    fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%s,%s,%.6f\n', ...
         p.name, p.xy(1), p.xy(2), p.diameter, 0, p.layer, p.layer, p.layer, p.removable, 'REMOVABLE_PAD', p.placementRegion, p.bridgeAngleDeg);
 end
 for k = 1:numel(result.vias)
     v = result.vias(k);
-    fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%s,%s,%.6f\n', ...
-        v.name, v.xy(1), v.xy(2), v.padDiameter, v.drillDiameter, cfg.antipadDiameter, ...
+    fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%s,%s,%.6f\n', ...
+        v.name, v.xy(1), v.xy(2), v.padDiameter, v.drillDiameter, ...
         0, v.fromLayer, v.toLayer, 0, v.role, v.placementRegion, v.bridgeAngleDeg);
 end
 fclose(fid);
@@ -543,7 +516,6 @@ fprintf(fid, 'PASS minCopperToBoardMm: %.6f\n', v.minCopperToBoardMm);
 fprintf(fid, 'PASS minViaToBoardMm: %.6f\n', v.minViaToBoardMm);
 fprintf(fid, 'PASS minDrillToBoardMm: %.6f\n', v.minDrillToBoardMm);
 fprintf(fid, 'PASS minViaToNonConnectedCopperMm: %.6f\n', v.minViaToNonConnectedCopperMm);
-fprintf(fid, 'PASS minAntipadToNonConnectedCopperMm: %.6f\n', v.minAntipadToNonConnectedCopperMm);
 fprintf(fid, 'PASS minCopperToSlotsMm: %.6f\n', v.minCopperToSlotsMm);
 fprintf(fid, 'PASS minPadViaClearanceMm: %.6f\n', v.minPadViaClearanceMm);
 fprintf(fid, 'PASS actualBridgeWidthMm: %.6f\n', v.actualBridgeWidthMm);
@@ -627,8 +599,6 @@ elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_L\d+\.dxf$', 'once'))
     role = 'copper_centerline';
 elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_physical_L\d+\.dxf$', 'once'))
     role = 'copper_physical';
-elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_antipad_keepout_L\d+\.dxf$', 'once'))
-    role = 'antipad_keepout';
 elseif ~isempty(regexp(rel, '^previews/', 'once'))
     role = 'preview';
 elseif ~isempty(regexp(rel, '^reports/', 'once'))
@@ -748,25 +718,6 @@ for li = 1:cfg.boardLayerCount
     if numel(pc) ~= (li == 1) * 2 + numel(viaIds)
         error('CircularFPC:ExportReadbackFailed', 'Physical circle count mismatch: %s', physFile);
     end
-    keepFile = fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li));
-    if ~isfile(keepFile)
-        error('CircularFPC:ExportReadbackFailed', 'Missing keepout DXF: %s', keepFile);
-    end
-    keepTxt = fileread(keepFile);
-    checkDxfBase(keepTxt, keepFile);
-    if contains(keepTxt, 'COPPER_PHYSICAL')
-        error('CircularFPC:ExportReadbackFailed', 'Keepout DXF must not contain copper traces: %s', keepFile);
-    end
-    keepLayer = sprintf('ANTIPAD_KEEPOUT_L%d', li);
-    if ~contains(keepTxt, keepLayer)
-        error('CircularFPC:ExportReadbackFailed', 'Keepout DXF must declare %s layer.', keepLayer);
-    end
-    [kc, ~, ~] = readDxfEntities(keepTxt);
-    keepIds = find(~([result.vias.fromLayer] == li | [result.vias.toLayer] == li));
-    if numel(kc) ~= numel(keepIds) || ...
-            (~isempty(kc) && (any(~strcmp({kc.layer}, keepLayer)) || any(abs([kc.r] - cfg.antipadDiameter / 2) > 1e-9)))
-        error('CircularFPC:ExportReadbackFailed', 'Keepout circle mismatch: %s', keepFile);
-    end
 end
 if cfg.enablePreview
     for f = {fullfile(tempDir, 'previews', '01_preview_full.svg'), ...
@@ -860,7 +811,7 @@ if any(startsWith(rel8, '/')) || any(contains(rel8, '\')) || any(contains(rel8, 
     error('CircularFPC:ExportReadbackFailed', '08 manifest relativePath invalid.');
 end
 roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', ...
-    'antipad_keepout', 'preview', 'report', 'generation_status'};
+    'preview', 'report', 'generation_status'};
 for k = 1:height(t8)
     rel = char(t8.relativePath(k));
     if ~ismember(char(t8.role(k)), roles8)
@@ -1025,12 +976,12 @@ function verifyExportedTerminalMetadata(cfg, result, tempDir)
 % Internal readback: CSV columns/rows and SVG labels must match result (R1/R2/R4).
 csvPath = fullfile(tempDir, 'reports', '01_pad_via_coordinates.csv');
 t = readtable(csvPath);
-expectedColumns = {'name', 'xMm', 'yMm', 'diameterMm', 'drillMm', 'antipadDiameterMm', ...
+expectedColumns = {'name', 'xMm', 'yMm', 'diameterMm', 'drillMm', ...
     'layer', 'fromLayer', 'toLayer', 'removable', 'role', ...
     'placementRegion', 'bridgeAngleDeg'};
 if ~isequal(t.Properties.VariableNames, expectedColumns)
     error('CircularFPC:ExportReadbackFailed', ...
-        'CSV columns must be the old 11 followed by placementRegion and bridgeAngleDeg.');
+        'CSV columns must describe physical pads/vias and terminal placement metadata.');
 end
 expectedHeight = numel(result.pads) + numel(result.vias);
 if height(t) ~= expectedHeight

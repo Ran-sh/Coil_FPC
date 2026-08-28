@@ -111,7 +111,6 @@ for li = 1:numel(layerFiles)
             'data-via-name="%s" data-via-role="drill"', name)));
     end
     verifyFalse(testCase, contains(svg, 'data-via-role="antipad"'));
-    verifyFalse(testCase, contains(svg, '#ffcc1a'));
     verifyFalse(testCase, contains(svg, 'stroke-dasharray'));
 end
 end
