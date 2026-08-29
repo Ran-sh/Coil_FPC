@@ -119,8 +119,10 @@ end
 
 function [moved, message] = failPublishMove(source, destination, paths)
 if strcmp(source, paths.staging) && strcmp(destination, paths.output)
+    mkdir(destination);
+    writeMarker(fullfile(destination, 'partial_marker.txt'));
     moved = false;
-    message = 'injected final move failure';
+    message = 'injected partial final move failure';
 else
     [moved, message] = movefile(source, destination);
 end
