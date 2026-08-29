@@ -978,8 +978,10 @@ turnTxt = fileread(csvTurnScan);
 verifyTrue(testCase, contains(turnTxt, '8'));
 valTxt = fileread(txtValidation);
 verifyTrue(testCase, contains(lower(valTxt), 'pass'));
-statusTxt = fileread(statusFile);
-verifyTrue(testCase, contains(lower(statusTxt), 'success'));
+    statusTxt = fileread(statusFile);
+    verifyTrue(testCase, contains(lower(statusTxt), 'success'));
+    verifyTrue(testCase, contains(statusTxt, sprintf('outputPath: %s', out)), ...
+        'generation_status.txt must record the committed output directory');
 csvCheck = fullfile(out, 'reports', '06_manufacturing_check.csv');
 txtNotes = fullfile(out, 'reports', '07_fabrication_notes.txt');
 csvManifest = fullfile(out, 'reports', '08_file_manifest.csv');
@@ -1112,6 +1114,7 @@ verifyTrue(testCase, isfile(scriptPath));
 if ~isfile(scriptPath)
     return;
 end
+
 outRoot = createTempOutput(testCase);
 outputRoot = outRoot;
 run(scriptPath);
@@ -1166,6 +1169,27 @@ if isfile(readmePath)
 end
 if isfile(gitignorePath)
     verifyTrue(testCase, contains(fileread(gitignorePath), '/outputs/'));
+end
+end
+
+function testGitHubWorkflowRunsBothSuitesAndRejectsZeroTests(testCase)
+projectRoot = testCase.TestData.projectRoot;
+repoRoot = fileparts(projectRoot);
+workflowPath = fullfile(repoRoot, '.github', 'workflows', 'matlab-tests.yml');
+verifyTrue(testCase, isfile(workflowPath));
+workflow = fileread(workflowPath);
+verifyTrue(testCase, contains(workflow, 'matlab-actions/run-command@v2'));
+verifyTrue(testCase, contains(workflow, 'Circular_FPC_Coil'));
+verifyTrue(testCase, contains(workflow, 'Rectangular_FPC_Coil'));
+verifyGreaterThanOrEqual(testCase, ...
+    numel(strfind(workflow, 'run_all_verification')), 2);
+verifyFalse(testCase, contains(workflow, 'select-by-folder: .'));
+
+for runner = {fullfile(projectRoot, 'tests', 'run_all_verification.m'), ...
+        fullfile(repoRoot, 'Rectangular_FPC_Coil', 'tests', ...
+        'run_all_verification.m')}
+    runnerText = fileread(runner{1});
+    verifyTrue(testCase, contains(runnerText, 'assert(~isempty(results)'));
 end
 end
 
