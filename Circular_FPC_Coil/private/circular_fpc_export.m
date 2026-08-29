@@ -21,28 +21,20 @@ function outputPath = exportAll(cfg, result)
 % 通过后整体改名为正式目录 <outputRoot>/<designName>。
 % 任一步失败都会删除临时目录，不留下半成品，也不覆盖已存在的正式输出。
 formal = fullfile(cfg.outputRoot, cfg.designName);
-if isfolder(formal)
-    error('CircularFPC:OutputExists', 'Output directory already exists: %s', formal);
-end
 if ~isfolder(cfg.outputRoot)
     mkdir(cfg.outputRoot);
 end
 tempDir = tempname(cfg.outputRoot);
 mkdir(tempDir);
-try
-    writeAllFiles(cfg, result, tempDir);
-    verifyWrittenOutputs(cfg, result, tempDir);
-catch err
-    if isfolder(tempDir)
-        rmdir(tempDir, 's');
-    end
-    rethrow(err);
-end
-movefile(tempDir, formal);
+stagingCleanup = onCleanup(@() removeStagingFolder(tempDir));
+writeAllFiles(cfg, result, tempDir, formal);
+verifyWrittenOutputs(cfg, result, tempDir);
+circular_fpc_publish_atomically(tempDir, formal);
+clear stagingCleanup;
 outputPath = formal;
 end
 
-function writeAllFiles(cfg, result, outDir)
+function writeAllFiles(cfg, result, outDir, formalPath)
 % 输出文件树：
 %   dxf/         板框 + 每物理层铜层 + 功能过孔焊环 + 贯穿钻孔图
 %   previews/    全板/连接区/每层 SVG 预览（enablePreview=true 时）
@@ -71,7 +63,7 @@ if cfg.enablePreview
     end
 end
 writeReports(cfg, result, reportsDir);
-writeStatus(cfg, result, fullfile(outDir, 'generation_status.txt'));
+writeStatus(cfg, formalPath, fullfile(outDir, 'generation_status.txt'));
 writeFileManifest(fullfile(reportsDir, '08_file_manifest.csv'), outDir);
 end
 
@@ -518,6 +510,8 @@ fprintf(fid, 'PASS minDrillToBoardMm: %.6f\n', v.minDrillToBoardMm);
 fprintf(fid, 'PASS minViaToNonConnectedCopperMm: %.6f\n', v.minViaToNonConnectedCopperMm);
 fprintf(fid, 'PASS minCopperToSlotsMm: %.6f\n', v.minCopperToSlotsMm);
 fprintf(fid, 'PASS minPadViaClearanceMm: %.6f\n', v.minPadViaClearanceMm);
+fprintf(fid, 'PASS minTerminalToConnectionTraceMm: %.6f\n', ...
+    v.minTerminalToConnectionTraceMm);
 fprintf(fid, 'PASS actualBridgeWidthMm: %.6f\n', v.actualBridgeWidthMm);
 fprintf(fid, 'PASS uniqueSeriesNetwork: %d\n', v.uniqueSeriesNetwork);
 fprintf(fid, 'PASS maxSeriesContinuityErrorMm: %.9f\n', v.maxSeriesContinuityErrorMm);
@@ -626,13 +620,19 @@ d = dir(fullfile(root, '**', '*'));
 n = sum(~[d.isdir]);
 end
 
-function writeStatus(cfg, result, filename)
+function writeStatus(cfg, formalPath, filename)
 fid = fopen(filename, 'w');
 fprintf(fid, 'SUCCESS\n');
 fprintf(fid, 'designName: %s\n', cfg.designName);
-fprintf(fid, 'outputPath: %s\n', result.outputPath);
+fprintf(fid, 'outputPath: %s\n', formalPath);
 fprintf(fid, 'generatedBy: Circular_FPC_Coil\n');
 fclose(fid);
+end
+
+function removeStagingFolder(folder)
+if isfolder(folder)
+    rmdir(folder, 's');
+end
 end
 
 function verifyWrittenOutputs(cfg, result, tempDir)
@@ -830,8 +830,14 @@ for k = 1:height(t8)
         error('CircularFPC:ExportReadbackFailed', '08 manifest sha256 mismatch: %s', rel);
     end
 end
-if isempty(fileread(fullfile(tempDir, 'generation_status.txt')))
+statusText = fileread(fullfile(tempDir, 'generation_status.txt'));
+expectedOutputPath = fullfile(cfg.outputRoot, cfg.designName);
+if isempty(statusText)
     error('CircularFPC:ExportReadbackFailed', 'Empty generation status.');
+end
+if ~contains(statusText, sprintf('outputPath: %s', expectedOutputPath))
+    error('CircularFPC:ExportReadbackFailed', ...
+        'Generation status outputPath does not match the formal directory.');
 end
 end
 

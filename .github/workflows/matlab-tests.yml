@@ -12,8 +12,11 @@ jobs:
       - uses: matlab-actions/setup-matlab@v2
         with:
           release: R2026a
-      - name: Run behavior tests
-        uses: matlab-actions/run-tests@v2
+      - name: Run circular FPC verification
+        uses: matlab-actions/run-command@v2
         with:
-          source-folder: .
-          select-by-folder: .
+          command: cd("Circular_FPC_Coil"); addpath("tests"); results = run_all_verification(); assert(~isempty(results), "Circular FPC discovered zero tests")
+      - name: Run rectangular FPC verification
+        uses: matlab-actions/run-command@v2
+        with:
+          command: cd("Rectangular_FPC_Coil"); addpath("tests"); results = run_all_verification(); assert(~isempty(results), "Rectangular FPC discovered zero tests")

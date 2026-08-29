@@ -160,6 +160,7 @@ function v = validateResult(cfg, eff, geom)
 %   minViaToNonConnectedCopperMm : 通孔钻孔切线到非连接层铜的最小距离
 %   minCopperToSlotsMm     : 铜/端子到孔槽最小距离（须 ≥ edgeClearance）
 %   minPadViaClearanceMm   : 焊盘/过孔端子间最小净距
+%   minTerminalToConnectionTraceMm : 功能端子铜盘到无关连接走线的最小净距
 %   actualBridgeWidthMm    : 实际桥宽（须 ≥ bridgeTargetWidth）
 %   uniqueSeriesNetwork    : 串联网络唯一且连续
 %   maxSeriesContinuityErrorMm / maxConnectionTurnDeg / viaOverlapFree : 连接质量指标
@@ -226,6 +227,8 @@ v.minViaToNonConnectedCopperMm = computeViaToNonConnectedCopper(cfg, geom.coils,
 v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
 v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
 v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
+v.minTerminalToConnectionTraceMm = computeTerminalToConnectionTrace( ...
+    cfg, geom.connectionPaths, geom.vias, geom.pads);
 v.minCopperInteriorAngleDeg = computeMinCopperInteriorAngle(geom.coils, geom.connectionPaths);
 v.minBoardInteriorAngleDeg = computeMinBoardInteriorAngle(geom.boardLoops);
 v.actualBridgeWidthMm = geom.actualBridgeWidth;
@@ -277,6 +280,9 @@ end
 if v.minViaCoilSpacingMm < cfg.viaCoilSpacing - 1e-9
     v.messages{end + 1} = 'via-to-coil spacing below viaCoilSpacing'; %#ok<AGROW>
 end
+if v.minTerminalToConnectionTraceMm < cfg.viaCoilSpacing - 1e-9
+    v.messages{end + 1} = 'terminal-to-connection-trace spacing below viaCoilSpacing'; %#ok<AGROW>
+end
 % 全局角度规则：必须严格大于 阈值+数值容差；90° 直角本身不合法。
 % 生成器应以圆弧/平滑曲线消除恰好 90° 或更尖锐的接续。
 copperAngleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
@@ -314,6 +320,7 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minViaToNonConnectedCopperMm >= mfRules.minDrillToCopperMm - 1e-9 && ...
     v.minCopperToSlotsMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaCoilSpacingMm >= cfg.viaCoilSpacing - 1e-9 && ...
+    v.minTerminalToConnectionTraceMm >= cfg.viaCoilSpacing - 1e-9 && ...
     v.minCopperInteriorAngleDeg > copperAngleFloor && ...
     v.minBoardInteriorAngleDeg > boardAngleFloor && ...
     v.minOuterViaContactSweepDeg > copperAngleFloor && ...
@@ -802,6 +809,64 @@ c = inf;
 for i = 1:size(xy, 1)
     for j = i + 1:size(xy, 1)
         c = min(c, norm(xy(i, :) - xy(j, :)) - radii(i) - radii(j));
+    end
+end
+end
+
+function dMin = computeTerminalToConnectionTrace( ...
+    cfg, connectionPaths, vias, pads)
+% Functional terminal copper disks versus every same-layer connection trace.
+% Only the contiguous attachment segment of a path that actually terminates
+% at the disk is exempt; unrelated paths and later path re-entry are measured.
+dMin = inf;
+terms = struct('xy', {}, 'radius', {}, 'layers', {});
+for k = 1:numel(vias)
+    terms(end + 1) = struct( ... %#ok<AGROW>
+        'xy', vias(k).xy, ...
+        'radius', vias(k).padDiameter / 2, ...
+        'layers', unique([vias(k).fromLayer, vias(k).toLayer]));
+end
+for k = 1:numel(pads)
+    terms(end + 1) = struct( ... %#ok<AGROW>
+        'xy', pads(k).xy, ...
+        'radius', pads(k).diameter / 2, ...
+        'layers', pads(k).layer);
+end
+
+for termIndex = 1:numel(terms)
+    term = terms(termIndex);
+    zoneRadius = term.radius + cfg.traceWidth / 2 + cfg.viaCoilSpacing;
+    for layerIndex = term.layers
+        paths = connectionPaths{layerIndex};
+        for pathIndex = 1:numel(paths)
+            path = paths{pathIndex};
+            if size(path, 1) < 2
+                continue;
+            end
+            segmentMask = true(size(path, 1) - 1, 1);
+            inZone = sqrt(sum((path - term.xy).^2, 2)) <= ...
+                zoneRadius + 1e-9;
+            if norm(path(1, :) - term.xy) <= 1e-9
+                firstOutside = find(~inZone, 1, 'first');
+                if isempty(firstOutside)
+                    segmentMask(:) = false;
+                else
+                    segmentMask(1:firstOutside - 1) = false;
+                end
+            end
+            if norm(path(end, :) - term.xy) <= 1e-9
+                lastOutside = find(~inZone, 1, 'last');
+                if isempty(lastOutside)
+                    segmentMask(:) = false;
+                else
+                    segmentMask(lastOutside:end) = false;
+                end
+            end
+            centerDistance = minDistanceToSegmentsMasked( ...
+                term.xy, path, segmentMask, 1);
+            dMin = min(dMin, centerDistance - term.radius - ...
+                cfg.traceWidth / 2);
+        end
     end
 end
 end
