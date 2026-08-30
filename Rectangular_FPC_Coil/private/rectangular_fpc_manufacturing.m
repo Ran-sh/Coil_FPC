@@ -79,7 +79,8 @@ function validateResultInput(result)
 % check_result 输入契约：缺任一实测字段必须 fail closed，防止部分构造的
 % 输入静默跳过资格检查（如缺 vias 时绕过 VIA_TECHNOLOGY 行）。
 % minCopperSpacing 允许 NaN：线距检查被禁用（含 6/8 层未验证叠层）时
-% validation 合法返回 NaN，由 REQUIRED_VALIDATION_CHECKS 行 fail closed。
+% validation 合法返回 NaN——2/4 层经 REQUIRED_VALIDATION_CHECKS 行 FAIL
+% 拒绝导出；6/8 层按仓库政策保持可导出但仅 WARN、永不宣称 verified。
 if ~isfield(result, 'minCopperSpacing') || ~isnumeric(result.minCopperSpacing) || ...
         ~isscalar(result.minCopperSpacing)
     error('RectangularFPC:ManufacturingInputContract', ...
@@ -306,11 +307,14 @@ if passed
     code = 'PASS';
     message = 'All manufacturing-qualification clearance checks are enabled.';
 elseif ismember(cfg.layerCount, [2, 4])
+    % 2/4 层宣称"制造已验证"：禁用任一必需检查必须 FAIL 拒绝导出。
     status = 'FAIL';
     code = 'REQUIRED_CHECK_DISABLED';
     message = sprintf('Required manufacturing check(s) disabled: %s.', ...
         strjoin(requiredNames(~enabled), ', '));
 else
+    % 6/8 层本就 UNVERIFIED_LAYER_COUNT、按仓库政策可导出但不可宣称已验证；
+    % 禁用检查只降级为 WARN 提示，不改变其可导出属性。
     status = 'WARN';
     code = 'UNVERIFIED_CHECK_CONFIGURATION';
     message = sprintf('Clearance check(s) disabled for unverified stackup: %s.', ...

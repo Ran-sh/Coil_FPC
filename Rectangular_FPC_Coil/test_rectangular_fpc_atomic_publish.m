@@ -347,6 +347,59 @@ else
 end
 end
 
+function testStaleClaimOrphanStealLoserFailsClosed(testCase)
+% 孤儿回收原子性回归：两个回收者竞争同一孤儿认领时，基于过期判定
+% rmdir 固定路径会删掉竞争者刚建好的新认领（TOCTOU，双持锁）。
+% 原子 tombstone 竞争下，rename 落败的一方必须 fail closed，
+% 且不得破坏赢家的活跃认领。
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+staleOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear staleOwnerCleanup;
+claimDir = fullfile(lockFolder, 'reclaim.claim');
+mkdir(claimDir);
+fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
+orphanOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
+    'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+clear orphanOwnerCleanup;
+mover = @(source, destination) stealTombstoneRace(source, destination, claimDir);
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output, mover), 'RectangularFPC:ConcurrentPublish');
+
+verifyTrue(testCase, isfolder(claimDir));
+verifyTrue(testCase, contains(fileread(fullfile(claimDir, 'owner.txt')), ...
+    'token=busy_claim'));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+clear cleanup;
+end
+
+function [moved, message] = stealTombstoneRace(source, destination, claimDir)
+isTombstone = startsWith(source, claimDir) && ...
+    startsWith(destination, [claimDir '.tomb_']);
+if isTombstone
+    % 模拟竞争者已抢先完成回收并建立自己的活跃认领
+    rmdir(source, 's');
+    mkdir(claimDir);
+    fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
+    busyCleanup = onCleanup(@() fclose(fid));
+    fprintf(fid, 'pid=%d\nhost=sim-host-b\ntoken=busy_claim\n', matlabProcessID);
+    fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
+        'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+    clear busyCleanup;
+    moved = false;
+    message = 'tombstone claim lost the atomic steal race';
+else
+    [moved, message] = movefile(source, destination);
+end
+end
+
 function [moved, message] = replaceOwnerDuringSwap(source, destination, lockFolder)
 % 模拟竞争转换：在原子换主一步，另一位写入者已把 owner 换成自己的新锁。
 ownerFile = fullfile(lockFolder, 'owner.txt');

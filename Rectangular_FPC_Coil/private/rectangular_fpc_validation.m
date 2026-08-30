@@ -669,11 +669,13 @@ for k = 1:cfg.layerCount
     end
 end
 
+% 候选扫描与最终验证一致：板框按开放点列存储，距离计算必须用显式闭合形式。
+closedBoardXY = [boardXY; boardXY(1, :)];
 padConnectionLength = ...
     (d.padA(1) - (d.outerRightCenterX + cfg.leadBendRadius)) + ...
     (pi/2)*cfg.leadBendRadius;
 if cfg.enablePadClearanceCheck
-    if ~validatePadToBoard(d.padA, d.padB, boardXY, cfg, tol)
+    if ~validatePadToBoard(d.padA, d.padB, closedBoardXY, cfg, tol)
         reason = '焊盘未完整位于板框内';
         return;
     end
@@ -692,7 +694,7 @@ if cfg.enableViaClearanceCheck
         reason = '过孔间距不足';
         return;
     end
-    if ~validateViaToBoard(vias, boardXY, cfg, tol)
+    if ~validateViaToBoard(vias, closedBoardXY, cfg, tol)
         reason = '过孔到板框间距不足';
         return;
     end

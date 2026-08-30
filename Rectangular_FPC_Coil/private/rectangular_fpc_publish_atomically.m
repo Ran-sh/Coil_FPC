@@ -144,13 +144,18 @@ if isfolder(lockFolder)
             lockFolder);
     end
     claimDir = fullfile(lockFolder, 'reclaim.claim');
-    if ~acquireReclaimClaim(claimDir)
+    [claimed, claimToken] = acquireReclaimClaim(claimDir, moveFolder);
+    if ~claimed
         error('RectangularFPC:ConcurrentPublish', ...
             'Another process is reclaiming the stale lock at %s', ...
             lockFolder);
     end
-    claimCleanup = onCleanup(@() releaseReclaimClaim(claimDir));
+    claimCleanup = onCleanup(@() releaseReclaimClaim(claimDir, claimToken));
     ownerChanged = ~strcmp(readPublishLockOwnerText(lockFolder), ownerTextBefore);
+    if ~ownerChanged && ~strcmp(readPublishLockToken(claimDir), claimToken)
+        % 防御性复核：认领标记被他人占用即放弃（正常路径不可达）。
+        ownerChanged = true;
+    end
     if ~ownerChanged
         replaceOwnerAtomically(lockFolder, token, moveFolder);
         ownerChanged = ~strcmp(readPublishLockToken(lockFolder), token);
@@ -178,19 +183,27 @@ end
 cleanup = onCleanup(@() releasePublishLock(lockFolder, token));
 end
 
-function ok = acquireReclaimClaim(claimDir)
+function [ok, claimToken] = acquireReclaimClaim(claimDir, moveFolder)
+claimToken = '';
 ok = tryCreateClaimDir(claimDir);
 if ~ok && isStalePublishLock(claimDir)
-    % 崩溃残留的孤儿认领：仅当 claimant 自身已死/过期时才可回收重试；
-    % 空或畸形认领按现有 5 分钟宽限语义处理，不立即抢占。
-    rmdir(claimDir, 's');
-    ok = tryCreateClaimDir(claimDir);
+    % 崩溃残留的孤儿认领：仅当 claimant 自身已死/过期时才可回收；且回收
+    % 必须以原子 rename 竞争"这一个"claim（tombstone 唯一名）——基于
+    % stale 判定直接 rmdir 固定路径会删掉竞争者刚建好的新认领（TOCTOU）。
+    tombstone = sprintf('%s.tomb_%s', claimDir, uniqueToken());
+    [moved, ~] = tryMoveFolder(moveFolder, claimDir, tombstone);
+    if moved
+        rmdir(tombstone, 's');
+        ok = tryCreateClaimDir(claimDir);
+    end
 end
 if ok
+    claimToken = uniqueToken();
     try
-        writePublishLockOwner(claimDir, uniqueToken());
+        writePublishLockOwner(claimDir, claimToken);
     catch
-        releaseReclaimClaim(claimDir);
+        releaseReclaimClaim(claimDir, claimToken);
+        claimToken = '';
         ok = false;
     end
 end
@@ -201,8 +214,9 @@ function ok = tryCreateClaimDir(claimDir)
 ok = created && ~strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists');
 end
 
-function releaseReclaimClaim(claimDir)
-if isfolder(claimDir)
+function releaseReclaimClaim(claimDir, token)
+% token 感知释放：只移除自己写入的认领标记。
+if isfolder(claimDir) && strcmp(readPublishLockToken(claimDir), token)
     rmdir(claimDir, 's');
 end
 end
