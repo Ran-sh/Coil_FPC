@@ -18,7 +18,7 @@ cfg = struct( ...
     'platformSlotMargin', 0.25, ... % 平台水平/垂直边到内圆的最小槽余量 [mm]
     'bridgeTargetWidth', 1.5, ... % 连接桥目标宽度 [mm]
     'geometryScale', 1.0, ... % 宏观几何缩放系数
-    'turnsPerCoilLayer', 8, ... % 每活动层目标匝数
+    'turnsPerCoilLayer', 7, ... % 每活动层物理匝数（完整 360° 圈数；4/4 模式四层平均）
     'traceWidth', 0.20, ... % 铜线宽度 [mm]
     'traceSpacing', 0.15, ... % 铜线净距 [mm]
     'pitchMargin', 0.005, ... % 节距附加余量 [mm]

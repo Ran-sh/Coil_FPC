@@ -59,6 +59,96 @@ verifyFalse(testCase, isfolder(paths.staging));
 verifyTrue(testCase, isfolder(paths.lock));
 end
 
+function testAtomicPublishRecoversStaleLockFromDeadOwner(testCase)
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', 2147483647, '');
+
+circular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(paths.lock));
+clear cleanup;
+end
+
+function testAtomicPublishRefusesLiveLockOwner(testCase)
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', matlabProcessID, '');
+
+verifyError(testCase, @() circular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
+verifyTrue(testCase, isfolder(paths.lock));
+verifyFalse(testCase, isfolder(paths.staging));
+clear cleanup;
+end
+
+function testAtomicPublishRefusesForeignHostLock(testCase)
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, 'definitely-not-this-host', 2147483647, '');
+
+verifyError(testCase, @() circular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
+verifyTrue(testCase, isfolder(paths.lock));
+verifyFalse(testCase, isfolder(paths.staging));
+clear cleanup;
+end
+
+function testAtomicPublishRecoversExpiredMalformedLock(testCase)
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', NaN, ...
+    'created=2000-01-01T00:00:00.000Z');
+
+circular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(paths.lock));
+clear cleanup;
+end
+
+function testAtomicPublishRefusesFreshMalformedLock(testCase)
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', NaN, '');
+
+verifyError(testCase, @() circular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
+verifyTrue(testCase, isfolder(paths.lock));
+verifyFalse(testCase, isfolder(paths.staging));
+clear cleanup;
+end
+
+function writePublishLockOwnerFile(lockFolder, host, pid, createdText)
+% host 为空时写入本机身份（与发布器 localHostIdentity 相同的解析顺序）。
+if ~isfolder(lockFolder)
+    mkdir(lockFolder);
+end
+if isempty(host)
+    host = getenv('COMPUTERNAME');
+    if isempty(host)
+        host = getenv('HOSTNAME');
+    end
+    if isempty(host)
+        host = char(java.net.InetAddress.getLocalHost().getHostName());
+    end
+    host = lower(strtrim(host));
+end
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=%d\n', pid);
+fprintf(fid, 'host=%s\n', host);
+fprintf(fid, 'token=test_lock_owner\n');
+if isempty(createdText)
+    fprintf(fid, 'created=%s\n', char(datetime('now', ...
+        'TimeZone', 'UTC', 'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+else
+    fprintf(fid, '%s\n', createdText);
+end
+clear cleanup;
+end
+
 function testAtomicPublishPreservesExistingFormalOutput(testCase)
 paths = makePublishFixture(true);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>

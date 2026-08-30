@@ -20,7 +20,7 @@ verifyEqual(testCase, cfg.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.bridgeTargetWidth, 1.5, 'AbsTol', 1e-9);
-verifyEqual(testCase, cfg.turnsPerCoilLayer, 8);
+verifyEqual(testCase, cfg.turnsPerCoilLayer, 7);
 verifyEqual(testCase, cfg.traceWidth, 0.20, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.traceSpacing, 0.15, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.pitchMargin, 0.005, 'AbsTol', 1e-9);
@@ -99,7 +99,7 @@ verifyLessThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.6);
 verifyTrue(testCase, contains(fileread(fullfile(rAuto.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: auto'));
 turnTxt = fileread(fullfile(rAuto.outputPath, 'reports', '04_turn_scan.csv'));
 verifyTrue(testCase, contains(turnTxt, 'requiredBoardDiameterMm'));
-verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 5 * 0.355))); % 6 匝所需径向宽度
+verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 6 * 0.355))); % 6 匝（物理 360° 圈）所需径向宽度
 % 匝数扫描只列出几何生成器支持的范围：至少两个径向采样层级。
 verifyEmpty(testCase, regexp(turnTxt, '(?m)^1,', 'once'));
 verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
@@ -414,7 +414,7 @@ verifyTrue(testCase, all(abs(abs(platformXY(:, 1)) - 6.5) < 1e-9 | ...
     abs(abs(platformXY(:, 2)) - 7.0) < 1e-9), ...
     'Central 13x14 platform must remain an axis-aligned rectangle.');
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
-verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 8);
+verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
 verifyGreaterThanOrEqual(testCase, result.effectiveDimensions.actualBridgeWidth, 1.5);
 outerLoop = result.boardLoops(1);
 verifyFalse(testCase, outerLoop.isHole);
@@ -499,7 +499,7 @@ verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 26.0, 'Abs
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
-verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 8);
+verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
 fullSvg = fullfile(result.outputPath, 'previews', '01_preview_full.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
@@ -519,7 +519,7 @@ verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, 'desig
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'invalid_scale', 'geometryScale', 0.05)), 'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'invalid_platform')));
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'invalid_scale')));
-% 当前 (turns-1) 螺旋模型在 1 匝时只有单个采样点，应在配置阶段拒绝。
+% 匝数语义为物理 360° 圈数；1 匝完整圆环未纳入端子/过孔拓扑验证范围，配置阶段仍拒绝。
 verifyError(testCase, @() circular_fpc_default_config(struct('turnsPerCoilLayer', 1)), ...
     'CircularFPC:InvalidConfig');
 cfgMinTurns = circular_fpc_default_config(struct('turnsPerCoilLayer', 2));
@@ -529,6 +529,33 @@ r60 = circular_fpc_main(struct('outputRoot', outRoot, ...
     'designName', 'sharp_angle_60', 'connectionAngleDeg', 60, 'centerPlatformHeight', 11.0));
 verifyTrue(testCase, r60.validation.passed);
 verifyTrue(testCase, isfolder(fullfile(outRoot, 'sharp_angle_60')));
+end
+
+function testTurnsContractPhysicalRevolutions(testCase)
+% 匝数契约（物理 360° 圈数）：turnsPerCoilLayer = N 时每层螺旋角跨度必须为
+% N + spanExtra（4/4 分数匝）个完整圆周。用独立 atan2 + unwrap 直接测量生成的
+% 线圈折线，不复用生产 span 公式。CW 偶数层为纯螺旋（无外伸接触弧），
+% 端到端解卷绕角即物理匝数；CCW 层外端附加 110° 延伸弧，不在本测试范围。
+% 容差 0.02 圈：外端与串联过孔的单圆弧切向并入会修剪螺旋末端一小段角行程
+% （默认参数下实测偏差 <= 0.004 圈），仍远小于任何系统性匝数偏差。
+combos = {2, 2; 4, 4};
+expectedCwSpans = {5; [5.25, 4.75]};
+for c = 1:size(combos, 1)
+    result = circular_fpc_main(struct( ...
+        'boardLayerCount', combos{c, 1}, ...
+        'coilLayerCount', combos{c, 2}, ...
+        'turnsPerCoilLayer', 5, ...
+        'analysisOnly', true));
+    cwIdx = find(strcmp({result.layerPaths.windingDirection}, 'CW'));
+    verifyEqual(testCase, numel(cwIdx), numel(expectedCwSpans{c}));
+    for k = 1:numel(cwIdx)
+        xy = result.layerPaths(cwIdx(k)).coilXY;
+        verifyFalse(testCase, isempty(xy));
+        u = unwrap(atan2(xy(:, 2), xy(:, 1)));
+        span = abs(u(end) - u(1)) / (2 * pi);
+        verifyEqual(testCase, span, expectedCwSpans{c}(k), 'AbsTol', 0.02);
+    end
+end
 end
 
 function testSupportedLayerMatrixAndSeriesContinuity(testCase)

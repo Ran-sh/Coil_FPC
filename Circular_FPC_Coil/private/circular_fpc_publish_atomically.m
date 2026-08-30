@@ -2,7 +2,9 @@ function circular_fpc_publish_atomically( ...
     stagingFolder, outputFolder, moveFolder)
 %CIRCULAR_FPC_PUBLISH_ATOMICALLY Commit one verified output tree once.
 %   A sibling *_publish.lock directory serializes writers targeting the
-%   same design. Existing formal output is never replaced. The optional
+%   same design. Locks left by dead local owners (process exit, power loss)
+%   are claimed and removed; foreign-host and fresh malformed locks still
+%   fail closed. Existing formal output is never replaced. The optional
 %   MOVEFOLDER handle supports deterministic failure-path tests.
 
 if nargin < 2
@@ -22,7 +24,7 @@ end
 
 stagingCleanup = onCleanup(@() removeFolder(stagingFolder));
 lockFolder = [outputFolder '_publish.lock'];
-lockCleanup = acquirePublishLock(lockFolder); %#ok<NASGU>
+lockCleanup = acquirePublishLock(lockFolder, moveFolder); %#ok<NASGU>
 
 if isfolder(outputFolder)
     error('CircularFPC:OutputExists', ...
@@ -56,7 +58,26 @@ clear lockCleanup;
 clear stagingCleanup;
 end
 
-function cleanup = acquirePublishLock(lockFolder)
+function cleanup = acquirePublishLock(lockFolder, moveFolder)
+
+staleClaimFolder = '';
+if isfolder(lockFolder)
+    if ~isStalePublishLock(lockFolder)
+        error('CircularFPC:ConcurrentPublish', ...
+            'Another process is publishing this output: %s', ...
+            lockFolder);
+    end
+    staleClaimFolder = sprintf('%s_stale_%s', lockFolder, uniqueToken());
+    [claimed, claimMessage] = tryMoveFolder( ...
+        moveFolder, lockFolder, staleClaimFolder);
+    if ~claimed
+        error('CircularFPC:ConcurrentPublish', ...
+            'Unable to claim stale publication lock %s: %s', ...
+            lockFolder, claimMessage);
+    end
+    staleCleanup = onCleanup(@() removeStaleLockClaim(staleClaimFolder));
+end
+
 [created, message, messageId] = mkdir(lockFolder);
 if ~created || strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists')
     error('CircularFPC:ConcurrentPublish', ...
@@ -68,10 +89,16 @@ token = uniqueToken();
 try
     writeLockOwner(lockFolder, token);
 catch ownerError
-    removeFolder(lockFolder);
+    rmdir(lockFolder, 's');
     rethrow(ownerError);
 end
 cleanup = onCleanup(@() releasePublishLock(lockFolder, token));
+
+if ~isempty(staleClaimFolder)
+    removeStaleLockClaim(staleClaimFolder);
+    clear staleCleanup;
+end
+
 end
 
 function writeLockOwner(lockFolder, token)
@@ -83,6 +110,7 @@ if fid == -1
 end
 cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'pid=%d\n', matlabProcessID);
+fprintf(fid, 'host=%s\n', localHostIdentity());
 fprintf(fid, 'token=%s\n', token);
 fprintf(fid, 'created=%s\n', char(datetime('now', ...
     'TimeZone', 'UTC', 'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
@@ -132,6 +160,118 @@ if isfolder(outputPath)
 elseif isfile(outputPath)
     delete(outputPath);
 end
+end
+
+function stale = isStalePublishLock(lockFolder)
+
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if isfile(ownerFile)
+    ownerText = fileread(ownerFile);
+    pidMatch = regexp(ownerText, '(?m)^pid=(\d+)$', ...
+        'tokens', 'once');
+    hostMatch = regexp(ownerText, '(?m)^host=([^\r\n]+)$', ...
+        'tokens', 'once');
+    if isempty(pidMatch) || isempty(hostMatch)
+        stale = isExpiredIncompleteLock(ownerText, ownerFile);
+    elseif ~strcmpi(strtrim(hostMatch{1}), localHostIdentity())
+        stale = false;
+    else
+        stale = ~isProcessAlive(str2double(pidMatch{1}));
+    end
+else
+    stale = isExpiredIncompleteLock('', lockFolder);
+end
+
+end
+
+function alive = isProcessAlive(pid)
+
+alive = true;
+if ~isfinite(pid) || pid < 1 || pid ~= floor(pid)
+    return;
+end
+if ispc
+    try
+        process = System.Diagnostics.Process.GetProcessById(int32(pid));
+        alive = ~process.HasExited;
+        process.Dispose();
+    catch probeError
+        if ~isempty(probeError.ExceptionObject) && strcmp( ...
+                char(probeError.ExceptionObject.GetType().FullName), ...
+                'System.ArgumentException')
+            alive = false;
+        else
+            alive = true;
+        end
+    end
+elseif isunix
+    [status, ~] = system(sprintf('ps -p %d -o pid=', pid));
+    if status == 0
+        alive = true;
+    elseif status == 1
+        alive = false;
+    else
+        alive = true;
+    end
+end
+
+end
+
+function expired = isExpiredIncompleteLock(ownerText, fallbackPath)
+
+gracePeriod = minutes(5);
+created = NaT;
+match = regexp(ownerText, '(?m)^created=([^\r\n]+)$', ...
+    'tokens', 'once');
+if ~isempty(match)
+    try
+        created = datetime(match{1}, ...
+            'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX', ...
+            'TimeZone', 'UTC');
+    catch
+        created = NaT;
+    end
+end
+if isnat(created)
+    info = dir(fallbackPath);
+    if isempty(info)
+        expired = false;
+        return;
+    end
+    created = datetime(info(1).datenum, 'ConvertFrom', 'datenum', ...
+        'TimeZone', 'UTC');
+end
+expired = datetime('now', 'TimeZone', 'UTC') - created > gracePeriod;
+
+end
+
+function host = localHostIdentity()
+
+host = getenv('COMPUTERNAME');
+if isempty(host)
+    host = getenv('HOSTNAME');
+end
+if isempty(host)
+    try
+        host = char(java.net.InetAddress.getLocalHost().getHostName());
+    catch
+        host = '';
+    end
+end
+host = lower(strtrim(host));
+if isempty(host)
+    error('CircularFPC:PublishHostUnavailable', ...
+        'Unable to determine the local host identity for publication locking.');
+end
+
+end
+
+function removeStaleLockClaim(folder)
+
+if isfolder(folder)
+    rmdir(folder, 's');
+end
+
 end
 
 function token = uniqueToken()

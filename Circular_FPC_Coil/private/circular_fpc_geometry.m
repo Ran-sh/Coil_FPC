@@ -283,13 +283,13 @@ coils = cell(1, cfg.boardLayerCount);
 rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
 % 4/4 分数匝（用户设计约定）：L2 多绕 1/4 圈使内端直接落到 225° 的 V23，
 % L4 少绕 1/4 圈使内端直接落到 135° 的 VOUT——内端无任何过渡走线，
-% 全部铜箔均为同心螺旋，且四层平均匝数恰为 turnsPerCoilLayer（8 匝）。
+% 全部铜箔均为同心螺旋，且四层平均物理匝数（完整 360° 圈数）恰为 turnsPerCoilLayer。
 is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
 spanExtra = [0, 0.25, 0, -0.25];
 phaseExtra = [0, 90, 90, 0];
 for p = 1:numel(activeLayers)
     li = activeLayers(p);
-    spanTurns = cfg.turnsPerCoilLayer - 1 + spanExtra(p) * is44;
+    spanTurns = cfg.turnsPerCoilLayer + spanExtra(p) * is44;
     phaseDeg = cfg.connectionAngleDeg + phaseExtra(p) * is44 ...
         + 90 * floor((p - 1) / 2) * (~is44);
     span = 2 * pi * spanTurns; % 角跨度（分数匝时含 +90°）

@@ -20,6 +20,16 @@ if nargin >= 1 && ischar(tempOutputFolder) && ...
     return;
 end
 
+if nargin >= 1 && ischar(tempOutputFolder) && ...
+        strcmp(tempOutputFolder, 'verify_committed')
+    if nargin ~= 2
+        error('RectangularFPC:InvalidPublishRequest', ...
+            'verify_committed requires exactly one output folder.');
+    end
+    varargout{1} = isCommittedOutput(outputFolder);
+    return;
+end
+
 if nargin < 2
     error('RectangularFPC:InvalidPublishRequest', ...
         'Both a staging folder and an output folder are required.');

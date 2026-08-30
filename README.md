@@ -27,7 +27,7 @@ result = rectangular_fpc_main();
 result = circular_fpc_main(struct( ...
     'boardLayerCount', 4, ...          % 板层数
     'coilLayerCount', 4, ...           % 活动线圈层数
-    'turnsPerCoilLayer', 8, ...        % 每层匝数
+    'turnsPerCoilLayer', 7, ...        % 每层物理匝数（完整 360° 圈数）
     'terminalLeadSpacing', 2.0, ...    % 端子引线中心距 (mm)
     'terminalLeadLength', 1.5));       % 端子引线长度 (mm)
 

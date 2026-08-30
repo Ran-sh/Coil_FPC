@@ -37,7 +37,8 @@ end
 if mod(cfg.turnsPerCoilLayer, 1) ~= 0 || mod(cfg.samplePointsPerTurn, 1) ~= 0 || mod(cfg.turnScanMax, 1) ~= 0
     error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer, samplePointsPerTurn and turnScanMax must be integers.');
 end
-% 当前螺旋按 (turns-1) 个周期采样；1 匝只产生单点，无法形成有效走线。
+% 匝数语义为物理 360° 圈数（spanTurns = turnsPerCoilLayer）；单匝完整圆环
+% 未纳入端子引出与串联过孔拓扑的验证范围，因此仍要求至少 2 匝。
 if cfg.turnsPerCoilLayer < 2
     error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer must be at least 2.');
 end
@@ -99,12 +100,12 @@ end
 
 function assertFeasible(cfg, eff)
 % 生成前可行性校验（只做快速失败的硬检查，最终几何质量由 validate_result 实测把关）：
-%   1) 线圈所需径向跨度（线宽 + (匝数-1)*节距）必须小于环区可用跨度；
+%   1) 线圈所需径向跨度（线宽 + 匝数*节距）必须小于环区可用跨度；
 %   2) 平台最大半径不得超过 板外半径 - edgeClearance（配置荒谬时立即失败）。
 % 平台四角允许进入内圆与环区相交，这正是四个自然对角连接区；只要求
 % 平台水平/垂直边与内圆之间仍有槽余量，最终四槽拓扑由布尔结果验证。
 coilPitch = eff.coilPitch;
-requiredSpan = cfg.traceWidth + (cfg.turnsPerCoilLayer - 1) * coilPitch;
+requiredSpan = cfg.traceWidth + cfg.turnsPerCoilLayer * coilPitch;
 boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
 availableSpan = boardEdgeInnerR - cfg.edgeClearance - eff.coilInnerDiameter / 2;
 if availableSpan < requiredSpan - 1e-9

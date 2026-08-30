@@ -79,12 +79,56 @@ end
 function testCommittedReaderHoldsExclusiveAccessLock(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
 
 reader = @(folder) verifyPublishBlockedDuringRead(testCase, folder, paths);
 marker = rectangular_fpc_read_committed(paths.output, reader);
 
 verifyEqual(testCase, marker, 'old_marker');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testReaderRejectsUncommittedFolder(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for uncommitted output');
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testReaderRejectsTamperedManifest(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+fid = fopen(fullfile(paths.output, 'old_marker.txt'), 'a');
+tamperCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'TAMPERED');
+clear tamperCleanup;
+
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for tampered output');
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testReaderAcceptsCommittedTree(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+
+marker = rectangular_fpc_read_committed(paths.output, @(folder) ...
+    fileread(fullfile(folder, 'old_marker.txt')));
+
+verifyEqual(testCase, marker, 'marker');
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end

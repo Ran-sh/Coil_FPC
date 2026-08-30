@@ -137,7 +137,7 @@ function d = requiredBoardDiameter(cfg, eff)
 %   ① 基准匝数层（L1/L3）外端 + 过孔延伸区 + 端点过孔焊盘切线；
 %   ② 分数匝层（4/4 的 L2 多绕 1/4 圈）原始外端 + 半线宽。
 % 若不取 ②，极限档小焊环下 L2 外端会越过板边净距（实测 0.286 < 0.3）。
-baseSpan = cfg.turnsPerCoilLayer - 1;
+baseSpan = cfg.turnsPerCoilLayer; % 物理匝数 = 完整 360° 圈数，与螺旋生成一致
 spanMax = baseSpan;
 if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
     spanMax = baseSpan + 0.25; % 4/4 的 L2 多绕 1/4 圈（L4 少绕，外端不变大）
