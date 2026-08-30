@@ -149,18 +149,13 @@ end
 clear cleanup;
 end
 
-function testAtomicPublishStaleClaimRejectsReplacedFreshLock(testCase)
-% TOCTOU 回归：stale 判定后、claim 生效前，若同路径已被其他写入者的
-% 全新锁占用，claim 必须识别身份变化、原样恢复并 fail closed，
-% 不得破坏仍活跃的锁。
+function testAtomicPublishStaleClaimOwnerReplacedDuringTransition(testCase)
+% 原地认领协议回归：stale 判定后、原子换主前，若 owner 已被其他写入者
+% 换成新锁，认领方必须识别身份变化、fail closed，且不得破坏新锁。
 paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
-mkdir(paths.lock);
-fid = fopen(fullfile(paths.lock, 'owner.txt'), 'w');
-staleOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
-clear staleOwnerCleanup;
-mover = @(source, destination) replaceLockDuringClaim( ...
+writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z');
+mover = @(source, destination) replaceOwnerDuringSwap( ...
     source, destination, paths.lock);
 
 verifyError(testCase, @() circular_fpc_publish_atomically( ...
@@ -169,31 +164,57 @@ verifyError(testCase, @() circular_fpc_publish_atomically( ...
 verifyTrue(testCase, isfolder(paths.lock));
 verifyTrue(testCase, contains(fileread(fullfile(paths.lock, 'owner.txt')), ...
     'token=fresh_owner_a'));
+verifyFalse(testCase, isfolder(fullfile(paths.lock, 'reclaim.claim')));
 verifyFalse(testCase, isfolder(paths.staging));
-verifyEmpty(testCase, dir([paths.lock '_stale_*']));
 clear cleanup;
 end
 
-function [moved, message] = replaceLockDuringClaim(source, destination, lockFolder)
-% 模拟 stale 回收竞争：在 stale 判定之后、claim 生效之前，另一写入者 A
-% 已回收旧锁并在同路径建立全新锁；随后的 claim 搬走的是 A 的新鲜锁。
-isClaim = strcmp(source, lockFolder) && ...
-    startsWith(destination, [lockFolder '_stale_']);
-isRestore = startsWith(source, [lockFolder '_stale_']) && ...
-    strcmp(destination, lockFolder);
-if isClaim
-    simClaim = [lockFolder '_stale_sim_a'];
-    movefile(source, simClaim);
-    rmdir(simClaim, 's');
-    mkdir(lockFolder);
-    fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+function testAtomicPublishRecoversOrphanedReclaimClaim(testCase)
+% 崩溃残留的孤儿认领（claimant 已死）必须可回收，发布正常完成。
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z');
+claimDir = fullfile(paths.lock, 'reclaim.claim');
+writePublishLockOwnerFile(claimDir, '', 2147483647, '');
+
+circular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(paths.lock));
+clear cleanup;
+end
+
+function testAtomicPublishRefusesBusyReclaimClaim(testCase)
+% 另一写入者正在认领（claimant 存活）时必须 fail closed，主锁不被破坏。
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z');
+claimDir = fullfile(paths.lock, 'reclaim.claim');
+writePublishLockOwnerFile(claimDir, '', matlabProcessID, '');
+
+verifyError(testCase, @() circular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
+
+% 忙碌认领属于其他写入者：其 claim 目录必须原样保留，主锁不被破坏
+verifyTrue(testCase, isfolder(fullfile(paths.lock, 'reclaim.claim')));
+verifyFalse(testCase, isfolder(paths.output));
+verifyTrue(testCase, contains(fileread(fullfile(paths.lock, 'owner.txt')), ...
+    'created=2000-01-01T00:00:00.000Z'));
+clear cleanup;
+end
+
+function [moved, message] = replaceOwnerDuringSwap(source, destination, lockFolder)
+% 模拟竞争转换：在原子换主一步，另一位写入者已把 owner 换成自己的新锁。
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if strcmp(destination, ownerFile) && endsWith(source, 'owner.txt.new')
+    fid = fopen(ownerFile, 'w');
     freshCleanup = onCleanup(@() fclose(fid));
     fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=fresh_owner_a\n');
     fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
     clear freshCleanup;
-    [moved, message] = movefile(source, destination);
-elseif isRestore
-    [moved, message] = movefile(source, destination);
+    delete(source);
+    moved = true;
+    message = '';
 else
     [moved, message] = movefile(source, destination);
 end
@@ -219,6 +240,75 @@ circular_fpc_publish_atomically(paths.staging, paths.output);
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.staging));
 verifyFalse(testCase, isfolder(paths.lock));
+end
+
+function testCopperToSlotCatchesSegmentInteriorViolation(testCase)
+% M3 回归：铜-槽净距必须用 segment-to-segment 测量。构造一条两端顶点
+% 均远离槽边、但线段中部掠过槽边界仅 ~0.15 mm 的附加连接路径——
+% 顶点采样测不到（两端 > edgeClearance），精确线段测量必须抓到。
+result = circular_fpc_main(struct( ...
+    'analysisOnly', true, 'enableFigure', false, ...
+    'boardLayerCount', 2, 'coilLayerCount', 2, ...
+    'designName', 'slot_segment_probe'));
+cfg = result.config;
+geom = resultGeometry(result);
+holeIdx = find([geom.boardLoops.isHole]);
+verifyFalse(testCase, isempty(holeIdx));
+
+% 选质心离端子焊盘最远的槽，避开端子净距检查的干扰
+padCenter = mean(cat(1, geom.pads.xy), 1);
+best = -inf;
+H = [];
+for k = holeIdx
+    loopCentroid = mean(geom.boardLoops(k).xy(1:end-1, :), 1);
+    d = norm(loopCentroid - padCenter);
+    if d > best
+        best = d;
+        H = geom.boardLoops(k).xy;
+    end
+end
+verifyFalse(testCase, isempty(H));
+
+% 沿最长的边界段构造斜切线段：p1/p2 偏置 0.40/0.10 mm、切向各外延
+% L/2+0.35，保证两端顶点距槽边界 > edgeClearance；线段中部在原边界段
+% 上方仅 ~0.14 mm 处掠过（顶点采样不可见）。
+segLen = sqrt(sum((H(2:end, :) - H(1:end-1, :)).^2, 2));
+[~, sIdx] = max(segLen);
+q1 = H(sIdx, :);
+q2 = H(sIdx + 1, :);
+tHat = (q2 - q1) / norm(q2 - q1);
+nHat = [-tHat(2), tHat(1)];
+loopCentroid = mean(H(1:end-1, :), 1);
+if dot(nHat, q1 - loopCentroid) < 0
+    nHat = -nHat; % 指向槽外（铜侧）
+end
+m = (q1 + q2) / 2;
+w = segLen(sIdx) / 2 + 0.50;
+p1 = m + nHat * 0.40 - tHat * w;
+p2 = m + nHat * 0.10 + tHat * w;
+endpoints = [p1; p2];
+for endpointIndex = 1:2
+    verifyGreaterThan(testCase, ...
+        minPointToLoopDistance(endpoints(endpointIndex, :), H), ...
+        cfg.edgeClearance + 0.02);
+end
+
+geom.connectionPaths{1} = [geom.connectionPaths{1}, {[p1; p2]}];
+validation = circular_fpc_validation('validate_result', result.config, ...
+    result.effectiveDimensions, geom);
+verifyLessThan(testCase, validation.minCopperToSlotsMm, cfg.edgeClearance - 0.05);
+verifyFalse(testCase, validation.passed);
+end
+
+function d = minPointToLoopDistance(point, xy)
+a = xy(1:end-1, :);
+b = xy(2:end, :);
+p = repmat(point, size(a, 1), 1);
+ab = b - a;
+len2 = max(sum(ab.^2, 2), eps);
+t = max(0, min(1, sum((p - a) .* ab, 2) ./ len2));
+q = a + t .* ab;
+d = min(sqrt(sum((p - q).^2, 2)));
 end
 
 function geom = resultGeometry(result)

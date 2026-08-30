@@ -193,10 +193,9 @@ assertError(testCase, @() rectangular_fpc_read_committed( ...
 clear cleanup;
 end
 
-function testStaleClaimRejectsReplacedFreshLock(testCase)
-% TOCTOU 回归：stale 判定后、claim 生效前，若同路径已被其他写入者的
-% 全新锁占用，claim 必须识别身份变化、原样恢复并 fail closed，
-% 不得破坏仍活跃的锁。
+function testStaleClaimOwnerReplacedDuringTransition(testCase)
+% 原地认领协议回归：stale 判定后、原子换主前，若 owner 已被其他写入者
+% 换成新锁，认领方必须识别身份变化、fail closed，且不得破坏新锁。
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
@@ -205,7 +204,7 @@ fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
 staleOwnerCleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear staleOwnerCleanup;
-mover = @(source, destination) replaceLockDuringClaim( ...
+mover = @(source, destination) replaceOwnerDuringSwap( ...
     source, destination, lockFolder);
 
 assertError(testCase, @() rectangular_fpc_publish_atomically( ...
@@ -214,9 +213,63 @@ assertError(testCase, @() rectangular_fpc_publish_atomically( ...
 verifyTrue(testCase, isfolder(lockFolder));
 verifyTrue(testCase, contains(fileread(fullfile(lockFolder, 'owner.txt')), ...
     'token=fresh_owner_a'));
-verifyFalse(testCase, isfolder(paths.staging));
+verifyFalse(testCase, isfolder(fullfile(lockFolder, 'reclaim.claim')));
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
-verifyEmpty(testCase, dir([paths.output '_stale_*']));
+clear cleanup;
+end
+
+function testStaleClaimRecoversOrphanedReclaimClaim(testCase)
+% 崩溃残留的孤儿认领（claimant 已死）必须可回收，发布正常完成。
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+staleOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear staleOwnerCleanup;
+claimDir = fullfile(lockFolder, 'reclaim.claim');
+mkdir(claimDir);
+fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
+claimOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
+    'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+clear claimOwnerCleanup;
+
+rectangular_fpc_publish_atomically(paths.staging, paths.output);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder(lockFolder));
+clear cleanup;
+end
+
+function testStaleClaimRefusesBusyReclaimClaim(testCase)
+% 另一写入者正在认领（claimant 存活）时必须 fail closed，主锁不被破坏。
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+staleOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear staleOwnerCleanup;
+claimDir = fullfile(lockFolder, 'reclaim.claim');
+mkdir(claimDir);
+fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
+claimOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=%d\nhost=%s\ntoken=busy_claim\n', matlabProcessID, localHostName(0));
+fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
+    'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+clear claimOwnerCleanup;
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfolder(paths.staging));
+verifyTrue(testCase, contains(fileread(fullfile(lockFolder, 'owner.txt')), ...
+    'created=2000-01-01T00:00:00.000Z'));
 clear cleanup;
 end
 
@@ -294,28 +347,29 @@ else
 end
 end
 
-function [moved, message] = replaceLockDuringClaim(source, destination, lockFolder)
-% 模拟 stale 回收竞争：在 stale 判定之后、claim 生效之前，另一写入者 A
-% 已回收旧锁并在同路径建立全新锁；随后的 claim 搬走的是 A 的新鲜锁。
-isClaim = strcmp(source, lockFolder) && ...
-    startsWith(destination, [lockFolder '_stale_']);
-isRestore = startsWith(source, [lockFolder '_stale_']) && ...
-    strcmp(destination, lockFolder);
-if isClaim
-    simClaim = [lockFolder '_stale_sim_a'];
-    movefile(source, simClaim);
-    rmdir(simClaim, 's');
-    mkdir(lockFolder);
-    fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+function [moved, message] = replaceOwnerDuringSwap(source, destination, lockFolder)
+% 模拟竞争转换：在原子换主一步，另一位写入者已把 owner 换成自己的新锁。
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if strcmp(destination, ownerFile) && endsWith(source, 'owner.txt.new')
+    fid = fopen(ownerFile, 'w');
     freshCleanup = onCleanup(@() fclose(fid));
     fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=fresh_owner_a\n');
     fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
     clear freshCleanup;
-    [moved, message] = movefile(source, destination);
-elseif isRestore
-    [moved, message] = movefile(source, destination);
+    delete(source);
+    moved = true;
+    message = '';
 else
     [moved, message] = movefile(source, destination);
+end
+end
+
+function host = localHostName(ignore)
+% 带 1 个输入参数（避免被 functiontests 当作测试函数注册）。
+%ignore documents the intentionally unused input argument.
+host = lower(strtrim(getenv('COMPUTERNAME')));
+if isempty(host)
+    host = lower(strtrim(getenv('HOSTNAME')));
 end
 end
 

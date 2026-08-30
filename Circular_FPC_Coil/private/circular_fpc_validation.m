@@ -783,17 +783,26 @@ if isempty(holeLoops)
     s = inf;
     return;
 end
+% 铜走线与槽边用完整 segment-to-segment 精确距离：最近点可落在线段中部，
+% 仅测顶点会高估净距（minDistanceToHoles 是点到线段，只适合圆盘端子）。
 dMin = inf;
 for li = 1:numel(coils)
-    pts = coils{li};
-    paths = connectionPaths{li};
+    paths = [{coils{li}}, connectionPaths{li}];
     for k = 1:numel(paths)
-        pts = [pts; paths{k}]; %#ok<AGROW>
+        path = paths{k};
+        if isempty(path)
+            continue;
+        end
+        if size(path, 1) < 2
+            dMin = min(dMin, ...
+                minDistanceToHoles(path, holeLoops, 256) - cfg.traceWidth / 2);
+            continue;
+        end
+        for h = 1:numel(holeLoops)
+            dMin = min(dMin, ...
+                polylineDistance(path, holeLoops{h}) - cfg.traceWidth / 2);
+        end
     end
-    if isempty(pts)
-        continue;
-    end
-    dMin = min(dMin, minDistanceToHoles(pts, holeLoops, 256) - cfg.traceWidth / 2);
 end
 for k = 1:numel(pads)
     dMin = min(dMin, minDistanceToHoles(pads(k).xy, holeLoops, 256) - pads(k).diameter / 2);

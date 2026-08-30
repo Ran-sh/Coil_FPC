@@ -75,6 +75,33 @@ for field = fieldnames(cfg.manufacturingRuleOverrides).'
 end
 end
 
+function validateResultInput(result)
+% check_result 输入契约：缺任一实测字段必须 fail closed，防止部分构造的
+% 输入静默跳过资格检查（如缺 vias 时绕过 VIA_TECHNOLOGY 行）。
+% minCopperSpacing 允许 NaN：线距检查被禁用（含 6/8 层未验证叠层）时
+% validation 合法返回 NaN，由 REQUIRED_VALIDATION_CHECKS 行 fail closed。
+if ~isfield(result, 'minCopperSpacing') || ~isnumeric(result.minCopperSpacing) || ...
+        ~isscalar(result.minCopperSpacing)
+    error('RectangularFPC:ManufacturingInputContract', ...
+        'check_result requires a measured minCopperSpacing (NaN when the clearance check is disabled).');
+end
+if ~isfield(result, 'minCopperToBoardMm') || ~isnumeric(result.minCopperToBoardMm) || ...
+        ~isscalar(result.minCopperToBoardMm) || ~isfinite(result.minCopperToBoardMm)
+    error('RectangularFPC:ManufacturingInputContract', ...
+        'check_result requires a finite minCopperToBoardMm measured by validation.');
+end
+if ~isfield(result, 'vias') || ~isstruct(result.vias) || isempty(result.vias)
+    error('RectangularFPC:ManufacturingInputContract', ...
+        'check_result requires the measured vias array for via-technology qualification.');
+end
+if ~isfield(result, 'viaNonConnectedCopperPassed') || ...
+        ~islogical(result.viaNonConnectedCopperPassed) || ...
+        ~isscalar(result.viaNonConnectedCopperPassed)
+    error('RectangularFPC:ManufacturingInputContract', ...
+        'check_result requires the logical viaNonConnectedCopperPassed verdict.');
+end
+end
+
 function names = ruleNames()
 names = fieldnames(standardRules()).';
 end
@@ -98,22 +125,27 @@ end
 function report = buildReport(cfg, result)
 profile = resolveProfile(cfg);
 rules = profile.rules;
-if isfield(result, 'minCopperSpacing') && isfinite(result.minCopperSpacing)
-    measuredSpacing = result.minCopperSpacing;
-else
+if isempty(fieldnames(result))
+    % check_config：无最终几何结果，报告配置设计目标。
     measuredSpacing = cfg.traceSpacing;
+    measuredCopperToBoard = cfg.edgeClearance;
+    hasVias = false;
+else
+    % check_result：输入契约 fail closed，缺任一实测字段即拒绝，
+    % 防止部分构造的输入静默跳过资格检查（如缺 vias 时绕过 VIA_TECHNOLOGY）。
+    validateResultInput(result);
+    if isfinite(result.minCopperSpacing)
+        measuredSpacing = result.minCopperSpacing;
+    else
+        % 线距检查被禁用时 validation 返回 NaN：回退到配置目标仅用于报告
+        % 展示，资格判定由 REQUIRED_VALIDATION_CHECKS 行 fail closed。
+        measuredSpacing = cfg.traceSpacing;
+    end
+    measuredCopperToBoard = result.minCopperToBoardMm;
+    hasVias = true;
 end
 % COPPER_TO_BOARD 必须使用最终几何（含 PAD 与过孔焊环）的实测最小铜到板边距离；
-% edgeClearance 只是布线设计目标。check_config（无结果）允许报告配置目标；
-% check_result 缺实测值时必须 fail closed，防止调用方再次引入 H2 假 PASS。
-if isempty(fieldnames(result))
-    measuredCopperToBoard = cfg.edgeClearance;
-elseif isfield(result, 'minCopperToBoardMm') && isfinite(result.minCopperToBoardMm)
-    measuredCopperToBoard = result.minCopperToBoardMm;
-else
-    error('RectangularFPC:ManufacturingInputContract', ...
-        'check_result requires a finite minCopperToBoardMm measured by validation.');
-end
+% edgeClearance 只是布线设计目标，不能充当最终实测值（否则 PAD 铜边可绕过 DRC）。
 
 rows = [ ...
     minimumRow('TRACE_WIDTH', cfg.traceWidth, rules.minTraceWidthMm, rules); ...
@@ -126,7 +158,7 @@ rows = [ ...
     minimumRow('VIA_PAD', cfg.viaPadDiameter, rules.minViaPadMm, rules); ...
     padDrillRow(cfg.viaPadDiameter - cfg.viaDrillDiameter, rules); ...
     copperThicknessRow(cfg.copperThickness, rules)];
-if isfield(result, 'vias')
+if hasVias
     rows(end+1) = viaTechnologyRow(cfg, result, rules);
 end
 rows(end+1) = requiredValidationChecksRow(cfg);

@@ -113,9 +113,11 @@ for j = 1:numel(holeIdx)
     boardLoops(j + 1).orientation = signedArea(hxy);
 end
 % 实际桥宽 = 相邻孔槽之间的最窄距离（连接桥咽喉宽度）。
+% stride 必须为 1：稀疏重连的折线是弦近似，而该值是硬验证门槛
+% （actualBridgeWidthMm >= bridgeTargetWidth），不允许近似误差。
 actualBridgeWidth = inf;
 for j = 1:4
-    d = polylineDistance(boardLoops(j + 1).xy, boardLoops(mod(j, 4) + 2).xy, 8);
+    d = polylineDistance(boardLoops(j + 1).xy, boardLoops(mod(j, 4) + 2).xy, 1);
     actualBridgeWidth = min(actualBridgeWidth, d);
 end
 % 布局参考系：以连接角 theta 为径向，u 为径向单位向量，t 为切向单位向量；

@@ -443,9 +443,12 @@ padCopperPass = true;
 padConnectionLength = ...
     (d.padA(1) - (d.outerRightCenterX + cfg.leadBendRadius)) + ...
     (pi/2) * cfg.leadBendRadius;
+% 板框按开放点列存储（首尾不重复），最后一条 last→first 闭合边真实存在；
+% 所有到板框的距离计算必须使用显式闭合形式，否则闭合边附近会高估净距。
+closedBoardXY = [boardXY; boardXY(1, :)];
 if cfg.enablePadClearanceCheck
     padBoardPass = validatePadToBoard( ...
-        d.padA, d.padB, boardXY, cfg, tol);
+        d.padA, d.padB, closedBoardXY, cfg, tol);
     padPadPass = validatePadToPad(d.padA, d.padB, cfg, tol);
     padCopperPass = validatePadToCopper( ...
         d.padA, d.padB, layerPaths, cfg, tol, padConnectionLength);
@@ -467,7 +470,7 @@ viaConnectedPass = true;
 viaNonConnectedPass = true;
 if cfg.enableViaClearanceCheck
     viaToViaPass = validateViaToVia(viaXY, cfg, tol);
-    viaToBoardPass = validateViaToBoard(vias, boardXY, cfg, tol);
+    viaToBoardPass = validateViaToBoard(vias, closedBoardXY, cfg, tol);
     viaToPadPass = validateViaToPad(viaXY, d.padA, d.padB, cfg, tol);
     viaEscapeLengths = zeros(numel(vias), 1);
     for viaIndex = 1:numel(vias)
@@ -506,7 +509,7 @@ end
 % 最终几何实测的最小铜到板边距离：全部走线中心线按半线宽缩边、PAD_A/PAD_B
 % 焊盘与过孔焊环逐点测量。该值供制造报告 COPPER_TO_BOARD 使用，
 % 配置值 edgeClearance 只是布线设计目标，不能充当最终实测值。
-minCopperToBoardMm = measureMinCopperToBoardMm(boardXY, allPaths, cfg, d, vias);
+minCopperToBoardMm = measureMinCopperToBoardMm(closedBoardXY, allPaths, cfg, d, vias);
 
 passed = isempty(failures);
 reportLines = buildValidationReportLines( ...

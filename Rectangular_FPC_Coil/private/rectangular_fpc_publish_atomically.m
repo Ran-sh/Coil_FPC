@@ -130,63 +130,106 @@ end
 
 
 function cleanup = acquirePublishLock(lockFolder, moveFolder)
-
-staleClaimFolder = '';
+% 原地认领协议（消除搬移式 stale 回收的无锁窗口）：
+%   - 锁目录路径永不消失，第三方无法趁虚 mkdir 建锁；
+%   - 固定名 reclaim.claim 子目录作为迁移互斥（自身带 owner 证据，
+%     孤儿认领仅在 claimant 已死/过期时按现有 stale 语义回收）；
+%   - 复核 owner.txt 未被替换后，经 owner.txt.new → owner.txt 原子换主。
+token = uniqueToken();
 if isfolder(lockFolder)
-    % TOCTOU 防护：stale 判定与目录搬移之间存在窗口，同路径可能已被
-    % 其他写入者用全新锁重新占用。claim 后必须核对搬走目录的 owner
-    % 证据与判定时读到的一致；不一致则原样恢复并 fail closed。
     ownerTextBefore = readPublishLockOwnerText(lockFolder);
     if ~isStalePublishLock(lockFolder)
         error('RectangularFPC:ConcurrentPublish', ...
             'Another process is publishing this minute version: %s', ...
             lockFolder);
     end
-    staleClaimFolder = sprintf('%s_stale_%s', lockFolder, uniqueToken());
-    [claimed, claimMessage] = tryMoveFolder( ...
-        moveFolder, lockFolder, staleClaimFolder);
-    if ~claimed
+    claimDir = fullfile(lockFolder, 'reclaim.claim');
+    if ~acquireReclaimClaim(claimDir)
         error('RectangularFPC:ConcurrentPublish', ...
-            'Unable to claim stale publication lock %s: %s', ...
-            lockFolder, claimMessage);
+            'Another process is reclaiming the stale lock at %s', ...
+            lockFolder);
     end
-    if ~strcmp(readPublishLockOwnerText(staleClaimFolder), ownerTextBefore)
-        [restored, restoreMessage] = tryMoveFolder( ...
-            moveFolder, staleClaimFolder, lockFolder);
-        if ~restored
-            warning('RectangularFPC:StaleClaimRestoreFailed', ...
-                ['Stale claim of %s hit an identity change and the ', ...
-                'displaced lock could not be restored: %s'], ...
-                lockFolder, restoreMessage);
-        end
+    claimCleanup = onCleanup(@() releaseReclaimClaim(claimDir));
+    ownerChanged = ~strcmp(readPublishLockOwnerText(lockFolder), ownerTextBefore);
+    if ~ownerChanged
+        replaceOwnerAtomically(lockFolder, token, moveFolder);
+        ownerChanged = ~strcmp(readPublishLockToken(lockFolder), token);
+    end
+    clear claimCleanup;
+    if ownerChanged
         error('RectangularFPC:ConcurrentPublish', ...
             ['Publish lock at %s changed identity during stale claim; ', ...
             'another writer now owns it.'], lockFolder);
     end
-    staleCleanup = onCleanup(@() removeStaleLockClaim(staleClaimFolder));
-end
-
-[created, message, messageId] = mkdir(lockFolder);
-if ~created || strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists')
-    error('RectangularFPC:ConcurrentPublish', ...
-        'Another process is publishing this minute version: %s (%s)', ...
-        lockFolder, message);
-end
-
-token = uniqueToken();
-try
-    writePublishLockOwner(lockFolder, token);
-catch ownerError
-    rmdir(lockFolder, 's');
-    rethrow(ownerError);
+else
+    [created, message, messageId] = mkdir(lockFolder);
+    if ~created || strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists')
+        error('RectangularFPC:ConcurrentPublish', ...
+            'Another process is publishing this minute version: %s (%s)', ...
+            lockFolder, message);
+    end
+    try
+        writePublishLockOwner(lockFolder, token);
+    catch ownerError
+        rmdir(lockFolder, 's');
+        rethrow(ownerError);
+    end
 end
 cleanup = onCleanup(@() releasePublishLock(lockFolder, token));
-
-if ~isempty(staleClaimFolder)
-    removeStaleLockClaim(staleClaimFolder);
-    clear staleCleanup;
 end
 
+function ok = acquireReclaimClaim(claimDir)
+ok = tryCreateClaimDir(claimDir);
+if ~ok && isStalePublishLock(claimDir)
+    % 崩溃残留的孤儿认领：仅当 claimant 自身已死/过期时才可回收重试；
+    % 空或畸形认领按现有 5 分钟宽限语义处理，不立即抢占。
+    rmdir(claimDir, 's');
+    ok = tryCreateClaimDir(claimDir);
+end
+if ok
+    try
+        writePublishLockOwner(claimDir, uniqueToken());
+    catch
+        releaseReclaimClaim(claimDir);
+        ok = false;
+    end
+end
+end
+
+function ok = tryCreateClaimDir(claimDir)
+[created, ~, messageId] = mkdir(claimDir);
+ok = created && ~strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists');
+end
+
+function releaseReclaimClaim(claimDir)
+if isfolder(claimDir)
+    rmdir(claimDir, 's');
+end
+end
+
+function replaceOwnerAtomically(lockFolder, token, moveFolder)
+pendingOwner = fullfile(lockFolder, 'owner.txt.new');
+fid = fopen(pendingOwner, 'w', 'n', 'US-ASCII');
+if fid == -1
+    error('RectangularFPC:ExportWriteFailed', ...
+        'Unable to create publish-lock owner swap file: %s', pendingOwner);
+end
+swapCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'pid=%d\n', matlabProcessID);
+fprintf(fid, 'host=%s\n', localHostIdentity());
+fprintf(fid, 'token=%s\n', token);
+fprintf(fid, 'created=%s\n', char(datetime('now', ...
+    'TimeZone', 'UTC', 'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
+clear swapCleanup;
+[replaced, replaceMessage] = tryMoveFolder(moveFolder, pendingOwner, ...
+    fullfile(lockFolder, 'owner.txt'));
+if ~replaced
+    if isfile(pendingOwner)
+        delete(pendingOwner);
+    end
+    error('RectangularFPC:ConcurrentPublish', ...
+        'Unable to swap publish-lock owner at %s: %s', lockFolder, replaceMessage);
+end
 end
 
 
@@ -348,15 +391,6 @@ host = lower(strtrim(host));
 if isempty(host)
     error('RectangularFPC:PublishHostUnavailable', ...
         'Unable to determine the local host identity for publication locking.');
-end
-
-end
-
-
-function removeStaleLockClaim(folder)
-
-if isfolder(folder)
-    rmdir(folder, 's');
 end
 
 end
