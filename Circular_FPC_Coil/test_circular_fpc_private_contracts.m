@@ -149,6 +149,56 @@ end
 clear cleanup;
 end
 
+function testAtomicPublishStaleClaimRejectsReplacedFreshLock(testCase)
+% TOCTOU 回归：stale 判定后、claim 生效前，若同路径已被其他写入者的
+% 全新锁占用，claim 必须识别身份变化、原样恢复并 fail closed，
+% 不得破坏仍活跃的锁。
+paths = makePublishFixture(false);
+cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+mkdir(paths.lock);
+fid = fopen(fullfile(paths.lock, 'owner.txt'), 'w');
+staleOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear staleOwnerCleanup;
+mover = @(source, destination) replaceLockDuringClaim( ...
+    source, destination, paths.lock);
+
+verifyError(testCase, @() circular_fpc_publish_atomically( ...
+    paths.staging, paths.output, mover), 'CircularFPC:ConcurrentPublish');
+
+verifyTrue(testCase, isfolder(paths.lock));
+verifyTrue(testCase, contains(fileread(fullfile(paths.lock, 'owner.txt')), ...
+    'token=fresh_owner_a'));
+verifyFalse(testCase, isfolder(paths.staging));
+verifyEmpty(testCase, dir([paths.lock '_stale_*']));
+clear cleanup;
+end
+
+function [moved, message] = replaceLockDuringClaim(source, destination, lockFolder)
+% 模拟 stale 回收竞争：在 stale 判定之后、claim 生效之前，另一写入者 A
+% 已回收旧锁并在同路径建立全新锁；随后的 claim 搬走的是 A 的新鲜锁。
+isClaim = strcmp(source, lockFolder) && ...
+    startsWith(destination, [lockFolder '_stale_']);
+isRestore = startsWith(source, [lockFolder '_stale_']) && ...
+    strcmp(destination, lockFolder);
+if isClaim
+    simClaim = [lockFolder '_stale_sim_a'];
+    movefile(source, simClaim);
+    rmdir(simClaim, 's');
+    mkdir(lockFolder);
+    fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+    freshCleanup = onCleanup(@() fclose(fid));
+    fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=fresh_owner_a\n');
+    fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+    clear freshCleanup;
+    [moved, message] = movefile(source, destination);
+elseif isRestore
+    [moved, message] = movefile(source, destination);
+else
+    [moved, message] = movefile(source, destination);
+end
+end
+
 function testAtomicPublishPreservesExistingFormalOutput(testCase)
 paths = makePublishFixture(true);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>

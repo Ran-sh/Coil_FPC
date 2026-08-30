@@ -62,6 +62,10 @@ function cleanup = acquirePublishLock(lockFolder, moveFolder)
 
 staleClaimFolder = '';
 if isfolder(lockFolder)
+    % TOCTOU 防护：stale 判定与目录搬移之间存在窗口，同路径可能已被
+    % 其他写入者用全新锁重新占用。claim 后必须核对搬走目录的 owner
+    % 证据与判定时读到的一致；不一致则原样恢复并 fail closed。
+    ownerTextBefore = readPublishLockOwnerText(lockFolder);
     if ~isStalePublishLock(lockFolder)
         error('CircularFPC:ConcurrentPublish', ...
             'Another process is publishing this output: %s', ...
@@ -74,6 +78,19 @@ if isfolder(lockFolder)
         error('CircularFPC:ConcurrentPublish', ...
             'Unable to claim stale publication lock %s: %s', ...
             lockFolder, claimMessage);
+    end
+    if ~strcmp(readPublishLockOwnerText(staleClaimFolder), ownerTextBefore)
+        [restored, restoreMessage] = tryMoveFolder( ...
+            moveFolder, staleClaimFolder, lockFolder);
+        if ~restored
+            warning('CircularFPC:StaleClaimRestoreFailed', ...
+                ['Stale claim of %s hit an identity change and the ', ...
+                 'displaced lock could not be restored: %s'], ...
+                lockFolder, restoreMessage);
+        end
+        error('CircularFPC:ConcurrentPublish', ...
+            ['Publish lock at %s changed identity during stale claim; ', ...
+             'another writer now owns it.'], lockFolder);
     end
     staleCleanup = onCleanup(@() removeStaleLockClaim(staleClaimFolder));
 end
@@ -133,6 +150,14 @@ match = regexp(fileread(ownerFile), '(?m)^token=([^\r\n]+)$', ...
     'tokens', 'once');
 if ~isempty(match)
     token = match{1};
+end
+end
+
+function text = readPublishLockOwnerText(lockFolder)
+text = '';
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if isfile(ownerFile)
+    text = fileread(ownerFile);
 end
 end
 

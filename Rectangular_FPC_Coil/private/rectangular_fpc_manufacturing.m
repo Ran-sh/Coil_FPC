@@ -104,11 +104,15 @@ else
     measuredSpacing = cfg.traceSpacing;
 end
 % COPPER_TO_BOARD 必须使用最终几何（含 PAD 与过孔焊环）的实测最小铜到板边距离；
-% edgeClearance 只是布线设计目标，不能充当最终实测值（否则 PAD 铜边可绕过 DRC）。
-if isfield(result, 'minCopperToBoardMm') && isfinite(result.minCopperToBoardMm)
+% edgeClearance 只是布线设计目标。check_config（无结果）允许报告配置目标；
+% check_result 缺实测值时必须 fail closed，防止调用方再次引入 H2 假 PASS。
+if isempty(fieldnames(result))
+    measuredCopperToBoard = cfg.edgeClearance;
+elseif isfield(result, 'minCopperToBoardMm') && isfinite(result.minCopperToBoardMm)
     measuredCopperToBoard = result.minCopperToBoardMm;
 else
-    measuredCopperToBoard = cfg.edgeClearance;
+    error('RectangularFPC:ManufacturingInputContract', ...
+        'check_result requires a finite minCopperToBoardMm measured by validation.');
 end
 
 rows = [ ...

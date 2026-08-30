@@ -133,6 +133,10 @@ function cleanup = acquirePublishLock(lockFolder, moveFolder)
 
 staleClaimFolder = '';
 if isfolder(lockFolder)
+    % TOCTOU 防护：stale 判定与目录搬移之间存在窗口，同路径可能已被
+    % 其他写入者用全新锁重新占用。claim 后必须核对搬走目录的 owner
+    % 证据与判定时读到的一致；不一致则原样恢复并 fail closed。
+    ownerTextBefore = readPublishLockOwnerText(lockFolder);
     if ~isStalePublishLock(lockFolder)
         error('RectangularFPC:ConcurrentPublish', ...
             'Another process is publishing this minute version: %s', ...
@@ -145,6 +149,19 @@ if isfolder(lockFolder)
         error('RectangularFPC:ConcurrentPublish', ...
             'Unable to claim stale publication lock %s: %s', ...
             lockFolder, claimMessage);
+    end
+    if ~strcmp(readPublishLockOwnerText(staleClaimFolder), ownerTextBefore)
+        [restored, restoreMessage] = tryMoveFolder( ...
+            moveFolder, staleClaimFolder, lockFolder);
+        if ~restored
+            warning('RectangularFPC:StaleClaimRestoreFailed', ...
+                ['Stale claim of %s hit an identity change and the ', ...
+                'displaced lock could not be restored: %s'], ...
+                lockFolder, restoreMessage);
+        end
+        error('RectangularFPC:ConcurrentPublish', ...
+            ['Publish lock at %s changed identity during stale claim; ', ...
+            'another writer now owns it.'], lockFolder);
     end
     staleCleanup = onCleanup(@() removeStaleLockClaim(staleClaimFolder));
 end
@@ -212,6 +229,17 @@ match = regexp(fileread(filename), '(?m)^token=([^\r\n]+)$', ...
     'tokens', 'once');
 if ~isempty(match)
     token = match{1};
+end
+
+end
+
+
+function text = readPublishLockOwnerText(lockFolder)
+
+text = '';
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if isfile(ownerFile)
+    text = fileread(ownerFile);
 end
 
 end
@@ -399,6 +427,18 @@ try
     if ~all(ismember(required, manifest.Properties.VariableNames))
         return;
     end
+    listed = strrep(string(manifest.relativePath), '\', '/');
+    if isempty(listed) || any(listed == "") || ...
+            numel(unique(listed)) ~= numel(listed)
+        return;
+    end
+    % 完整性门禁：清单必须与目录中除清单自身外的全部 regular files
+    % 集合完全相等。逐行校验无法发现空清单/截断清单（循环 0 次即通过），
+    % 集合全等才能保证半成品目录 fail closed。
+    actual = listOutputArtifacts(outputFolder, manifestFile);
+    if ~isequal(sort(listed), sort(actual))
+        return;
+    end
     for rowIndex = 1:height(manifest)
         artifact = fullfile(outputFolder, strrep( ...
             char(manifest.relativePath(rowIndex)), '/', filesep));
@@ -414,6 +454,28 @@ catch
     return;
 end
 committed = true;
+
+end
+
+
+function paths = listOutputArtifacts(outputFolder, manifestFile)
+
+entries = dir(fullfile(outputFolder, '**', '*'));
+entries = entries(~[entries.isdir]);
+paths = strings(0, 1);
+for entryIndex = 1:numel(entries)
+    fullPath = fullfile(entries(entryIndex).folder, ...
+        entries(entryIndex).name);
+    if strcmp(fullPath, manifestFile)
+        continue;
+    end
+    relative = extractAfter(fullPath, outputFolder);
+    relative = strrep(relative, filesep, '/');
+    if startsWith(relative, '/')
+        relative = extractAfter(relative, '/');
+    end
+    paths(end+1, 1) = string(relative); %#ok<AGROW>
+end
 
 end
 

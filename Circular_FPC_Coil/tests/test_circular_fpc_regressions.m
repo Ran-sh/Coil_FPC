@@ -558,6 +558,24 @@ for c = 1:size(combos, 1)
 end
 end
 
+function testFixedBoardTurnScanAccountsFractionalTurns(testCase)
+% 4/4 fixed 板：可用径向宽度落在 t 与 t+0.25 圈需求之间时，fitsBoard
+% 必须为 0（L2 分数匝是多算的唯一来源）；非 4/4 同板径同行保持 1。
+% D=34.0 → available = 17 - 0.05 - 0.30 - 9.315 = 7.335；
+% t=20: req=7.300 ✓ 但 reqFrac=7.38875 ✗；t=19: reqFrac=7.03375 ✓。
+outRoot = createTempOutput(testCase);
+result44 = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'scan_4_4', ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 34.0, 'turnScanMax', 22));
+scanTxt44 = fileread(fullfile(result44.outputPath, 'reports', '04_turn_scan.csv'));
+verifyTrue(testCase, contains(scanTxt44, sprintf('20,%.6f,0', 0.2 + 20 * 0.355)));
+verifyTrue(testCase, contains(scanTxt44, sprintf('19,%.6f,1', 0.2 + 19 * 0.355)));
+result22 = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'scan_2_2', ...
+    'boardLayerCount', 2, 'coilLayerCount', 2, ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 34.0, 'turnScanMax', 22));
+scanTxt22 = fileread(fullfile(result22.outputPath, 'reports', '04_turn_scan.csv'));
+verifyTrue(testCase, contains(scanTxt22, sprintf('20,%.6f,1', 0.2 + 20 * 0.355)));
+end
+
 function testSupportedLayerMatrixAndSeriesContinuity(testCase)
 combos = {2, 1; 2, 2; 4, 1; 4, 2; 4, 4};
 expectedActive = {[1]; [1 2]; [1]; [1 4]; [1 2 3 4]};

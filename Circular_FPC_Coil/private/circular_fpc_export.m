@@ -494,7 +494,14 @@ else
         cfg.edgeClearance - eff.coilInnerDiameter / 2;
     for t = 2:cfg.turnScanMax
         req = cfg.traceWidth + t * eff.coilPitch;
-        fprintf(fid, '%d,%.6f,%d\n', t, req, req <= available + 1e-9);
+        fitsBoard = req <= available + 1e-9;
+        if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+            % 4/4 的 L2 多绕 0.25 圈：实际可容纳性按最大跨度层判定，
+            % 与引擎 requiredBoardDiameter / auto 分支口径一致。
+            reqFrac = cfg.traceWidth + (t + 0.25) * eff.coilPitch;
+            fitsBoard = fitsBoard && (reqFrac <= available + 1e-9);
+        end
+        fprintf(fid, '%d,%.6f,%d\n', t, req, fitsBoard);
     end
 end
 fclose(fid);

@@ -133,6 +133,93 @@ verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
+function testReaderRejectsHeaderOnlyManifest(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+fid = fopen(fullfile(paths.output, 'reports', '08_file_manifest.csv'), 'w');
+manifestCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'relativePath,role,sizeBytes,sha256\n');
+clear manifestCleanup;
+
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for header-only manifest');
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+clear cleanup;
+end
+
+function testReaderRejectsTruncatedManifest(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+% 只保留 old_marker 行、丢掉 generation_status 行：磁盘文件仍在，
+% 清单集合与实际文件集合不全等，必须拒绝。
+oldMarker = fullfile(paths.output, 'old_marker.txt');
+oldInfo = dir(oldMarker);
+fid = fopen(fullfile(paths.output, 'reports', '08_file_manifest.csv'), 'w');
+manifestCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'relativePath,role,sizeBytes,sha256\n');
+fprintf(fid, 'old_marker.txt,test,%d,%s\n', oldInfo.bytes, sha256File(oldMarker));
+clear manifestCleanup;
+
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for truncated manifest');
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+clear cleanup;
+end
+
+function testReaderRejectsDuplicateManifestRows(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+writeCommitEvidence(paths.output);
+statusFile = fullfile(paths.output, 'generation_status.txt');
+statusInfo = dir(statusFile);
+fid = fopen(fullfile(paths.output, 'reports', '08_file_manifest.csv'), 'w');
+manifestCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'relativePath,role,sizeBytes,sha256\n');
+fprintf(fid, 'generation_status.txt,status,%d,%s\n', ...
+    statusInfo.bytes, sha256File(statusFile));
+fprintf(fid, 'generation_status.txt,status,%d,%s\n', ...
+    statusInfo.bytes, sha256File(statusFile));
+clear manifestCleanup;
+
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for duplicated manifest rows');
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+clear cleanup;
+end
+
+function testStaleClaimRejectsReplacedFreshLock(testCase)
+% TOCTOU 回归：stale 判定后、claim 生效前，若同路径已被其他写入者的
+% 全新锁占用，claim 必须识别身份变化、原样恢复并 fail closed，
+% 不得破坏仍活跃的锁。
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+lockFolder = [paths.output '_publish.lock'];
+mkdir(lockFolder);
+fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+staleOwnerCleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear staleOwnerCleanup;
+mover = @(source, destination) replaceLockDuringClaim( ...
+    source, destination, lockFolder);
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output, mover), 'RectangularFPC:ConcurrentPublish');
+
+verifyTrue(testCase, isfolder(lockFolder));
+verifyTrue(testCase, contains(fileread(fullfile(lockFolder, 'owner.txt')), ...
+    'token=fresh_owner_a'));
+verifyFalse(testCase, isfolder(paths.staging));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyEmpty(testCase, dir([paths.output '_stale_*']));
+clear cleanup;
+end
+
 function testExpiredMalformedLockCanBeRecovered(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
@@ -202,6 +289,31 @@ isRestore = startsWith(source, [paths.output '_backup_']) && ...
 if (failPublish && isPublish) || (failRestore && isRestore)
     moved = false;
     message = 'injected move failure';
+else
+    [moved, message] = movefile(source, destination);
+end
+end
+
+function [moved, message] = replaceLockDuringClaim(source, destination, lockFolder)
+% 模拟 stale 回收竞争：在 stale 判定之后、claim 生效之前，另一写入者 A
+% 已回收旧锁并在同路径建立全新锁；随后的 claim 搬走的是 A 的新鲜锁。
+isClaim = strcmp(source, lockFolder) && ...
+    startsWith(destination, [lockFolder '_stale_']);
+isRestore = startsWith(source, [lockFolder '_stale_']) && ...
+    strcmp(destination, lockFolder);
+if isClaim
+    simClaim = [lockFolder '_stale_sim_a'];
+    movefile(source, simClaim);
+    rmdir(simClaim, 's');
+    mkdir(lockFolder);
+    fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
+    freshCleanup = onCleanup(@() fclose(fid));
+    fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=fresh_owner_a\n');
+    fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+    clear freshCleanup;
+    [moved, message] = movefile(source, destination);
+elseif isRestore
+    [moved, message] = movefile(source, destination);
 else
     [moved, message] = movefile(source, destination);
 end

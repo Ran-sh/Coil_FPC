@@ -1418,18 +1418,20 @@ end
 function minCopperToBoard = measureMinCopperToBoardMm( ...
     boardXY, allPaths, cfg, d, vias)
 % 最终成品全铜对象到板框的实测最小距离（mm）：
-%   1) 每条走线中心线采样点到板框距离，减去半线宽得到铜边距离；
-%   2) PAD_A/PAD_B 圆盘：圆心距离减半径；
-%   3) 过孔焊环：圆心距离减焊环半径。
-% 结果偏保守（不会高估净距），供制造资格判定 fail-closed 使用。
+%   1) 每条走线与板框之间做完整 segment-to-segment 最小距离，减半线宽
+%      得到铜边距离（最近点可落在线段内部，仅测顶点会高估净距）；
+%   2) PAD_A/PAD_B 圆盘：圆心距离减半径（精确）；
+%   3) 过孔焊环：圆心距离减焊环半径（精确）。
+% 结果供制造资格判定 fail-closed 使用。
 minCopperToBoard = Inf;
 halfTrace = cfg.traceWidth / 2;
 for pathIndex = 1:numel(allPaths)
     path = allPaths{pathIndex};
-    for pointIndex = 1:size(path, 1)
-        minCopperToBoard = min(minCopperToBoard, ...
-            minimumDistancePointToPolyline(path(pointIndex, :), boardXY) - halfTrace);
+    if isempty(path) || size(path, 1) < 2
+        continue;
     end
+    minCopperToBoard = min(minCopperToBoard, ...
+        minimumDistanceBetweenPolylines(path, boardXY) - halfTrace);
 end
 minCopperToBoard = min(minCopperToBoard, ...
     minimumDistancePointToPolyline(d.padA, boardXY) - cfg.padDiameter / 2);
