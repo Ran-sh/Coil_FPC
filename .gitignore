@@ -7,6 +7,7 @@ Thumbs.db
 
 # Local tooling metadata (not part of the repo)
 .reasonix/
+.zcode/
 
 # Generated coil artifacts are covered by each subproject's own .gitignore:
 #   Circular_FPC_Coil/.gitignore  (/outputs/, /circular_fpc_output/, /outputs_previous_*/)

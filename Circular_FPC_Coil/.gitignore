@@ -6,3 +6,4 @@
 
 # Local tooling metadata (not part of the repo)
 .reasonix/
+.zcode/
