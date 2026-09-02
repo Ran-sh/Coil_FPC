@@ -233,6 +233,8 @@ mkdir(claimDir);
 fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
 claimOwnerCleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+verifyNotEmpty(testCase, localHostName(0), ...
+    'stale-claim fixture must always write a non-empty host identity');
 fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
 clear claimOwnerCleanup;
@@ -365,6 +367,8 @@ mkdir(claimDir);
 fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
 orphanOwnerCleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+verifyNotEmpty(testCase, localHostName(0), ...
+    'stale-claim fixture must always write a non-empty host identity');
 fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
 clear orphanOwnerCleanup;
@@ -423,6 +427,17 @@ function host = localHostName(ignore)
 host = lower(strtrim(getenv('COMPUTERNAME')));
 if isempty(host)
     host = lower(strtrim(getenv('HOSTNAME')));
+end
+if isempty(host)
+    try
+        host = lower(strtrim(char(java.net.InetAddress.getLocalHost().getHostName())));
+    catch
+        host = '';
+    end
+end
+if isempty(host)
+    error('RectangularFPC:TestHostUnavailable', ...
+        'Unable to determine a non-empty host identity for the test fixture.');
 end
 end
 
