@@ -511,6 +511,40 @@ end
 % 配置值 edgeClearance 只是布线设计目标，不能充当最终实测值。
 minCopperToBoardMm = measureMinCopperToBoardMm(closedBoardXY, allPaths, cfg, d, vias);
 
+% 独立记录 PAD/VIA/DRILL 的最终铜边净距；制造报告只能使用这些
+% 生成后实测值，不能用配置目标冒充测量结果。
+[viaEscapeLengths, viaConnectedClearances] = terminalClearanceInputs( ...
+    cfg, d, vias);
+minPadToUnrelatedTraceMm = measureMinPadToUnrelatedTraceMm( ...
+    d.padA, d.padB, layerPaths, cfg, padConnectionLength);
+minViaToUnrelatedCopperMm = measureMinViaToUnrelatedCopperMm( ...
+    vias, layerPaths, cfg, viaEscapeLengths, viaConnectedClearances);
+minDrillToNonConnectedCopperMm = measureMinDrillToNonConnectedCopperMm( ...
+    vias, layerPaths, cfg);
+minDrillToBoardMm = measureMinDrillToBoardMm(vias, closedBoardXY);
+manufacturingRules = rectangular_fpc_manufacturing('resolve', cfg).rules;
+padTraceMeasuredPass = minPadToUnrelatedTraceMm >= ...
+    cfg.padToCopperClearance - tol;
+viaTraceMeasuredPass = minViaToUnrelatedCopperMm >= ...
+    min(cfg.viaToCopperClearance, cfg.outputViaToCopperClearance) - tol;
+drillCopperMeasuredPass = minDrillToNonConnectedCopperMm >= ...
+    manufacturingRules.minDrillToCopperMm - tol;
+drillBoardMeasuredPass = minDrillToBoardMm >= ...
+    manufacturingRules.minDrillToBoardMm - tol;
+if cfg.enablePadClearanceCheck && ~padTraceMeasuredPass
+    failures{end+1} = '焊盘到无关连接走线的实测净距不足'; %#ok<AGROW>
+end
+if cfg.enableViaClearanceCheck && ~viaTraceMeasuredPass
+    failures{end+1} = '过孔焊环到无关连接走线的实测净距不足'; %#ok<AGROW>
+end
+if cfg.enableViaClearanceCheck && ismember(cfg.layerCount, [2, 4]) && ...
+        ~drillCopperMeasuredPass
+    failures{end+1} = '钻孔到非连接层铜的实测净距不足'; %#ok<AGROW>
+end
+if cfg.enableViaClearanceCheck && ~drillBoardMeasuredPass
+    failures{end+1} = '钻孔到板框的实测净距不足'; %#ok<AGROW>
+end
+
 passed = isempty(failures);
 reportLines = buildValidationReportLines( ...
     cfg, passed, failures, limits, fullyValidatedMaxTurns, ...
@@ -528,6 +562,10 @@ validation = struct( ...
     'minCopperAngleDeg', min(copperMinAngles), ...
     'minCopperSpacingMm', minCopperSpacing, ...
     'minCopperToBoardMm', minCopperToBoardMm, ...
+    'minPadToUnrelatedTraceMm', minPadToUnrelatedTraceMm, ...
+    'minViaToUnrelatedCopperMm', minViaToUnrelatedCopperMm, ...
+    'minDrillToNonConnectedCopperMm', minDrillToNonConnectedCopperMm, ...
+    'minDrillToBoardMm', minDrillToBoardMm, ...
     'connectionErrorsMm', connectionErrors, ...
     'viaConnectedCopperPassed', viaConnectedPass, ...
     'viaNonConnectedCopperPassed', viaNonConnectedPass);
@@ -1531,6 +1569,119 @@ if isinf(d)
     d = minimumDistancePointToPolyline(point, xy);
 end
 
+end
+
+%% =========================================================
+function [viaEscapeLengths, viaConnectedClearances] = ...
+    terminalClearanceInputs(cfg, d, vias)
+
+viaEscapeLengths = zeros(numel(vias), 1);
+for viaIndex = 1:numel(vias)
+    if ~isnan(vias(viaIndex).fromLeadLength)
+        viaEscapeLengths(viaIndex) = max( ...
+            vias(viaIndex).fromLeadLength, vias(viaIndex).toLeadLength);
+    end
+end
+viaEscapeLengths(end) = norm(d.padB - d.outputVia);
+viaConnectedClearances = zeros(numel(vias), 1);
+viaConnectedClearances(1:2:end) = cfg.viaLandingClearance;
+viaConnectedClearances(2:2:cfg.layerCount-1) = ...
+    cfg.viaOuterLandingClearance;
+viaConnectedClearances(end) = cfg.outputViaToCopperClearance;
+end
+
+function dMin = measureMinPadToUnrelatedTraceMm( ...
+    padA, padB, layerPaths, cfg, padConnectionLength)
+
+dMin = Inf;
+requiredDistance = cfg.padDiameter/2 + cfg.traceWidth/2 + ...
+    cfg.padToCopperClearance;
+connectedExcludedLength = padConnectionLength + requiredDistance;
+for layerIndex = 1:numel(layerPaths)
+    for pathIndex = 1:numel(layerPaths{layerIndex})
+        path = layerPaths{layerIndex}{pathIndex};
+        if layerIndex == 1 && pathIndex == 1
+            dA = minimumDistancePointToPolylineExcludingLength( ...
+                padA, path, true, connectedExcludedLength);
+        else
+            dA = minimumDistancePointToPolyline(padA, path);
+        end
+        dMin = min(dMin, dA - cfg.padDiameter/2 - cfg.traceWidth/2);
+
+        if layerIndex == 1 && pathIndex == 2
+            dB = Inf;
+        else
+            dB = minimumDistancePointToPolyline(padB, path);
+        end
+        dMin = min(dMin, dB - cfg.padDiameter/2 - cfg.traceWidth/2);
+    end
+end
+end
+
+function dMin = measureMinViaToUnrelatedCopperMm( ...
+    vias, layerPaths, cfg, viaEscapeLengths, viaConnectedClearances)
+
+dMin = Inf;
+for viaIndex = 1:numel(vias)
+    via = vias(viaIndex);
+    requiredDistance = via.padDiameter/2 + cfg.traceWidth/2 + ...
+        viaConnectedClearances(viaIndex);
+    excludedLength = viaEscapeLengths(viaIndex) + requiredDistance;
+    connectedLayers = unique([via.fromLayer, via.toLayer]);
+    for layerIndex = connectedLayers
+        for pathIndex = 1:numel(layerPaths{layerIndex})
+            path = layerPaths{layerIndex}{pathIndex};
+            isFromPath = layerIndex == via.fromLayer && pathIndex == 1;
+            isToPath = layerIndex == via.toLayer && pathIndex == 1;
+            if strcmp(via.role, 'output_return')
+                isToPath = layerIndex == 1 && pathIndex == 2;
+            end
+            if isFromPath
+                centerDistance = minimumDistancePointToPolylineExcludingLength( ...
+                    via.xy, path, false, excludedLength);
+            elseif isToPath
+                if strcmp(via.role, 'output_return')
+                    centerDistance = Inf;
+                else
+                    centerDistance = minimumDistancePointToPolylineExcludingLength( ...
+                        via.xy, path, true, excludedLength);
+                end
+            else
+                centerDistance = minimumDistancePointToPolyline(via.xy, path);
+            end
+            dMin = min(dMin, centerDistance - via.padDiameter/2 - ...
+                cfg.traceWidth/2);
+        end
+    end
+end
+end
+
+function dMin = measureMinDrillToNonConnectedCopperMm(vias, layerPaths, cfg)
+
+dMin = Inf;
+for viaIndex = 1:numel(vias)
+    via = vias(viaIndex);
+    if ~strcmp(via.type, 'through_via')
+        continue;
+    end
+    connectedLayers = unique(via.connectedLayers);
+    for layerIndex = setdiff(1:numel(layerPaths), connectedLayers)
+        for pathIndex = 1:numel(layerPaths{layerIndex})
+            path = layerPaths{layerIndex}{pathIndex};
+            dMin = min(dMin, minimumDistancePointToPolyline( ...
+                via.xy, path) - via.drillDiameter/2 - cfg.traceWidth/2);
+        end
+    end
+end
+end
+
+function dMin = measureMinDrillToBoardMm(vias, boardXY)
+
+dMin = Inf;
+for viaIndex = 1:numel(vias)
+    dMin = min(dMin, minimumDistancePointToPolyline( ...
+        vias(viaIndex).xy, boardXY) - vias(viaIndex).drillDiameter/2);
+end
 end
 
 %% =========================================================

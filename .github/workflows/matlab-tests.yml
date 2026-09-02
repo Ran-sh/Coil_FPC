@@ -20,3 +20,25 @@ jobs:
         uses: matlab-actions/run-command@v2
         with:
           command: cd("Rectangular_FPC_Coil"); addpath("tests"); results = run_all_verification(); assert(~isempty(results), "Rectangular FPC discovered zero tests")
+      - name: Generate circular canonical artifacts
+        uses: matlab-actions/run-command@v2
+        with:
+          command: cd("Circular_FPC_Coil"); result = circular_fpc_main(struct("outputRoot", fullfile(pwd, "ci-artifacts"), "designName", "canonical", "enableFigure", false, "enablePreview", true)); assert(result.validation.passed); assert(result.manufacturing.passed)
+      - name: Upload circular canonical artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: circular-fpc-canonical
+          path: Circular_FPC_Coil/ci-artifacts/canonical
+          if-no-files-found: error
+      - name: Generate rectangular canonical artifacts
+        uses: matlab-actions/run-command@v2
+        with:
+          command: cd("Rectangular_FPC_Coil"); result = rectangular_fpc_main(struct("outputRoot", fullfile(pwd, "ci-artifacts"), "designName", "canonical", "enableFigure", false, "enablePreview", true)); assert(result.validation.passed); assert(result.manufacturing.passed)
+      - name: Upload rectangular canonical artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rectangular-fpc-canonical
+          path: Rectangular_FPC_Coil/ci-artifacts/canonical
+          if-no-files-found: error
