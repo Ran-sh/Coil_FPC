@@ -1235,6 +1235,10 @@ verifyTrue(testCase, contains(workflow, 'ci-artifacts'));
 verifyTrue(testCase, contains(workflow, 'canonical'));
 verifyTrue(testCase, contains(workflow, 'enablePreview'));
 verifyTrue(testCase, contains(workflow, 'canonical_*'));
+verifyTrue(testCase, contains(workflow, 'circular-artifact:'));
+verifyTrue(testCase, contains(workflow, 'rectangular-artifact:'));
+verifyTrue(testCase, contains(workflow, "'designName', 'canonical'"));
+verifyFalse(testCase, contains(workflow, '"designName", "canonical"'));
 
 for runner = {fullfile(projectRoot, 'tests', 'run_all_verification.m'), ...
         fullfile(repoRoot, 'Rectangular_FPC_Coil', 'tests', ...
