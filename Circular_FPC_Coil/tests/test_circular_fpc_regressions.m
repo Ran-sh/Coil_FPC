@@ -76,6 +76,10 @@ verifyEqual(testCase, cfgNeg.connectionAngleDeg, -45, 'AbsTol', 1e-9);
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', NaN)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', Inf)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', [0 1])), 'CircularFPC:InvalidConfig');
+verifyError(testCase, @() circular_fpc_default_config(struct('terminalBendSweepDeg', 90.1)), ...
+    'CircularFPC:InvalidConfig');
+verifyError(testCase, @() circular_fpc_default_config(struct('terminalBendSweepDeg', 151)), ...
+    'CircularFPC:InvalidConfig');
 end
 
 function testRejectsUnsupportedLayerMatrix(testCase)
@@ -418,6 +422,9 @@ verifyTrue(testCase, all(abs(abs(platformXY(:, 1)) - 6.5) < 1e-9 | ...
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
 verifyGreaterThanOrEqual(testCase, result.effectiveDimensions.actualBridgeWidth, 1.5);
+verifyEqual(testCase, result.layoutRegions.bridgeWidths, ...
+    repmat(result.layoutRegions.bridgeWidth, 1, 4), 'AbsTol', 1e-9);
+verifyEqual(testCase, result.layoutRegions.bridgeGoverningConstraint, 'terminalEnvelope');
 outerLoop = result.boardLoops(1);
 verifyFalse(testCase, outerLoop.isHole);
 outerXY = outerLoop.xy(1:end - 1, :);
@@ -1257,6 +1264,13 @@ verifyFalse(testCase, contains(workflow, 'if: always()'), ...
     'Canonical generation/upload must never run after a failed prerequisite or failed generation.');
 verifyTrue(testCase, contains(workflow, 'rectangular_fpc_read_committed'), ...
     'CI must snapshot the exact rectangular committed output while holding its reader lock.');
+verifyTrue(testCase, contains(workflow, 'copyOk'), ...
+    'CI must assert the result of copying the committed rectangular output.');
+for requiredArtifact = {'generation_status.txt', '08_file_manifest.csv', ...
+        'previews', 'dxf', 'reports'}
+    verifyTrue(testCase, contains(workflow, requiredArtifact{1}), ...
+        sprintf('CI must gate the staged artifact on %s.', requiredArtifact{1}));
+end
 verifyTrue(testCase, contains(workflow, "'designName', 'canonical'"));
 verifyFalse(testCase, contains(workflow, '"designName", "canonical"'));
 

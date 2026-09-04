@@ -28,7 +28,6 @@ padB = r.pads(strcmp({r.pads.name}, 'PAD_B'));
 vout = r.vias(strcmp({r.vias.name}, 'VOUT'));
 verifyEqual(testCase, norm(padB.xy - padA.xy), d, 'AbsTol', 1e-6);
 verifyEqual(testCase, norm(padB.xy - vout.xy), L, 'AbsTol', 1e-6);
-verifyEqual(testCase, r.config.terminalBendSweepDeg, 94.0, 'AbsTol', 1e-12);
 verifyEqual(testCase, r.terminalRouting.bendRadiusMm, ...
     r.terminalRouting.entryBendRadiusMm, 'AbsTol', 1e-12);
 verifyGreaterThan(testCase, r.terminalRouting.entryBendRadiusMm, 0);
@@ -38,6 +37,55 @@ verifyGreaterThan(testCase, r.terminalRouting.outputSweepDeg, 90.1);
 verifyEqual(testCase, r.terminalRouting.entryBendCount, 1);
 verifyEqual(testCase, r.terminalRouting.outputBendCount, 1);
 verifyEqual(testCase, r.terminalRouting.exitBendCount, 0);
+end
+
+function testAutomaticBendsAreSingleTangentCircles(testCase)
+r = analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'designName', 'terminal_circle_contract'));
+u = [cosd(r.config.connectionAngleDeg), sind(r.config.connectionAngleDeg)];
+
+entryArc = r.terminalRouting.entryPath(end - 48:end, :);
+assertCircularArc(testCase, entryArc, ...
+    r.terminalRouting.entryBendRadiusMm, ...
+    r.terminalRouting.entrySweepDeg);
+entryCenter = threePointCircleCenter(entryArc(1, :), ...
+    entryArc(ceil(end / 2), :), entryArc(end, :));
+entryEndTangent = unitVector(r.layerPaths(1).coilXY(2, :) - ...
+    r.layerPaths(1).coilXY(1, :));
+verifyLessThan(testCase, abs(dot(unitVector(entryArc(1, :) - ...
+    entryCenter), u)), 1e-9);
+verifyLessThan(testCase, abs(dot(unitVector(entryArc(end, :) - ...
+    entryCenter), entryEndTangent)), 1e-9);
+
+outputArc = r.terminalRouting.outputPath;
+assertCircularArc(testCase, outputArc, ...
+    r.terminalRouting.outputBendRadiusMm, ...
+    r.terminalRouting.outputSweepDeg);
+outputCenter = threePointCircleCenter(outputArc(1, :), ...
+    outputArc(ceil(end / 2), :), outputArc(end, :));
+lastLayer = r.activeCoilLayers(end);
+outputStartTangent = unitVector(r.layerPaths(lastLayer).coilXY(end, :) - ...
+    r.layerPaths(lastLayer).coilXY(end - 1, :));
+verifyLessThan(testCase, abs(dot(unitVector(outputArc(1, :) - ...
+    outputCenter), outputStartTangent)), 1e-9);
+verifyLessThan(testCase, abs(dot(unitVector(outputArc(end, :) - ...
+    outputCenter), -u)), 1e-9);
+end
+
+function testSingleCoilOutputBendMetadataIsExplicitlyAbsent(testCase)
+for boardLayers = [2, 4]
+    r = analyzeInternal(struct( ...
+        'boardLayerCount', boardLayers, ...
+        'coilLayerCount', 1, ...
+        'designName', sprintf('single_coil_metadata_%d', boardLayers)));
+    verifyEmpty(testCase, r.terminalRouting.outputPath);
+    verifyEqual(testCase, r.terminalRouting.outputBendCount, 0);
+    verifyTrue(testCase, isnan(r.terminalRouting.outputBendRadiusMm));
+    verifyTrue(testCase, isnan(r.terminalRouting.outputSweepDeg));
+    verifyEqual(testCase, r.terminalRouting.outputPhaseOffsetDeg, 0, ...
+        'AbsTol', 1e-12);
+end
 end
 
 function testTerminalBendSweepsStrictlyExceedNinety(testCase)
@@ -190,6 +238,34 @@ else
     signs = sign(turns);
     count = sum(signs(2:end) ~= signs(1:end - 1));
 end
+end
+
+function assertCircularArc(testCase, path, expectedRadius, expectedSweepDeg)
+center = threePointCircleCenter(path(1, :), ...
+    path(ceil(end / 2), :), path(end, :));
+radii = sqrt(sum((path - center).^2, 2));
+verifyEqual(testCase, radii, repmat(expectedRadius, size(radii)), ...
+    'AbsTol', 1e-7);
+v1 = unitVector(path(1, :) - center);
+v2 = unitVector(path(end, :) - center);
+sweep = mod(rad2deg(atan2(v1(1) * v2(2) - v1(2) * v2(1), ...
+    dot(v1, v2))), 360);
+verifyEqual(testCase, sweep, expectedSweepDeg, 'AbsTol', 1e-7);
+end
+
+function center = threePointCircleCenter(a, b, c)
+matrix = 2 * [b - a; c - a];
+rhs = [dot(b, b) - dot(a, a); dot(c, c) - dot(a, a)];
+verifyCondition = abs(det(matrix));
+if verifyCondition <= 1e-12
+    error('CircularFPC:TestDegenerateCircle', ...
+        'Three arc points do not define a stable circle.');
+end
+center = (matrix \ rhs).';
+end
+
+function value = unitVector(value)
+value = value / norm(value);
 end
 
 function result = analyzeInternal(overrides)
