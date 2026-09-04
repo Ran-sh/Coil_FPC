@@ -34,7 +34,10 @@ paths = makeFormalOutput(true);
 cleanup = onCleanup(@() removeTree(paths.root));
 filename = fullfile(paths.result.outputPath, 'previews', ...
     '01_preview_full.svg');
-invalidDocuments = {'<svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>'};
+invalidDocuments = { ...
+    '<svg', ...
+    '<svg xmlns="http://www.w3.org/2000/svg"></svg>', ...
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><path/></svg>'};
 for documentIndex = 1:numel(invalidDocuments)
     fid = fopen(filename, 'w');
     fileCleanup = onCleanup(@() fclose(fid));
@@ -43,6 +46,39 @@ for documentIndex = 1:numel(invalidDocuments)
     verifyError(testCase, @() verifyExistingOutput(paths), ...
         'RectangularFPC:ExportReadbackFailed');
 end
+end
+
+function testGenerationStatusManufacturingFieldsAreReadBack(testCase)
+paths = makeFormalOutput(false);
+cleanup = onCleanup(@() removeTree(paths.root));
+filename = fullfile(paths.result.outputPath, 'generation_status.txt');
+baseline = fileread(filename);
+expected = { ...
+    paths.result.manufacturing.profile, ...
+    paths.result.manufacturing.tier, ...
+    paths.result.manufacturing.status, ...
+    paths.result.manufacturing.applicability, ...
+    sprintf('%d', paths.result.manufacturing.verified)};
+fields = { ...
+    'ManufacturingProfile', ...
+    'ManufacturingTier', ...
+    'ManufacturingStatus', ...
+    'ManufacturingApplicability', ...
+    'ManufacturingVerified'};
+replacements = {'tampered', 'tampered', 'FAIL', 'CUSTOM_RULES', '0'};
+for fieldIndex = 1:numel(fields)
+    originalLine = sprintf('%s: %s', fields{fieldIndex}, expected{fieldIndex});
+    replacementLine = sprintf('%s: %s', ...
+        fields{fieldIndex}, replacements{fieldIndex});
+    tampered = strrep(baseline, originalLine, replacementLine);
+    assertNotEqual(testCase, tampered, baseline);
+    writeTextFile(filename, tampered);
+    verifyError(testCase, @() verifyExistingOutput(paths), ...
+        'RectangularFPC:ExportReadbackFailed');
+end
+writeTextFile(filename, sprintf('%sManufacturingVerified: 0\n', baseline));
+verifyError(testCase, @() verifyExistingOutput(paths), ...
+    'RectangularFPC:ExportReadbackFailed');
 end
 
 function testCustomRulesKeepSupportedThroughViaFabricationNotes(testCase)
@@ -184,6 +220,14 @@ end
 
 function data = setText(data, name, row, value)
 data.(name)(row) = value;
+end
+
+function writeTextFile(filename, content)
+fid = fopen(filename, 'w', 'n', 'UTF-8');
+assert(fid ~= -1, 'Unable to open export-contract fixture.');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, '%s', content);
+clear cleanup;
 end
 
 function removeTree(root)
