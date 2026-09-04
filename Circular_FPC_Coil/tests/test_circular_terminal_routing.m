@@ -28,10 +28,45 @@ padB = r.pads(strcmp({r.pads.name}, 'PAD_B'));
 vout = r.vias(strcmp({r.vias.name}, 'VOUT'));
 verifyEqual(testCase, norm(padB.xy - padA.xy), d, 'AbsTol', 1e-6);
 verifyEqual(testCase, norm(padB.xy - vout.xy), L, 'AbsTol', 1e-6);
-verifyEqual(testCase, r.terminalRouting.bendRadiusMm, d/2, 'AbsTol', 1e-12);
+verifyEqual(testCase, r.config.terminalBendSweepDeg, 94.0, 'AbsTol', 1e-12);
+verifyEqual(testCase, r.terminalRouting.bendRadiusMm, ...
+    r.terminalRouting.entryBendRadiusMm, 'AbsTol', 1e-12);
+verifyGreaterThan(testCase, r.terminalRouting.entryBendRadiusMm, 0);
+verifyGreaterThan(testCase, r.terminalRouting.outputBendRadiusMm, 0);
+verifyGreaterThan(testCase, r.terminalRouting.entrySweepDeg, 90.1);
+verifyGreaterThan(testCase, r.terminalRouting.outputSweepDeg, 90.1);
 verifyEqual(testCase, r.terminalRouting.entryBendCount, 1);
 verifyEqual(testCase, r.terminalRouting.outputBendCount, 1);
 verifyEqual(testCase, r.terminalRouting.exitBendCount, 0);
+end
+
+function testTerminalBendSweepsStrictlyExceedNinety(testCase)
+% Measure the complete single bend, not the small heading increment between
+% adjacent sampled arc segments.
+combos = [2 1; 2 2; 4 1; 4 2; 4 4];
+for row = 1:size(combos, 1)
+    r = analyzeInternal(struct( ...
+        'boardLayerCount', combos(row, 1), ...
+        'coilLayerCount', combos(row, 2), ...
+        'designName', sprintf('terminal_sweep_%d_%d', combos(row, 1), combos(row, 2))));
+    entrySweep = netPathHeadingSweepDeg(r.terminalRouting.entryPath);
+    verifyGreaterThan(testCase, entrySweep, 90.1, ...
+        sprintf('%d/%d L1 entry sweep must be strictly >90.1 deg (got %.6f).', ...
+        combos(row, 1), combos(row, 2), entrySweep));
+    verifyEqual(testCase, curvatureSignChanges(r.terminalRouting.entryPath), 0, ...
+        sprintf('%d/%d L1 entry must remain one curvature direction.', ...
+        combos(row, 1), combos(row, 2)));
+
+    if combos(row, 2) > 1
+        outputSweep = netPathHeadingSweepDeg(r.terminalRouting.outputPath);
+        verifyGreaterThan(testCase, outputSweep, 90.1, ...
+            sprintf('%d/%d final-layer output sweep must be strictly >90.1 deg (got %.6f).', ...
+            combos(row, 1), combos(row, 2), outputSweep));
+        verifyEqual(testCase, curvatureSignChanges(r.terminalRouting.outputPath), 0, ...
+            sprintf('%d/%d final-layer output must remain one curvature direction.', ...
+            combos(row, 1), combos(row, 2)));
+    end
+end
 end
 
 function testExitIsStraightAndParallelLeadSpacing(testCase)
@@ -103,6 +138,11 @@ layerFiles = { ...
     '06_preview_layer_L4_bottom.svg'};
 for li = 1:numel(layerFiles)
     svg = fileread(fullfile(result.outputPath, 'previews', layerFiles{li}));
+    verifyTrue(testCase, ~isempty(regexp(svg, ...
+        'fill="#ffcc1a"\s+fill-opacity="1(?:\.0+)?"', 'once')), ...
+        sprintf('%s must render the yellow board material as opaque.', layerFiles{li}));
+    verifyFalse(testCase, contains(svg, 'fill="#ffcc1a" fill-opacity="0.45"'), ...
+        sprintf('%s must not render translucent board material.', layerFiles{li}));
     for k = 1:numel(result.vias)
         name = result.vias(k).name;
         verifyTrue(testCase, contains(svg, sprintf( ...
@@ -120,6 +160,35 @@ for li = 1:numel(layerFiles)
     end
     verifyFalse(testCase, contains(svg, 'data-via-role="antipad"'));
     verifyFalse(testCase, contains(svg, 'stroke-dasharray'));
+end
+end
+
+function sweep = netPathHeadingSweepDeg(path)
+segments = diff(path, 1, 1);
+segments = segments(sqrt(sum(segments.^2, 2)) > 1e-10, :);
+if size(segments, 1) < 2
+    sweep = 0;
+    return;
+end
+heading = unwrap(atan2(segments(:, 2), segments(:, 1)));
+sweep = abs(rad2deg(heading(end) - heading(1)));
+end
+
+function count = curvatureSignChanges(path)
+segments = diff(path, 1, 1);
+segments = segments(sqrt(sum(segments.^2, 2)) > 1e-10, :);
+if size(segments, 1) < 3
+    count = 0;
+    return;
+end
+heading = unwrap(atan2(segments(:, 2), segments(:, 1)));
+turns = diff(heading);
+turns = turns(abs(turns) > deg2rad(0.02));
+if isempty(turns)
+    count = 0;
+else
+    signs = sign(turns);
+    count = sum(signs(2:end) ~= signs(1:end - 1));
 end
 end
 

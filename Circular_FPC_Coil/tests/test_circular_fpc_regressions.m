@@ -27,6 +27,7 @@ verifyEqual(testCase, cfg.pitchMargin, 0.005, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.edgeClearance, 0.30, 'AbsTol', 1e-9); % = DRC 铜-板框
 verifyEqual(testCase, cfg.boardOutlineLineWidth, 0.10, 'AbsTol', 1e-9); % 板框轮廓线宽
 verifyEqual(testCase, cfg.connectionAngleDeg, 135.0, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.terminalBendSweepDeg, 94.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.viaPadDiameter, 0.55, 'AbsTol', 1e-9); % 过孔默认外径（JLC 常规推荐）
 verifyEqual(testCase, cfg.viaDrillDiameter, 0.31, 'AbsTol', 1e-9); % 过孔默认内径
 verifyEqual(testCase, cfg.viaCoilSpacing, 0.152, 'AbsTol', 1e-9); % 过孔-线圈净距 = DRC 6mil
@@ -182,7 +183,8 @@ verifyEqual(testCase, res.terminalRouting.outputBendCount, 1);
 outputPath = res.terminalRouting.outputPath;
 verifyGreaterThan(testCase, size(outputPath, 1), 2);
 outputLen = sum(sqrt(sum(diff(outputPath, 1, 1).^2, 2)));
-verifyEqual(testCase, outputLen, pi * res.config.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+verifyEqual(testCase, outputLen, deg2rad(res.terminalRouting.outputSweepDeg) * ...
+    res.terminalRouting.outputBendRadiusMm, 'AbsTol', 1e-3);
 verifyEqual(testCase, outputPath(1, :), res.layerPaths(4).coilXY(end, :), 'AbsTol', 1e-9);
 verifyEqual(testCase, outputPath(end, :), res.vias(strcmp({res.vias.name}, 'VOUT')).xy, 'AbsTol', 1e-9);
 % V34 到 L4 的圆弧已直接并入线圈，不应残留独立 registration jog。
@@ -467,6 +469,15 @@ verifyTrue(testCase, isfield(result, 'estimatedDcResistanceOhm'));
 verifyTrue(testCase, isfinite(result.totalTraceLengthMm) && result.totalTraceLengthMm > 0);
 verifyTrue(testCase, isfinite(result.estimatedDcResistanceOhm) && result.estimatedDcResistanceOhm > 0);
 verifyTrue(testCase, ischar(result.outputPath));
+end
+
+function testCanonicalSlotCornersUseSmoothTangentFillets(testCase)
+result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
+verifyEqual(testCase, numel(result.boardLoops), 5);
+verifyGreaterThan(testCase, result.validation.minBoardInteriorAngleDeg, 170, ...
+    sprintf(['Canonical slot boundaries must replace isolated platform/bridge hard corners ', ...
+    'with sampled tangent fillets (minimum interior angle %.6f deg).'], ...
+    result.validation.minBoardInteriorAngleDeg));
 end
 
 function testGeometryScaleKeepsManufacturingRules(testCase)
@@ -1234,9 +1245,18 @@ verifyGreaterThanOrEqual(testCase, ...
 verifyTrue(testCase, contains(workflow, 'ci-artifacts'));
 verifyTrue(testCase, contains(workflow, 'canonical'));
 verifyTrue(testCase, contains(workflow, 'enablePreview'));
-verifyTrue(testCase, contains(workflow, 'canonical_*'));
+verifyFalse(testCase, contains(workflow, 'canonical_*'), ...
+    'Rectangular canonical upload must stage the exact returned committed output, not a wildcard.');
 verifyTrue(testCase, contains(workflow, 'circular-artifact:'));
 verifyTrue(testCase, contains(workflow, 'rectangular-artifact:'));
+verifyTrue(testCase, contains(workflow, 'circular-test:'));
+verifyTrue(testCase, contains(workflow, 'rectangular-test:'));
+verifyTrue(testCase, contains(workflow, "needs.circular-test.result == 'success'"));
+verifyTrue(testCase, contains(workflow, "needs.rectangular-test.result == 'success'"));
+verifyFalse(testCase, contains(workflow, 'if: always()'), ...
+    'Canonical generation/upload must never run after a failed prerequisite or failed generation.');
+verifyTrue(testCase, contains(workflow, 'rectangular_fpc_read_committed'), ...
+    'CI must snapshot the exact rectangular committed output while holding its reader lock.');
 verifyTrue(testCase, contains(workflow, "'designName', 'canonical'"));
 verifyFalse(testCase, contains(workflow, '"designName", "canonical"'));
 
@@ -1543,7 +1563,9 @@ end
 verifyEqual(testCase, result.terminalRouting.entryBendCount, 1);
 verifyEqual(testCase, result.terminalRouting.exitBendCount, 0);
 entryLen = sum(sqrt(sum(diff(result.terminalRouting.entryPath, 1, 1).^2, 2)));
-verifyEqual(testCase, entryLen, cfg.terminalLeadLength + pi * cfg.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+verifyEqual(testCase, entryLen, cfg.terminalLeadLength + ...
+    deg2rad(result.terminalRouting.entrySweepDeg) * ...
+    result.terminalRouting.entryBendRadiusMm, 'AbsTol', 1e-3);
 exitPath = result.terminalRouting.exitPath;
 exitLen = sum(sqrt(sum(diff(exitPath, 1, 1).^2, 2)));
 verifyEqual(testCase, exitLen, cfg.terminalLeadLength, 'AbsTol', 1e-6);
@@ -1555,7 +1577,8 @@ if numel(result.activeCoilLayers) > 1
     verifyEqual(testCase, result.terminalRouting.outputBendCount, 1);
     outputPath = result.terminalRouting.outputPath;
     outputLen = sum(sqrt(sum(diff(outputPath, 1, 1).^2, 2)));
-    verifyEqual(testCase, outputLen, pi * cfg.terminalLeadSpacing / 4, 'AbsTol', 1e-3);
+    verifyEqual(testCase, outputLen, deg2rad(result.terminalRouting.outputSweepDeg) * ...
+        result.terminalRouting.outputBendRadiusMm, 'AbsTol', 1e-3);
 else
     verifyEqual(testCase, result.terminalRouting.outputBendCount, 0);
     verifyEmpty(testCase, result.terminalRouting.outputPath);
