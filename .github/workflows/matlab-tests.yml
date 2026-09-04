@@ -19,11 +19,20 @@ jobs:
       - name: Run rectangular FPC verification
         uses: matlab-actions/run-command@v2
         with:
-          command: cd("Rectangular_FPC_Coil"); addpath("tests"); results = run_all_verification(); assert(~isempty(results), "Rectangular FPC discovered zero tests")
+          command: "cd('Rectangular_FPC_Coil'); addpath('tests'); results = run_all_verification(); assert(~isempty(results), 'Rectangular FPC discovered zero tests')"
+  circular-artifact:
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2026a
       - name: Generate circular canonical artifacts
         uses: matlab-actions/run-command@v2
         with:
-          command: cd("Circular_FPC_Coil"); result = circular_fpc_main(struct("outputRoot", fullfile(pwd, "ci-artifacts"), "designName", "canonical", "enableFigure", false, "enablePreview", true)); assert(result.validation.passed); assert(result.manufacturing.passed)
+          command: "cd('Circular_FPC_Coil'); result = circular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed)"
       - name: Upload circular canonical artifacts
         uses: actions/upload-artifact@v4
         if: always()
@@ -31,10 +40,19 @@ jobs:
           name: circular-fpc-canonical
           path: Circular_FPC_Coil/ci-artifacts/canonical
           if-no-files-found: error
+  rectangular-artifact:
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: matlab-actions/setup-matlab@v2
+        with:
+          release: R2026a
       - name: Generate rectangular canonical artifacts
         uses: matlab-actions/run-command@v2
         with:
-          command: cd("Rectangular_FPC_Coil"); result = rectangular_fpc_main(struct("outputRoot", fullfile(pwd, "ci-artifacts"), "designName", "canonical", "enableFigure", false, "enablePreview", true)); assert(result.validation.passed); assert(result.manufacturing.passed)
+          command: "cd('Rectangular_FPC_Coil'); result = rectangular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed)"
       - name: Upload rectangular canonical artifacts
         uses: actions/upload-artifact@v4
         if: always()
