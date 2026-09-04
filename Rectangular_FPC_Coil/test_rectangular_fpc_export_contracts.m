@@ -92,6 +92,27 @@ verifyEqual(testCase, height(row), 1);
 verifyEqual(testCase, row.measured_mm, 20.00000004, 'AbsTol', 1e-12);
 end
 
+function testRelativeOutputRootPublishesCanonicalOutputPaths(testCase)
+workspaceRoot = tempname;
+mkdir(workspaceRoot);
+originalFolder = pwd;
+cleanup = onCleanup(@() cleanupRelativeWorkspace( ...
+    originalFolder, workspaceRoot));
+cd(workspaceRoot);
+result = rectangular_fpc_main(struct( ...
+    'outputRoot', 'relative_output', ...
+    'designName', 'relative_output_contract', ...
+    'turnsPerLayer', 1, ...
+    'enablePreview', false, ...
+    'enableFigure', false));
+expectedRoot = char(java.io.File(fullfile( ...
+    workspaceRoot, 'relative_output')).getCanonicalPath());
+verifyTrue(testCase, startsWith(result.outputPath, ...
+    [expectedRoot filesep]));
+verifyTrue(testCase, isfolder(result.outputPath));
+verifyTrue(testCase, isfile(result.fileManifest));
+end
+
 function paths = makeFormalOutput(enablePreview, extraOverrides)
 if nargin < 2
     extraOverrides = struct();
@@ -169,4 +190,9 @@ function removeTree(root)
 if isfolder(root)
     rmdir(root, 's');
 end
+end
+
+function cleanupRelativeWorkspace(originalFolder, workspaceRoot)
+cd(originalFolder);
+removeTree(workspaceRoot);
 end
