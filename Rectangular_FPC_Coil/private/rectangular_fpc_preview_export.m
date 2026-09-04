@@ -144,7 +144,8 @@ text(padB(1), padB(2) - 0.8, 'PAD_B', ...
 
 % 主体左下角原点标记（内部坐标系下的主体左下角，对应用户坐标 (0,0)）
 originXY = [-cfg.plateLength/2, -cfg.plateWidth/2];
-plot(originXY(1), originXY(2), 'k+', 'MarkerSize', 9, 'LineWidth', 1.2);
+plot(originXY(1), originXY(2), 'k+', 'MarkerSize', 9, ...
+    'LineWidth', 1.2, 'HandleVisibility', 'off');
 text(originXY(1), originXY(2) - 1.1, 'body lower-left (0,0)', ...
     'FontSize', 7, 'HorizontalAlignment', 'left', 'Color', 'k', 'Clipping', 'on');
 
