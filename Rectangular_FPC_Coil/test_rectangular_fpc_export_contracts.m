@@ -5,7 +5,7 @@ end
 
 function testCoordinateCsvManufacturingFieldsAreReadBack(testCase)
 paths = makeFormalOutput(false);
-cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+cleanup = onCleanup(@() removeTree(paths.root));
 filename = fullfile(paths.result.outputPath, 'reports', ...
     '01_pad_via_coordinates.csv');
 baseline = readtable(filename, 'TextType', 'string');
@@ -31,7 +31,7 @@ end
 
 function testMalformedOrEmptySvgIsRejectedByProductionReadback(testCase)
 paths = makeFormalOutput(true);
-cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
+cleanup = onCleanup(@() removeTree(paths.root));
 filename = fullfile(paths.result.outputPath, 'previews', ...
     '01_preview_full.svg');
 invalidDocuments = {'<svg', '<svg xmlns="http://www.w3.org/2000/svg"></svg>'};
@@ -45,15 +45,50 @@ for documentIndex = 1:numel(invalidDocuments)
 end
 end
 
-function paths = makeFormalOutput(enablePreview)
+function testCustomRulesKeepSupportedThroughViaFabricationNotes(testCase)
+paths = makeFormalOutput(false, struct( ...
+    'manufacturingRuleOverrides', struct('minTraceWidthMm', 0.10)));
+cleanup = onCleanup(@() removeTree(paths.root));
+verifyEqual(testCase, paths.result.manufacturing.applicability, ...
+    'CUSTOM_RULES');
+verifyFalse(testCase, paths.result.manufacturing.verified);
+notes = fileread(fullfile(paths.result.outputPath, 'reports', ...
+    '07_fabrication_notes.txt'));
+verifyTrue(testCase, contains(notes, ...
+    'All vias are plated through holes through the complete stack.'));
+verifyFalse(testCase, contains(notes, ...
+    'series interconnects use an unverified adjacent-layer via model'));
+end
+
+function testTwoLayerNotApplicableManufacturingRowRoundTrips(testCase)
+paths = makeFormalOutput(false, struct('layerCount', 2));
+cleanup = onCleanup(@() removeTree(paths.root));
+data = readtable(fullfile(paths.result.outputPath, 'reports', ...
+    '06_manufacturing_check.csv'), 'TextType', 'string');
+row = data(data.check_id == "DRILL_TO_COPPER", :);
+verifyEqual(testCase, height(row), 1);
+verifyEqual(testCase, row.status, "NOT_APPLICABLE");
+verifyTrue(testCase, isnan(row.measured_mm));
+verifyEqual(testCase, row.code, "NOT_APPLICABLE");
+end
+
+function paths = makeFormalOutput(enablePreview, extraOverrides)
+if nargin < 2
+    extraOverrides = struct();
+end
 paths.root = tempname;
 outputRoot = fullfile(paths.root, 'output');
-paths.result = rectangular_fpc_main(struct( ...
+overrides = struct( ...
     'outputRoot', outputRoot, ...
     'designName', 'export_contract', ...
     'turnsPerLayer', 1, ...
     'enablePreview', enablePreview, ...
-    'enableFigure', false));
+    'enableFigure', false);
+names = fieldnames(extraOverrides);
+for nameIndex = 1:numel(names)
+    overrides.(names{nameIndex}) = extraOverrides.(names{nameIndex});
+end
+paths.result = rectangular_fpc_main(overrides);
 paths.cfg = paths.result.config;
 paths.cfg.designName = sprintf('%s_%s', ...
     paths.result.logicalDesignName, paths.result.runTimestamp);
