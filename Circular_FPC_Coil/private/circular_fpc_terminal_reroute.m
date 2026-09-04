@@ -369,7 +369,12 @@ end
 
 function pts = sampleSegment(p0, p1, spacing)
 d = norm(p1 - p0);
-n = max(2, ceil(d / spacing) + 1);
+ratio = d / spacing;
+% Exact multiples such as 1.5/0.05 can land a few ulps above the integer on
+% one platform and below it on another. Remove only roundoff-scale excess so
+% equivalent geometry always receives the same point count and SVG hash.
+ratioTolerance = 64 * eps(max(1, abs(ratio)));
+n = max(2, ceil(ratio - ratioTolerance) + 1);
 s = linspace(0, 1, n).';
 pts = p0 + s * (p1 - p0);
 end

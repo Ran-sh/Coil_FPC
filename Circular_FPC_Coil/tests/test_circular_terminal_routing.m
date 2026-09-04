@@ -135,6 +135,18 @@ verifyEqual(testCase, abs(dot(padB-padA, t)), r.config.terminalLeadSpacing, 'Abs
 verifyLessThanOrEqual(testCase, abs(dot(padB-padA, u)), 1e-6);
 end
 
+function testExactLeadLengthUsesDeterministicSampleCount(testCase)
+% 1.5 mm / 0.05 mm is exactly 30 segments. Floating-point noise must not
+% produce 31 segments on one OS and 30 on another, otherwise equivalent
+% L1/full SVG artifacts receive different hashes.
+r = analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'terminalLeadLength', 1.5, ...
+    'designName', 'deterministic_lead_sampling'));
+verifyEqual(testCase, size(r.terminalRouting.exitPath, 1), 31);
+verifyEqual(testCase, size(r.terminalRouting.entryPath, 1), 31 + 48);
+end
+
 function testTooShortOutputLeadIsRejected(testCase)
 verifyError(testCase, @() analyzeInternal(struct( ...
     'boardLayerCount', 4, 'coilLayerCount', 2, ...
