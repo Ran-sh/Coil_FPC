@@ -2,7 +2,8 @@ function circular_fpc_plot(result)
 %CIRCULAR_FPC_PLOT Show the generated FPC coil in a MATLAB figure window.
 %   CIRCULAR_FPC_PLOT(RESULT) draws an overview with all layers overlaid plus
 %   one subplot per physical layer (board outline, coil, connection paths,
-%   pads on layer 1, and vias connected to that layer).
+%   pads on layer 1, and all nominal through-vias on every physical-layer
+%   subplot).
 %
 %   The window can be saved manually via File > Save As (PNG/SVG/PDF/...).
 %   It is shown automatically after circular_fpc_main when

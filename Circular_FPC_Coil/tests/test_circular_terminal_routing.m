@@ -147,6 +147,19 @@ verifyEqual(testCase, size(r.terminalRouting.exitPath, 1), 31);
 verifyEqual(testCase, size(r.terminalRouting.entryPath, 1), 31 + 48);
 end
 
+function testLeadLengthAboveRoundoffToleranceStillAddsSample(testCase)
+% A real geometric excess must not be absorbed by the roundoff-only
+% tolerance used to stabilize exact spacing multiples.
+r = analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'terminalLeadLength', 1.500001, ...
+    'designName', 'lead_sampling_above_roundoff'));
+verifyEqual(testCase, size(r.terminalRouting.exitPath, 1), 32);
+verifyEqual(testCase, size(r.terminalRouting.entryPath, 1), 32 + 48);
+exitSteps = vecnorm(diff(r.terminalRouting.exitPath, 1, 1), 2, 2);
+verifyLessThanOrEqual(testCase, max(exitSteps), 0.05 + 1e-12);
+end
+
 function testTooShortOutputLeadIsRejected(testCase)
 verifyError(testCase, @() analyzeInternal(struct( ...
     'boardLayerCount', 4, 'coilLayerCount', 2, ...

@@ -10,6 +10,17 @@ addpath(projectRoot);
 testCase.TestData.projectRoot = projectRoot;
 end
 
+function testRootReadmeSeparatesRuleCheckFromFabricationQualification(testCase)
+repoRoot = fileparts(testCase.TestData.projectRoot);
+readmePath = fullfile(repoRoot, 'README.md');
+verifyTrue(testCase, isfile(readmePath));
+readmeTxt = fileread(readmePath);
+verifyFalse(testCase, contains(readmeTxt, '当前 JLC 制造资格'));
+verifyTrue(testCase, contains(readmeTxt, '内置 JLC 规则检查覆盖'));
+verifyTrue(testCase, contains(readmeTxt, '不等同于板厂 DFM/正式制造资格'));
+verifyTrue(testCase, contains(readmeTxt, 'UNVERIFIED_LAYER_COUNT'));
+end
+
 function testDefaultConfigContractAndOverrides(testCase)
 cfg = circular_fpc_default_config();
 verifyEqual(testCase, cfg.boardLayerCount, 4);

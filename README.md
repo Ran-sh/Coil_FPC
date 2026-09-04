@@ -2,10 +2,10 @@
 
 MATLAB 多层 FPC 螺旋线圈生成器：一键生成毫米制 1:1 DXF、SVG 预览和制造检查报告。
 
-| 模块 | 可生成层数 | 当前 JLC 制造资格 | 主入口 |
+| 模块 | 可生成层数 | 内置 JLC 规则检查覆盖 | 主入口 |
 | --- | --- | --- | --- |
-| [圆形 Circular_FPC_Coil](Circular_FPC_Coil/README.md) | 2 / 4 层板 | 2 / 4 层 | `circular_fpc_main` |
-| [圆角矩形 Rectangular_FPC_Coil](Rectangular_FPC_Coil/README.md) | 2 / 4 / 6 / 8 层板 | 2 / 4 层；6 / 8 层标记为 `UNVERIFIED_LAYER_COUNT` | `rectangular_fpc_main` |
+| [圆形 Circular_FPC_Coil](Circular_FPC_Coil/README.md) | 2 / 4 层板 | 2 / 4 层；不等同于板厂 DFM/正式制造资格 | `circular_fpc_main` |
+| [圆角矩形 Rectangular_FPC_Coil](Rectangular_FPC_Coil/README.md) | 2 / 4 / 6 / 8 层板 | 2 / 4 层；6 / 8 层标记为 `UNVERIFIED_LAYER_COUNT`；不等同于板厂 DFM/正式制造资格 | `rectangular_fpc_main` |
 
 ## 快速上手
 
