@@ -33,6 +33,22 @@ verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
+function testMissingOutputDoesNotCreateParentDirectories(testCase)
+support = test_rectangular_fpc_publish_support();
+workspaceRoot = tempname;
+outputFolder = fullfile(workspaceRoot, 'missing_parent', 'missing_output');
+cleanup = onCleanup(@() support.removeFixture(workspaceRoot));
+reader = @(folder) error('Test:ReaderMustNotRun', ...
+    'reader callback must not run for missing output: %s', folder);
+
+assertError(testCase, @() rectangular_fpc_read_committed( ...
+    outputFolder, reader), 'RectangularFPC:OutputNotFound');
+
+verifyFalse(testCase, isfolder(workspaceRoot));
+verifyFalse(testCase, isfolder([outputFolder '_publish.lock']));
+clear cleanup;
+end
+
 function testReaderRejectsTamperedManifest(testCase)
 support = test_rectangular_fpc_publish_support();
 paths = support.makeFixture();

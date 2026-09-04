@@ -161,6 +161,27 @@ verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
+function testUncommittedExistingTargetIsPreserved(testCase)
+support = test_rectangular_fpc_publish_support();
+paths = support.makeFixture();
+cleanup = onCleanup(@() support.removeFixture(paths.root));
+delete(fullfile(paths.output, 'reports', '08_file_manifest.csv'));
+sentinel = fullfile(paths.output, 'user_owned_sentinel.txt');
+support.writeMarker(sentinel);
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), ...
+    'RectangularFPC:AtomicRecoveryFailed');
+
+verifyTrue(testCase, isfile(sentinel));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyEmpty(testCase, dir(paths.backupPattern));
+verifyFalse(testCase, isfolder(paths.staging));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
 function testPublisherRejectsEqualStagingAndOutputWithoutCleanup(testCase)
 support = test_rectangular_fpc_publish_support();
 paths = support.makeFixture();
