@@ -265,12 +265,12 @@ rows(end+1) = requiredValidationChecksRow(cfg);
 
 supported = ismember(cfg.layerCount, [2, 4]);
 customRelaxed = strcmp(profile.ruleClassification, 'CUSTOM_RELAXED');
-if customRelaxed
-    applicability = 'CUSTOM_RULES';
-elseif supported
-    applicability = 'SUPPORTED';
-else
+if ~supported
     applicability = 'UNVERIFIED_LAYER_COUNT';
+elseif customRelaxed
+    applicability = 'CUSTOM_RULES';
+else
+    applicability = 'SUPPORTED';
 end
 failures = {rows(strcmp({rows.status}, 'FAIL')).message};
 warnings = {rows(strcmp({rows.status}, 'WARN')).message};

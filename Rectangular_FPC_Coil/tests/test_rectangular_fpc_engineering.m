@@ -661,17 +661,16 @@ verifyTrue(testCase, isfile(fullfile(legacyRoot, 'historical_marker.txt')));
 % target. Deriving the target immediately before invoking the entry point
 % keeps this test valid even when the earlier assertions cross a minute.
 for recoveryAttempt = 1:3
-    prospectiveTimestamp = char(datetime('now', 'Format', 'yyyyMMdd_HHmm'));
-    prospectivePath = fullfile(outputRoot, ...
-        ['atomic_contract_' prospectiveTimestamp]);
-    orphanBackup = [prospectivePath '_backup_interrupted_test'];
-    if isfolder(prospectivePath)
-        [moved, message] = movefile(prospectivePath, orphanBackup);
-        verifyTrue(testCase, moved, message);
-    else
-        mkdir(orphanBackup);
-        writeMarker(fullfile(orphanBackup, 'interrupted_marker.txt'));
-    end
+    seeded = rectangular_fpc_main(base);
+    prospectivePath = seeded.outputPath;
+    transactionToken = '11111111111111111111111111111111';
+    orphanBackup = sprintf('%s_backup_%s', ...
+        prospectivePath, transactionToken);
+    orphanMarker = [orphanBackup '.transaction'];
+    [moved, message] = movefile(prospectivePath, orphanBackup);
+    verifyTrue(testCase, moved, message);
+    writeRecoveryMarker( ...
+        orphanMarker, prospectivePath, transactionToken);
     staleLockFolder = [prospectivePath '_publish.lock'];
     mkdir(staleLockFolder);
     writeStaleLockOwner(staleLockFolder);
@@ -682,6 +681,9 @@ for recoveryAttempt = 1:3
     if isfolder(orphanBackup)
         rmdir(orphanBackup, 's');
     end
+    if isfile(orphanMarker)
+        delete(orphanMarker);
+    end
     if isfolder(staleLockFolder)
         rmdir(staleLockFolder, 's');
     end
@@ -689,6 +691,7 @@ end
 verifyEqual(testCase, recovered.outputPath, prospectivePath);
 verifyTrue(testCase, isfile(recovered.fileManifest));
 verifyFalse(testCase, isfolder(orphanBackup));
+verifyFalse(testCase, isfile(orphanMarker));
 verifyFalse(testCase, isfolder(staleLockFolder));
 
 % A concurrent publication lock must fail closed without disturbing the
@@ -880,8 +883,19 @@ fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
 cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'pid=2147483647\n');
 fprintf(fid, 'host=%s\n', localHostIdentity());
-fprintf(fid, 'token=interrupted_test\n');
+fprintf(fid, 'token=22222222222222222222222222222222\n');
 fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
+clear cleanup;
+end
+
+function writeRecoveryMarker(filename, outputFolder, token)
+fid = fopen(filename, 'w', 'n', 'UTF-8');
+cleanup = onCleanup(@() fclose(fid));
+target = char(java.io.File(outputFolder).getCanonicalPath());
+fprintf(fid, 'SchemaVersion: 1\n');
+fprintf(fid, 'Target: %s\n', target);
+fprintf(fid, 'TransactionId: %s\n', token);
+fprintf(fid, 'Payload: prior_committed_output\n');
 clear cleanup;
 end
 
