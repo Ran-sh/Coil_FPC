@@ -149,6 +149,20 @@ verifyTrue(testCase, isfolder(result.outputPath));
 verifyTrue(testCase, isfile(result.fileManifest));
 end
 
+function testFabricationNotesPreserveActionableTraceWidth(testCase)
+paths = makeFormalOutput(false, struct('traceWidth', 0.2004));
+cleanup = onCleanup(@() removeTree(paths.root));
+notes = fileread(fullfile(paths.result.outputPath, 'reports', ...
+    '07_fabrication_notes.txt'));
+summary = fileread(fullfile(paths.result.outputPath, 'reports', ...
+    '03_design_summary.txt'));
+verifyTrue(testCase, contains(notes, 'assign 0.2004 mm trace width.'));
+verifyTrue(testCase, contains(notes, ...
+    'Trace width / spacing: 0.2004 / 0.15 mm'));
+verifyTrue(testCase, contains(summary, ...
+    'Trace width / spacing: 0.2004 / 0.15 mm'));
+end
+
 function paths = makeFormalOutput(enablePreview, extraOverrides)
 if nargin < 2
     extraOverrides = struct();
