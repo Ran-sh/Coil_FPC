@@ -97,7 +97,8 @@ for row = 1:size(combos, 1)
         'boardLayerCount', combos(row, 1), ...
         'coilLayerCount', combos(row, 2), ...
         'designName', sprintf('terminal_sweep_%d_%d', combos(row, 1), combos(row, 2))));
-    entrySweep = netPathHeadingSweepDeg(r.terminalRouting.entryPath);
+    entryArc = r.terminalRouting.entryPath(end - 48:end, :);
+    entrySweep = circularArcSweepDeg(entryArc);
     verifyGreaterThan(testCase, entrySweep, 90.1, ...
         sprintf('%d/%d L1 entry sweep must be strictly >90.1 deg (got %.6f).', ...
         combos(row, 1), combos(row, 2), entrySweep));
@@ -106,7 +107,7 @@ for row = 1:size(combos, 1)
         combos(row, 1), combos(row, 2)));
 
     if combos(row, 2) > 1
-        outputSweep = netPathHeadingSweepDeg(r.terminalRouting.outputPath);
+        outputSweep = circularArcSweepDeg(r.terminalRouting.outputPath);
         verifyGreaterThan(testCase, outputSweep, 90.1, ...
             sprintf('%d/%d final-layer output sweep must be strictly >90.1 deg (got %.6f).', ...
             combos(row, 1), combos(row, 2), outputSweep));
@@ -191,6 +192,10 @@ for li = 1:numel(layerFiles)
         sprintf('%s must render the yellow board material as opaque.', layerFiles{li}));
     verifyFalse(testCase, contains(svg, 'fill="#ffcc1a" fill-opacity="0.45"'), ...
         sprintf('%s must not render translucent board material.', layerFiles{li}));
+    verifyEqual(testCase, numel(regexp(svg, 'data-board-role="slot-cutout"', 'match')), 4, ...
+        sprintf('%s must visually remove yellow board material below all four slots.', layerFiles{li}));
+    verifyEqual(testCase, numel(regexp(svg, 'data-board-role="slot-glass"', 'match')), 4, ...
+        sprintf('%s must overlay all four cutouts with transparent glass color.', layerFiles{li}));
     for k = 1:numel(result.vias)
         name = result.vias(k).name;
         verifyTrue(testCase, contains(svg, sprintf( ...
@@ -251,6 +256,15 @@ v2 = unitVector(path(end, :) - center);
 sweep = mod(rad2deg(atan2(v1(1) * v2(2) - v1(2) * v2(1), ...
     dot(v1, v2))), 360);
 verifyEqual(testCase, sweep, expectedSweepDeg, 'AbsTol', 1e-7);
+end
+
+function sweep = circularArcSweepDeg(path)
+center = threePointCircleCenter(path(1, :), ...
+    path(ceil(end / 2), :), path(end, :));
+v1 = unitVector(path(1, :) - center);
+v2 = unitVector(path(end, :) - center);
+sweep = mod(rad2deg(atan2(v1(1) * v2(2) - v1(2) * v2(1), ...
+    dot(v1, v2))), 360);
 end
 
 function center = threePointCircleCenter(a, b, c)

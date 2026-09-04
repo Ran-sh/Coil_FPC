@@ -26,6 +26,8 @@ result = circular_fpc_main(struct( ...
 L2 多绕 0.25 圈、L4 少绕 0.25 圈，四层平均匝数等于该值。
 
 `terminalLeadSpacing` 和 `terminalLeadLength` 分别控制平行端子引线的中心距和直线长度；
+自动端子使用由原始阿基米德螺旋端点切线确定的单一相切圆弧，不改变线圈点，
+也不会通过第二圆弧或微折线补端点。
 `connectionAngleDeg` 控制整体连接方向。手动模式可使用 `manualPadAXY`、
 `manualPadBXY` 和 `manualSeriesViaXY`。
 

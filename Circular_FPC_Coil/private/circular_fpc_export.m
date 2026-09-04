@@ -197,10 +197,12 @@ fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.
     -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy));
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     else
-        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     end
 end
@@ -252,10 +254,12 @@ fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.
     -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy));
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     else
-        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     end
 end
@@ -341,10 +345,12 @@ fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.
     xMin, svgYMin, xMax - xMin, svgYMax - svgYMin);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy));
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     else
-        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="0.45" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
+        fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
     end
 end
@@ -424,7 +430,12 @@ fprintf(fid, 'coilInnerDiameter: %.6f mm\n', eff.coilInnerDiameter);
 fprintf(fid, 'centerPlatformWidth: %.6f mm\n', eff.centerPlatformWidth);
 fprintf(fid, 'centerPlatformHeight: %.6f mm\n', eff.centerPlatformHeight);
 fprintf(fid, 'bridgeTargetWidth: %.6f mm\n', eff.bridgeTargetWidth);
+fprintf(fid, 'bridgeMinimumWidth: %.6f mm\n', result.layoutRegions.bridgeWidth);
 fprintf(fid, 'actualBridgeWidth: %.6f mm\n', eff.actualBridgeWidth);
+fprintf(fid, 'bridgeGoverningConstraint: %s\n', result.layoutRegions.bridgeGoverningConstraint);
+fprintf(fid, 'routingEnvelopeWidth: %.6f mm\n', result.layoutRegions.routingEnvelopeWidth);
+fprintf(fid, 'viaEnvelopeWidth: %.6f mm\n', result.layoutRegions.viaEnvelopeWidth);
+fprintf(fid, 'terminalEnvelopeWidth: %.6f mm\n', result.layoutRegions.terminalEnvelopeWidth);
 fprintf(fid, 'turnsPerCoilLayer: %d\n', eff.turnsPerCoilLayer);
 fprintf(fid, 'coilPitch: %.6f mm\n', eff.coilPitch);
 fprintf(fid, 'traceWidth: %.6f mm\n', cfg.traceWidth);
@@ -448,6 +459,15 @@ fprintf(fid, 'maxConnectionTurnDeg: %.6f\n', result.validation.maxConnectionTurn
 fprintf(fid, 'minOuterViaContactSweepDeg: %.6f\n', result.validation.minOuterViaContactSweepDeg);
 fprintf(fid, 'maxOuterViaContactSweepDeg: %.6f\n', result.validation.maxOuterViaContactSweepDeg);
 fprintf(fid, 'connectionAngleDeg: %.6f\n', cfg.connectionAngleDeg);
+if isfield(result, 'terminalRouting')
+    fprintf(fid, 'terminalRoutingMode: %s\n', result.terminalRouting.mode);
+    fprintf(fid, 'terminalEntrySweepDeg: %.6f\n', result.terminalRouting.entrySweepDeg);
+    fprintf(fid, 'terminalOutputSweepDeg: %.6f\n', result.terminalRouting.outputSweepDeg);
+else
+    fprintf(fid, 'terminalRoutingMode: manual\n');
+    fprintf(fid, 'terminalEntrySweepDeg: NaN\n');
+    fprintf(fid, 'terminalOutputSweepDeg: NaN\n');
+end
 fprintf(fid, 'terminalLeadSpacing: %.6f\n', cfg.terminalLeadSpacing);
 fprintf(fid, 'terminalLeadLength: %.6f\n', cfg.terminalLeadLength);
 fprintf(fid, 'padPairSpacing: %.6f\n', cfg.padPairSpacing);

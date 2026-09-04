@@ -2,10 +2,10 @@
 
 MATLAB 多层 FPC 螺旋线圈生成器：一键生成毫米制 1:1 DXF、SVG 预览和制造检查报告。
 
-| 模块 | 支持层数 | 主入口 |
-| --- | --- | --- |
-| [圆形 Circular_FPC_Coil](Circular_FPC_Coil/README.md) | 2 / 4 层板 | `circular_fpc_main` |
-| [圆角矩形 Rectangular_FPC_Coil](Rectangular_FPC_Coil/README.md) | 2 / 4 / 6 / 8 层板 | `rectangular_fpc_main` |
+| 模块 | 可生成层数 | 当前 JLC 制造资格 | 主入口 |
+| --- | --- | --- | --- |
+| [圆形 Circular_FPC_Coil](Circular_FPC_Coil/README.md) | 2 / 4 层板 | 2 / 4 层 | `circular_fpc_main` |
+| [圆角矩形 Rectangular_FPC_Coil](Rectangular_FPC_Coil/README.md) | 2 / 4 / 6 / 8 层板 | 2 / 4 层；6 / 8 层标记为 `UNVERIFIED_LAYER_COUNT` | `rectangular_fpc_main` |
 
 ## 快速上手
 
@@ -37,9 +37,10 @@ analysis = rectangular_fpc_main(struct('analysisOnly', true));  % 只分析、�
 ## 输出
 
 - 圆形：`Circular_FPC_Coil/circular_fpc_output/Circular_FPC_<板层>L_<线圈层>C_时间戳/`
-- 矩形：`Rectangular_FPC_Coil/rectangular_fpc_output/<designName>_时间戳/`
+- 矩形：`Rectangular_FPC_Coil/rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/`
 
-均包含板框与逐层 DXF、SVG 预览、端子坐标、验证报告和文件清单。
+均包含板框与逐层 DXF、端子坐标、验证报告和文件清单；`enablePreview=true`
+时额外生成 SVG 预览。
 
 ## 验证
 

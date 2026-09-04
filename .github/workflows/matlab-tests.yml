@@ -4,59 +4,74 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  circular-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: matlab-actions/setup-matlab@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026a
       - name: Run circular FPC verification
-        uses: matlab-actions/run-command@v2
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         with:
-          command: cd("Circular_FPC_Coil"); addpath("tests"); results = run_all_verification(); assert(~isempty(results), "Circular FPC discovered zero tests")
-      - name: Run rectangular FPC verification
-        uses: matlab-actions/run-command@v2
-        with:
-          command: "cd('Rectangular_FPC_Coil'); addpath('tests'); results = run_all_verification(); assert(~isempty(results), 'Rectangular FPC discovered zero tests')"
-  circular-artifact:
-    if: always()
-    needs: test
+          command: "cd('Circular_FPC_Coil'); addpath('tests'); results = run_all_verification(); assert(~isempty(results), 'Circular FPC discovered zero tests'); fprintf('CIRCULAR_TEST_COUNT=%d FAILED=%d INCOMPLETE=%d\\n', numel(results), sum([results.Failed]), sum([results.Incomplete]))"
+
+  rectangular-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: matlab-actions/setup-matlab@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
+        with:
+          release: R2026a
+      - name: Run rectangular FPC verification
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
+        with:
+          command: "cd('Rectangular_FPC_Coil'); addpath('tests'); results = run_all_verification(); assert(~isempty(results), 'Rectangular FPC discovered zero tests'); fprintf('RECTANGULAR_TEST_COUNT=%d FAILED=%d INCOMPLETE=%d\\n', numel(results), sum([results.Failed]), sum([results.Incomplete]))"
+
+  circular-artifact:
+    if: ${{ needs.circular-test.result == 'success' }}
+    needs: circular-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026a
       - name: Generate circular canonical artifacts
-        uses: matlab-actions/run-command@v2
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         with:
-          command: "cd('Circular_FPC_Coil'); result = circular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed)"
+          command: "cd('Circular_FPC_Coil'); result = circular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed); assert(isfile(fullfile(result.outputPath, 'generation_status.txt'))); assert(isfile(fullfile(result.outputPath, 'reports', '08_file_manifest.csv'))); assert(~isempty(dir(fullfile(result.outputPath, 'previews', '*.svg')))); assert(~isempty(dir(fullfile(result.outputPath, 'dxf', '**', '*.dxf')))); assert(isfolder(fullfile(result.outputPath, 'reports')))"
       - name: Upload circular canonical artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: circular-fpc-canonical
+          name: circular-fpc-canonical-${{ github.sha }}
           path: Circular_FPC_Coil/ci-artifacts/canonical
           if-no-files-found: error
+
   rectangular-artifact:
-    if: always()
-    needs: test
+    if: ${{ needs.rectangular-test.result == 'success' }}
+    needs: rectangular-test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: matlab-actions/setup-matlab@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d # v3.1.0
         with:
           release: R2026a
-      - name: Generate rectangular canonical artifacts
-        uses: matlab-actions/run-command@v2
+      - name: Generate and stage rectangular canonical artifacts
+        uses: matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5 # v3.3.0
         with:
-          command: "cd('Rectangular_FPC_Coil'); result = rectangular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed)"
+          command: "cd('Rectangular_FPC_Coil'); result = rectangular_fpc_main(struct('outputRoot', fullfile(pwd, 'ci-artifacts'), 'designName', 'canonical', 'enableFigure', false, 'enablePreview', true)); assert(result.validation.passed); assert(result.manufacturing.passed); stagePath = fullfile(pwd, 'ci-upload', 'rectangular'); mkdir(fileparts(stagePath)); copyOk = rectangular_fpc_read_committed(result.outputPath, @(sourcePath) copyfile(sourcePath, stagePath)); assert(copyOk); assert(isfile(fullfile(stagePath, 'generation_status.txt'))); assert(isfile(fullfile(stagePath, 'reports', '08_file_manifest.csv'))); assert(~isempty(dir(fullfile(stagePath, 'previews', '*.svg')))); assert(~isempty(dir(fullfile(stagePath, 'dxf', '**', '*.dxf')))); assert(isfolder(fullfile(stagePath, 'reports')))"
       - name: Upload rectangular canonical artifacts
-        uses: actions/upload-artifact@v4
-        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rectangular-fpc-canonical
-          path: Rectangular_FPC_Coil/ci-artifacts/canonical_*
+          name: rectangular-fpc-canonical-${{ github.sha }}
+          path: Rectangular_FPC_Coil/ci-upload/rectangular
           if-no-files-found: error

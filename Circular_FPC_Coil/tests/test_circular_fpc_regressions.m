@@ -27,7 +27,6 @@ verifyEqual(testCase, cfg.pitchMargin, 0.005, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.edgeClearance, 0.30, 'AbsTol', 1e-9); % = DRC 铜-板框
 verifyEqual(testCase, cfg.boardOutlineLineWidth, 0.10, 'AbsTol', 1e-9); % 板框轮廓线宽
 verifyEqual(testCase, cfg.connectionAngleDeg, 135.0, 'AbsTol', 1e-9);
-verifyEqual(testCase, cfg.terminalBendSweepDeg, 94.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.viaPadDiameter, 0.55, 'AbsTol', 1e-9); % 过孔默认外径（JLC 常规推荐）
 verifyEqual(testCase, cfg.viaDrillDiameter, 0.31, 'AbsTol', 1e-9); % 过孔默认内径
 verifyEqual(testCase, cfg.viaCoilSpacing, 0.152, 'AbsTol', 1e-9); % 过孔-线圈净距 = DRC 6mil
@@ -76,10 +75,6 @@ verifyEqual(testCase, cfgNeg.connectionAngleDeg, -45, 'AbsTol', 1e-9);
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', NaN)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', Inf)), 'CircularFPC:InvalidConfig');
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', [0 1])), 'CircularFPC:InvalidConfig');
-verifyError(testCase, @() circular_fpc_default_config(struct('terminalBendSweepDeg', 90.1)), ...
-    'CircularFPC:InvalidConfig');
-verifyError(testCase, @() circular_fpc_default_config(struct('terminalBendSweepDeg', 151)), ...
-    'CircularFPC:InvalidConfig');
 end
 
 function testRejectsUnsupportedLayerMatrix(testCase)
@@ -1241,14 +1236,22 @@ repoRoot = fileparts(projectRoot);
 workflowPath = fullfile(repoRoot, '.github', 'workflows', 'matlab-tests.yml');
 verifyTrue(testCase, isfile(workflowPath));
 workflow = fileread(workflowPath);
-verifyTrue(testCase, contains(workflow, 'matlab-actions/run-command@v2'));
+checkoutRef = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1';
+uploadRef = 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a';
+setupRef = 'matlab-actions/setup-matlab@f9e43010f1ae678f7cfa0542fe2a4f60f7d1ad8d';
+runRef = 'matlab-actions/run-command@bfa857648f4895aa98a446fe41c85e0788421ed5';
+verifyEqual(testCase, numel(strfind(workflow, checkoutRef)), 4);
+verifyEqual(testCase, numel(strfind(workflow, setupRef)), 4);
+verifyEqual(testCase, numel(strfind(workflow, runRef)), 4);
+verifyEqual(testCase, numel(strfind(workflow, uploadRef)), 2);
+verifyFalse(testCase, ~isempty(regexp(workflow, ...
+    '(actions|matlab-actions)/[A-Za-z0-9_-]+@v[0-9]', 'once')), ...
+    'Third-party Actions must be pinned to reviewed Node 24 commit SHAs.');
 verifyTrue(testCase, contains(workflow, 'Circular_FPC_Coil'));
 verifyTrue(testCase, contains(workflow, 'Rectangular_FPC_Coil'));
 verifyGreaterThanOrEqual(testCase, ...
     numel(strfind(workflow, 'run_all_verification')), 2);
 verifyFalse(testCase, contains(workflow, 'select-by-folder: .'));
-verifyGreaterThanOrEqual(testCase, ...
-    numel(strfind(workflow, 'actions/upload-artifact@v4')), 2);
 verifyTrue(testCase, contains(workflow, 'ci-artifacts'));
 verifyTrue(testCase, contains(workflow, 'canonical'));
 verifyTrue(testCase, contains(workflow, 'enablePreview'));

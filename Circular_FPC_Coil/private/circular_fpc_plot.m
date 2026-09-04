@@ -92,11 +92,13 @@ for j = 1:numel(result.boardLoops)
     loop = result.boardLoops(j);
     xy = loop.xy;
     if loop.isHole
+        patch(xy(:, 1), xy(:, 2), [1 1 1], ...
+            'FaceAlpha', 1.0, 'EdgeColor', 'none');
         patch(xy(:, 1), xy(:, 2), slotGlassColor, ...
             'FaceAlpha', 0.32, 'EdgeColor', 'k', 'LineWidth', 1.0);
     else
         patch(xy(:, 1), xy(:, 2), boardYellow, ...
-            'FaceAlpha', 0.45, 'EdgeColor', 'none');
+            'FaceAlpha', 1.0, 'EdgeColor', 'none');
         plot(xy(:, 1), xy(:, 2), 'Color', boardPurple, 'LineWidth', 1.3);
     end
 end

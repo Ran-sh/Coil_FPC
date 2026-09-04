@@ -54,9 +54,12 @@ polys = [annulus, platP]; % 中央平台：焊盘与进出线所在的连接区
 % 这里不再使用独立的解析桥宽上限；桥宽上限由下面的最终布尔结果决定。
 terminalBoundaryMargin = max([cfg.edgeClearance, cfg.terminalClearance, cfg.traceSpacing]) + 0.03;
 terminalEnvelopeWidth = cfg.terminalLeadSpacing + cfg.padDiameter + 2 * terminalBoundaryMargin;
-bridgeWidth = max([eff.bridgeTargetWidth + 2 * (cfg.edgeClearance + cfg.traceWidth / 2 + cfg.pitchMargin), ...
-    cfg.viaPadDiameter + 2 * cfg.edgeClearance, ...
-    terminalEnvelopeWidth]);
+routingEnvelopeWidth = eff.bridgeTargetWidth + ...
+    2 * (cfg.edgeClearance + cfg.traceWidth / 2 + cfg.pitchMargin);
+viaEnvelopeWidth = cfg.viaPadDiameter + 2 * cfg.edgeClearance;
+constraintWidths = [routingEnvelopeWidth, viaEnvelopeWidth, terminalEnvelopeWidth];
+constraintNames = {'routingEnvelope', 'viaEnvelope', 'terminalEnvelope'};
+[bridgeWidth, governingIndex] = max(constraintWidths);
 anglesDeg = mod(cfg.connectionAngleDeg + [-90 0 90 180], 360);
 bridgeWidths = repmat(bridgeWidth, 1, 4);
 for k = 1:4
@@ -103,10 +106,9 @@ boardLoops(1).orientation = signedArea(outerXY);
 for j = 1:numel(holeIdx)
     h = holeIdx(ord(j));
     hxy = bnd{h};
-    % 自动识别槽边界（圆环弧 × 平台边 × 桥侧）的尖角，并用 0.3 mm
-    % 相切圆弧轻微圆角化；中央平台本身仍保持正向矩形。
-    hxy = filletHoleCorners(hxy, 0.3, ...
-        cfg.minBoardInteriorAngleDeg + cfg.angleToleranceDeg, 10);
+    % 自动识别槽边界（圆环弧 × 平台边 × 桥侧）的离散硬折角，并用
+    % 最大 0.3 mm 的相切圆弧轻微圆角化；中央平台基准仍是正向矩形。
+    hxy = filletHoleCorners(hxy, 0.3, 170, 20);
     boardLoops(j + 1).name = sprintf('hole_%d', j);
     boardLoops(j + 1).isHole = true;
     boardLoops(j + 1).xy = hxy;
@@ -134,6 +136,9 @@ layoutRegions.returnSpan = layoutRegions.entrySpan;
 layoutRegions.bridgeWidths = bridgeWidths;
 layoutRegions.bridgeAnglesDeg = anglesDeg;
 layoutRegions.terminalEnvelopeWidth = terminalEnvelopeWidth;
+layoutRegions.routingEnvelopeWidth = routingEnvelopeWidth;
+layoutRegions.viaEnvelopeWidth = viaEnvelopeWidth;
+layoutRegions.bridgeGoverningConstraint = constraintNames{governingIndex};
 layoutRegions.holeLoops = {boardLoops(2:end).xy};
 layoutRegions.outerRadius = outerR;
 layoutRegions.rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2; % 线圈最内圈中心半径
@@ -175,13 +180,13 @@ ps = polyshape(xy);
 end
 
 function xy = filletHoleCorners(xy, maxR, angleLimitDeg, nArc)
-% 圆角化闭合折线（孔槽边界）：把内角 <= angleLimitDeg 的尖角替换为与两边相切的
-% 圆弧（圆角），保证板框不存在 <= 90° 内角。xy 为首尾重复的闭合折线。
+% 圆角化闭合孔槽边界：把明显非共线且内角 <= angleLimitDeg 的折角
+% 替换为与两边相切的圆弧。圆弧半径为 maxR（受相邻边长限制），沿边
+% 的切除长度为 R/tan(interior/2)，不能把半径误当成切除长度。
 n = size(xy, 1) - 1;
 if n < 3
     return;
 end
-ccw = signedArea(xy) > 0;
 dirs = zeros(n, 2);
 for i = 1:n
     dirs(i, :) = xy(mod(i, n) + 1, :) - xy(i, :);
@@ -199,44 +204,43 @@ for i = 1:n
     end
     u1 = u1 / len1;
     u2 = u2 / len2;
-    dev = acosd(max(-1, min(1, dot(u1, u2))));
+    turn = atan2(u1(1) * u2(2) - u1(2) * u2(1), dot(u1, u2));
+    dev = abs(rad2deg(turn));
     interior = 180 - dev;
-    if interior > angleLimitDeg + 1e-9
+    if interior > angleLimitDeg + 1e-9 || dev < 1e-6
         out = [out; cur]; %#ok<AGROW>
         continue;
     end
-    R = min([maxR, len1 / 2, len2 / 2]);
+    tanHalfInterior = tan(deg2rad(interior / 2));
+    R = min(maxR, 0.45 * min(len1, len2) * tanHalfInterior);
     if R <= 1e-3
         out = [out; cur]; %#ok<AGROW>
         continue;
     end
-    % 内法向（指向环内侧）：CCW 环内侧在边左侧，CW 环在右侧
-    if ccw
+    trim = R / tanHalfInterior;
+    % 圆心位于实际转弯侧：左转用左法向，右转用右法向。孔槽边界
+    % 同时包含凸/凹方向变化，不能只按整个闭环方向筛掉其中一类。
+    if turn > 0
         n1 = [-u1(2), u1(1)];
         n2 = [-u2(2), u2(1)];
     else
         n1 = [u1(2), -u1(1)];
         n2 = [u2(2), -u2(1)];
     end
-    t1 = cur - R * u1; % 切点（入边）
-    t2 = cur + R * u2; % 切点（出边）
-    % 圆心 = 两条偏移线交点：t1 + R*n1 + s*u1 = t2 + R*n2 + t*u2
-    M = [u1(1), -u2(1); u1(2), -u2(2)];
-    rhs = (t2 - t1 + R * (n2 - n1)).';
-    st = M \ rhs;
-    C = t1 + R * n1 + st(1) * u1;
-    % 圆弧从 t1 到 t2（短弧）
+    t1 = cur - trim * u1; % 切点（入边）
+    t2 = cur + trim * u2; % 切点（出边）
+    c1 = t1 + R * n1;
+    c2 = t2 + R * n2;
+    C = (c1 + c2) / 2;
+    if norm(c1 - c2) > max(1e-8, R * 1e-6)
+        error('CircularFPC:GeometryInfeasible', ...
+            'Slot fillet tangent construction is inconsistent by %.9g mm.', norm(c1 - c2));
+    end
     a1 = atan2(t1(2) - C(2), t1(1) - C(1));
-    a2 = atan2(t2(2) - C(2), t2(1) - C(1));
-    dAng = a2 - a1;
-    while dAng > pi
-        dAng = dAng - 2 * pi;
-    end
-    while dAng < -pi
-        dAng = dAng + 2 * pi;
-    end
-    angs = a1 + dAng * (0:nArc).' / nArc;
+    angs = a1 + turn * (0:nArc).' / nArc;
     arc = C + R * [cos(angs), sin(angs)];
+    arc(1, :) = t1;
+    arc(end, :) = t2;
     out = [out; arc]; %#ok<AGROW>  % 圆弧包含 t1..t2，替代尖角顶点
 end
 out = [out; out(1, :)]; % 闭合

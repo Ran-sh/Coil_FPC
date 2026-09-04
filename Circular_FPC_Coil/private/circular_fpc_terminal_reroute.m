@@ -5,11 +5,10 @@ function result = circular_fpc_terminal_reroute(cfg, result)
 % New deterministic terminal contract:
 %   d = cfg.terminalLeadSpacing
 %   L = cfg.terminalLeadLength
-%   R = d/2
 %
 % In the local connection frame (u = radial axis, t = transverse axis):
-%   PAD_A -- straight L --> one 90-deg bend --> L1 inner endpoint
-%   last active layer --> one 90-deg bend --> VOUT -- straight L --> PAD_B
+%   PAD_A -- straight L --> one >90-deg tangent arc --> L1 inner endpoint
+%   last active layer --> one >90-deg tangent arc --> VOUT -- straight L --> PAD_B
 %
 % PAD_A/PAD_B are therefore fixed by d and L.  Manual terminal placement is
 % intentionally left unchanged.
@@ -22,7 +21,6 @@ u = [cosd(cfg.connectionAngleDeg), sind(cfg.connectionAngleDeg)];
 t = [-sind(cfg.connectionAngleDeg), cosd(cfg.connectionAngleDeg)];
 d = cfg.terminalLeadSpacing;
 L = cfg.terminalLeadLength;
-R = d / 2;
 
 minPadPitch = cfg.padDiameter + cfg.terminalClearance;
 if d < minPadPitch - 1e-9
@@ -41,9 +39,11 @@ active = result.activeCoilLayers;
 firstLi = active(1);
 lastLi = active(end);
 coil1 = result.layerPaths(firstLi).coilXY;
-if isempty(coil1)
+if size(coil1, 1) < 3
     error('CircularFPC:TerminalPlacementInvalid', 'L1 active coil geometry is missing.');
 end
+oldSIn = coil1(1, :);
+entryPhaseOffsetDeg = 0;
 sIn = coil1(1, :);
 
 oldPadA = result.pads(strcmp({result.pads.name}, 'PAD_A')).xy;
@@ -51,10 +51,12 @@ oldPadB = result.pads(strcmp({result.pads.name}, 'PAD_B')).xy;
 oldVout = result.vias(strcmp({result.vias.name}, 'VOUT')).xy;
 
 % Input lane: Q_A is the tangent point at the end of the straight section.
-cA = sIn - R * u;
-qA = cA - R * t;
+% Preserve the Archimedean coil exactly. Its sampled endpoint tangent and
+% the radial lead direction uniquely define one tangent circular arc.
+entryTangent = unitVector(coil1(2, :) - coil1(1, :), 'L1 entry tangent');
+[entryArc, qA, entryBendRadius, entrySweepDeg] = tangentArcEndingAtLane( ...
+    sIn, u, entryTangent, t, -d / 2, 49);
 padA = qA - L * u;
-entryArc = quarterArc(cA, R, u, t, -pi/2, 0, 49);
 entryPath = [sampleSegment(padA, qA, 0.05); entryArc(2:end, :)];
 entryPath(1, :) = padA;
 entryPath(end, :) = sIn;
@@ -63,28 +65,34 @@ entryPath(end, :) = sIn;
 % the final active coil ends at the same inner phase as L1.  4/4 previously
 % appended a Bezier stub to VOUT inside coilXY; trim that stub first.
 outputPath = [];
+outputBendRadius = NaN;
+outputSweepDeg = NaN;
+outputPhaseOffsetDeg = 0;
 if numel(active) > 1
     lastCoil = result.layerPaths(lastLi).coilXY;
+    oldLastEnd = lastCoil(end, :);
     rStart = result.effectiveDimensions.coilInnerDiameter/2 + cfg.traceWidth/2;
     lastCoil = trimInnerStub(lastCoil, rStart);
     result.layerPaths(lastLi).coilXY = lastCoil;
     sOut = lastCoil(end, :);
-    cB = sOut - R * u;
-    qB = cB + R * t;
-    voutXY = qB;
-    outputPath = quarterArc(cB, R, u, t, 0, pi/2, 49);
-    outputPath(1, :) = sOut;
-    outputPath(end, :) = voutXY;
+    outputTangent = unitVector(lastCoil(end, :) - lastCoil(end - 1, :), ...
+        'last active layer output tangent');
+    [outputPath, voutXY, outputBendRadius, outputSweepDeg] = ...
+        tangentArcStartingAtLane(sOut, outputTangent, -u, t, d / 2, 49);
 else
     % Single-coil variants return on the opposite physical layer.  Keep the
     % same PAD geometry and place VOUT on the positive lane; the return path
     % is re-terminated to this point below.
-    cB = sIn - R * u;
-    qB = cB + R * t;
-    voutXY = qB;
+    voutXY = dot(qA, u) * u + (d / 2) * t;
 end
 padB = voutXY - L * u;
 exitPath = sampleSegment(voutXY, padB, 0.05);
+terminalSweepFloor = 90 + cfg.angleToleranceDeg;
+if entrySweepDeg <= terminalSweepFloor || ...
+        (numel(active) > 1 && outputSweepDeg <= terminalSweepFloor)
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Single terminal bends must be strictly greater than %.6f deg.', terminalSweepFloor);
+end
 
 % Both pad disks must remain wholly on the positive entry side of the coil.
 % Otherwise increasing L silently pulls the pads through the centre and
@@ -108,7 +116,7 @@ result.vias(idxV).xy = voutXY;
 
 % Replace L1 entry and exit paths by endpoint identity.
 paths1 = result.layerPaths(1).connectionPaths;
-[paths1, foundEntry] = replacePath(paths1, oldPadA, sIn, entryPath);
+[paths1, foundEntry] = replacePath(paths1, oldPadA, oldSIn, entryPath);
 [paths1, foundExit] = replacePath(paths1, oldVout, oldPadB, exitPath);
 if ~foundEntry
     paths1{end+1} = entryPath;
@@ -120,7 +128,6 @@ result.layerPaths(1).connectionPaths = paths1;
 
 if numel(active) > 1
     pathsLast = result.layerPaths(lastLi).connectionPaths;
-    oldLastEnd = result.layerPaths(lastLi).coilXY(end, :);
     [pathsLast, foundOut] = replacePath(pathsLast, oldLastEnd, oldVout, outputPath);
     if ~foundOut
         % 4/4 old topology embedded the VOUT stub in coilXY, so after trim
@@ -155,6 +162,10 @@ for k = 1:numel(route)
         case 'TRACE_L1_EXIT'
             route(k).startXY = voutXY; route(k).endXY = padB;
     end
+end
+idxFirstCoil = find(strcmp({route.name}, sprintf('COIL_L%d', firstLi)), 1);
+if ~isempty(idxFirstCoil)
+    route(idxFirstCoil).startXY = sIn;
 end
 
 if numel(active) > 1
@@ -225,7 +236,13 @@ result.terminalRouting = struct( ...
     'mode', 'single_bend_parallel_leads', ...
     'leadSpacingMm', d, ...
     'leadLengthMm', L, ...
-    'bendRadiusMm', R, ...
+    'bendRadiusMm', entryBendRadius, ... % compatibility alias for entry radius
+    'entryBendRadiusMm', entryBendRadius, ...
+    'outputBendRadiusMm', outputBendRadius, ...
+    'entrySweepDeg', entrySweepDeg, ...
+    'outputSweepDeg', outputSweepDeg, ...
+    'entryPhaseOffsetDeg', entryPhaseOffsetDeg, ...
+    'outputPhaseOffsetDeg', outputPhaseOffsetDeg, ...
     'padAXY', padA, ...
     'padBXY', padB, ...
     'voutXY', voutXY, ...
@@ -275,9 +292,79 @@ result.boardLoops = boardLoops;
 result.layoutRegions = layoutRegions;
 end
 
-function xy = quarterArc(C, R, u, t, a0, a1, n)
-a = linspace(a0, a1, n).';
-xy = C + R * (cos(a) * u + sin(a) * t);
+function [arc, startPoint, radius, sweepDeg] = tangentArcEndingAtLane( ...
+        endPoint, startTangent, endTangent, laneNormal, laneValue, n)
+startTangent = unitVector(startTangent, 'entry arc start tangent');
+endTangent = unitVector(endTangent, 'entry arc end tangent');
+sweepDeg = positiveTurnDeg(startTangent, endTangent);
+[displacement, startNormal] = leftTurnDisplacement(startTangent, endTangent);
+denom = dot(displacement, laneNormal);
+radius = (dot(endPoint, laneNormal) - laneValue) / denom;
+if ~isfinite(radius) || radius <= 0 || sweepDeg <= 90
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Entry tangent arc is infeasible (R=%.6f, sweep=%.6f deg).', radius, sweepDeg);
+end
+startPoint = endPoint - radius * displacement;
+center = startPoint + radius * startNormal;
+arc = sampleLeftTurnArc(startPoint, center, sweepDeg, n);
+arc(1, :) = startPoint;
+arc(end, :) = endPoint;
+end
+
+function [arc, endPoint, radius, sweepDeg] = tangentArcStartingAtLane( ...
+        startPoint, startTangent, endTangent, laneNormal, laneValue, n)
+startTangent = unitVector(startTangent, 'output arc start tangent');
+endTangent = unitVector(endTangent, 'output arc end tangent');
+sweepDeg = positiveTurnDeg(startTangent, endTangent);
+[displacement, startNormal] = leftTurnDisplacement(startTangent, endTangent);
+denom = dot(displacement, laneNormal);
+radius = (laneValue - dot(startPoint, laneNormal)) / denom;
+if ~isfinite(radius) || radius <= 0 || sweepDeg <= 90
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Output tangent arc is infeasible (R=%.6f, sweep=%.6f deg).', radius, sweepDeg);
+end
+endPoint = startPoint + radius * displacement;
+center = startPoint + radius * startNormal;
+arc = sampleLeftTurnArc(startPoint, center, sweepDeg, n);
+arc(1, :) = startPoint;
+arc(end, :) = endPoint;
+end
+
+function [displacement, startNormal] = leftTurnDisplacement(startTangent, endTangent)
+startNormal = [-startTangent(2), startTangent(1)];
+endNormal = [-endTangent(2), endTangent(1)];
+displacement = startNormal - endNormal;
+end
+
+function arc = sampleLeftTurnArc(startPoint, center, sweepDeg, n)
+v0 = startPoint - center;
+angles = deg2rad(sweepDeg) * (0:n - 1).' / (n - 1);
+c = cos(angles);
+s = sin(angles);
+rotated = [c * v0(1) - s * v0(2), s * v0(1) + c * v0(2)];
+arc = center + rotated;
+end
+
+function sweepDeg = positiveTurnDeg(a, b)
+a = unitVector(a, 'turn start tangent');
+b = unitVector(b, 'turn end tangent');
+turn = atan2(a(1) * b(2) - a(2) * b(1), dot(a, b));
+if turn <= 0
+    turn = turn + 2 * pi;
+end
+sweepDeg = rad2deg(turn);
+if sweepDeg >= 180
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Single terminal bend would require %.6f deg; expected a minor left-turn arc.', sweepDeg);
+end
+end
+
+function v = unitVector(v, label)
+n = norm(v);
+if ~isfinite(n) || n <= 1e-12
+    error('CircularFPC:TerminalPlacementInvalid', '%s is degenerate.', label);
+end
+v = v / n;
 end
 
 function pts = sampleSegment(p0, p1, spacing)
