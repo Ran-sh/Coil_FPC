@@ -197,6 +197,87 @@ verifyEqual(testCase, failed.manufacturing.status, 'FAIL');
 verifyNotEmpty(testCase, failed.manufacturing.failures);
 end
 
+function testOfficialManufacturingRuleConstants(testCase)
+% The public manufacturing report must preserve the exact audited JLC FPC
+% constants instead of silently rounding or replacing them with estimates.
+standard = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'layerCount', 4, 'turnsPerLayer', 1, ...
+    'manufacturingTier', 'standard', ...
+    'enablePreview', false, 'enableFigure', false));
+rules = standard.manufacturing.rules;
+
+verifyEqual(testCase, rules.minTraceWidthMm, 0.102);
+verifyEqual(testCase, rules.minTraceSpacingMm, 0.102);
+verifyEqual(testCase, rules.minViaDrillMm, 0.30);
+verifyEqual(testCase, rules.minViaPadMm, 0.55);
+verifyEqual(testCase, rules.minViaPadDrillDifferenceMm, 0.20);
+verifyEqual(testCase, rules.recommendedViaPadDrillDifferenceMm, 0.25);
+verifyEqual(testCase, rules.minPadToTraceMm, 0.20);
+verifyEqual(testCase, standard.manufacturing.requestedProfile, ...
+    'jlc_fpc_1oz');
+verifyEqual(testCase, standard.manufacturing.profile, 'jlc_fpc_1oz');
+verifyEqual(testCase, standard.manufacturing.baseProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, standard.manufacturing.ruleClassification, 'OFFICIAL');
+verifyEqual(testCase, standard.manufacturing.baseRules, rules);
+verifyEqual(testCase, standard.manufacturing.ruleOverrides, struct());
+
+twoLayerExtreme = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'layerCount', 2, 'turnsPerLayer', 1, ...
+    'manufacturingTier', 'extreme', ...
+    'enablePreview', false, 'enableFigure', false));
+verifyEqual(testCase, twoLayerExtreme.manufacturing.rules.minViaDrillMm, 0.10);
+verifyEqual(testCase, twoLayerExtreme.manufacturing.rules.minViaPadMm, 0.30);
+
+fourLayerExtreme = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'layerCount', 4, 'turnsPerLayer', 1, ...
+    'viaDrillDiameter', 0.15, 'viaPadDiameter', 0.35, ...
+    'manufacturingTier', 'extreme', ...
+    'enablePreview', false, 'enableFigure', false));
+verifyEqual(testCase, fourLayerExtreme.manufacturing.rules.minViaDrillMm, 0.15);
+verifyEqual(testCase, fourLayerExtreme.manufacturing.rules.minViaPadMm, 0.35);
+end
+
+function testRelaxedRuleOverrideIsCustomAndUnverified(testCase)
+override = struct('minTraceWidthMm', 0.10);
+result = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'layerCount', 4, 'turnsPerLayer', 1, ...
+    'manufacturingRuleOverrides', override, ...
+    'enablePreview', false, 'enableFigure', false));
+report = result.manufacturing;
+
+verifyEqual(testCase, report.requestedProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, report.profile, 'custom');
+verifyEqual(testCase, report.baseProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, report.ruleClassification, 'CUSTOM_RELAXED');
+verifyEqual(testCase, report.applicability, 'CUSTOM_RULES');
+verifyEqual(testCase, report.baseRules.minTraceWidthMm, 0.102);
+verifyEqual(testCase, report.rules.minTraceWidthMm, 0.10);
+verifyEqual(testCase, report.ruleOverrides, override);
+verifyFalse(testCase, report.verified);
+verifyTrue(testCase, report.exportAllowed);
+verifyEqual(testCase, report.status, 'UNVERIFIED');
+end
+
+function testConservativeRuleOverrideRetainsOfficialVerification(testCase)
+override = struct('minTraceWidthMm', 0.15);
+result = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'layerCount', 4, 'turnsPerLayer', 1, ...
+    'manufacturingRuleOverrides', override, ...
+    'enablePreview', false, 'enableFigure', false));
+report = result.manufacturing;
+
+verifyEqual(testCase, report.requestedProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, report.profile, 'jlc_fpc_1oz');
+verifyEqual(testCase, report.baseProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, report.ruleClassification, 'OFFICIAL_CONSERVATIVE');
+verifyEqual(testCase, report.applicability, 'SUPPORTED');
+verifyEqual(testCase, report.baseRules.minTraceWidthMm, 0.102);
+verifyEqual(testCase, report.rules.minTraceWidthMm, 0.15);
+verifyEqual(testCase, report.ruleOverrides, override);
+verifyTrue(testCase, report.verified);
+verifyTrue(testCase, report.exportAllowed);
+end
+
 function testCopperToBoardUsesMeasuredFinalGeometry(testCase)
 % H2 契约：COPPER_TO_BOARD 必须来自最终几何实测（走线 + PAD + 过孔焊环），
 % 而不是配置值 edgeClearance。配置允许下限附近的 PAD 内缩必须被制造判定拦截。
@@ -268,6 +349,97 @@ for layerCount = [2, 4]
             cfg.geometryTolerance);
     end
 end
+end
+
+function testDefaultTopologyHasPhysicalEndpointConnections(testCase)
+for layerCount = [2, 4]
+    result = rectangular_fpc_main(struct( ...
+        'analysisOnly', true, ...
+        'layerCount', layerCount, ...
+        'turnsPerLayer', 1, ...
+        'enablePreview', false, ...
+        'enableFigure', false));
+    verifyTopologyContract(testCase, result);
+end
+end
+
+function testEmptyManualLeadConfigurationIsRejectedAndNeverExported(testCase)
+outputRoot = freshOutputRoot();
+cleanup = onCleanup(@() removeOutputRoot(outputRoot));
+overrides = struct( ...
+    'analysisOnly', true, ...
+    'outputRoot', outputRoot, ...
+    'designName', 'empty_manual_lead_contract', ...
+    'layerCount', 4, ...
+    'turnsPerLayer', 1, ...
+    'minSpiralCornerRadius', 4.7, ...
+    'viaPlacementMode', 'manual', ...
+    'manualSeriesViaXY', [25, 6; 82, 6; 55, 6], ...
+    'outputViaPlacementMode', 'manual', ...
+    'manualOutputViaXY', [87, 4.7], ...
+    'requireSmoothLeadTransitions', false, ...
+    'enablePreview', false, ...
+    'enableFigure', false);
+
+[analysisSucceeded, result, errorId] = invokeRectangular(overrides);
+if analysisSucceeded
+    verifyFalse(testCase, result.passed);
+    verifyFalse(testCase, result.validation.passed);
+    verifyFalse(testCase, result.manufacturing.verified);
+    verifyFalse(testCase, result.manufacturing.exportAllowed);
+    verifyTopologyContract(testCase, result);
+else
+    verifyTrue(testCase, ismember(errorId, { ...
+        'RectangularFPC:RoutingFailed', ...
+        'RectangularFPC:ValidationFailed'}), ...
+        sprintf('Unexpected analysis error identifier: %s', errorId));
+end
+verifyFalse(testCase, isfolder(outputRoot));
+
+overrides.analysisOnly = false;
+[formalSucceeded, ~, errorId] = invokeRectangular(overrides);
+verifyFalse(testCase, formalSucceeded, ...
+    'A design with empty manual lead paths must never be exported.');
+if ~formalSucceeded
+    verifyTrue(testCase, ismember(errorId, { ...
+        'RectangularFPC:RoutingFailed', ...
+        'RectangularFPC:ValidationFailed'}), ...
+        sprintf('Unexpected formal-export error identifier: %s', errorId));
+end
+if isfolder(outputRoot)
+    formal = dir(fullfile(outputRoot, 'empty_manual_lead_contract_*'));
+    verifyEmpty(testCase, formal([formal.isdir]));
+end
+
+clear cleanup;
+end
+
+function testLayerCountAboveEightIsRejectedEvenWhenConfiguredMaximumIsRaised(testCase)
+verifyError(testCase, @() rectangular_fpc_main(struct( ...
+    'analysisOnly', true, ...
+    'layerCount', 10, ...
+    'maxLayerCount', 10, ...
+    'turnsPerLayer', 1, ...
+    'enablePreview', false, ...
+    'enableFigure', false)), ...
+    'RectangularFPC:InvalidLayerCount');
+end
+
+function testTwoLayerDrillToNonConnectedCopperIsNotApplicable(testCase)
+result = rectangular_fpc_main(struct( ...
+    'analysisOnly', true, ...
+    'layerCount', 2, ...
+    'turnsPerLayer', 1, ...
+    'enablePreview', false, ...
+    'enableFigure', false));
+row = result.manufacturing.checks(strcmp( ...
+    {result.manufacturing.checks.id}, 'DRILL_TO_COPPER'));
+
+assertNumElements(testCase, row, 1);
+verifyEqual(testCase, row.status, 'NOT_APPLICABLE');
+verifyEqual(testCase, row.code, 'NOT_APPLICABLE');
+verifyFalse(testCase, isinf(row.measuredMm));
+verifyTrue(testCase, isnan(row.measuredMm));
 end
 
 function testSupportedQualificationRejectsDisabledRequiredChecks(testCase)
@@ -489,6 +661,61 @@ turnConfig = struct( ...
     'enableFigure', false);
 verifyError(testCase, @() rectangular_fpc_main(turnConfig), ...
     'RectangularFPC:TurnLimitExceeded');
+end
+
+function verifyTopologyContract(testCase, result)
+tol = result.config.connectionTolerance;
+seriesVias = result.vias(strcmp({result.vias.role}, 'series_interconnect'));
+for viaIndex = 1:numel(seriesVias)
+    via = seriesVias(viaIndex);
+    verifyFalse(testCase, isempty(via.fromLeadPath), ...
+        sprintf('%s fromLeadPath must not be empty.', via.name));
+    verifyFalse(testCase, isempty(via.toLeadPath), ...
+        sprintf('%s toLeadPath must not be empty.', via.name));
+    if ~isempty(via.fromLeadPath)
+        verifyLessThanOrEqual(testCase, ...
+            norm(via.fromLeadPath(end, :) - via.xy), tol);
+    end
+    if ~isempty(via.toLeadPath)
+        verifyLessThanOrEqual(testCase, ...
+            norm(via.toLeadPath(1, :) - via.xy), tol);
+    end
+end
+
+padA = result.pads(strcmp({result.pads.name}, 'PAD_A'));
+padB = result.pads(strcmp({result.pads.name}, 'PAD_B'));
+vout = result.vias(strcmp({result.vias.name}, 'VOUT'));
+assertNumElements(testCase, padA, 1);
+assertNumElements(testCase, padB, 1);
+assertNumElements(testCase, vout, 1);
+verifyFalse(testCase, isempty(result.layerPaths{1}{1}));
+verifyFalse(testCase, isempty(result.layerPaths{result.layerCount}{1}));
+verifyGreaterThanOrEqual(testCase, numel(result.layerPaths{1}), 2);
+if ~isempty(result.layerPaths{1}{1})
+    verifyLessThanOrEqual(testCase, ...
+        norm(result.layerPaths{1}{1}(1, :) - padA.xy), tol);
+end
+if ~isempty(result.layerPaths{result.layerCount}{1})
+    verifyLessThanOrEqual(testCase, ...
+        norm(result.layerPaths{result.layerCount}{1}(end, :) - vout.xy), tol);
+end
+if numel(result.layerPaths{1}) >= 2 && ~isempty(result.layerPaths{1}{2})
+    returnPath = result.layerPaths{1}{2};
+    verifyLessThanOrEqual(testCase, norm(returnPath(1, :) - vout.xy), tol);
+    verifyLessThanOrEqual(testCase, norm(returnPath(end, :) - padB.xy), tol);
+end
+end
+
+function [succeeded, result, errorId] = invokeRectangular(overrides)
+succeeded = false;
+result = struct();
+errorId = '';
+try
+    result = rectangular_fpc_main(overrides);
+    succeeded = true;
+catch ME
+    errorId = ME.identifier;
+end
 end
 
 function outputRoot = freshOutputRoot()
