@@ -72,6 +72,16 @@ verifyTrue(testCase, isnan(row.measured_mm));
 verifyEqual(testCase, row.code, "NOT_APPLICABLE");
 end
 
+function testCoordinateCsvPreservesLegalSubMillimeterPrecision(testCase)
+paths = makeFormalOutput(false, struct('padDiameter', 1.5004));
+cleanup = onCleanup(@() removeTree(paths.root));
+data = readtable(fullfile(paths.result.outputPath, 'reports', ...
+    '01_pad_via_coordinates.csv'), 'TextType', 'string');
+padRows = data.object_type == "pad";
+verifyEqual(testCase, data.pad_diameter_mm(padRows), ...
+    repmat(1.5004, nnz(padRows), 1), 'AbsTol', 1e-12);
+end
+
 function paths = makeFormalOutput(enablePreview, extraOverrides)
 if nargin < 2
     extraOverrides = struct();
