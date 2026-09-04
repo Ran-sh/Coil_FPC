@@ -17,7 +17,7 @@ cfg = struct();
 % Winding and supported stack-up.
 % 线圈匝数与支持的层叠参数
 cfg.layerCount = 4;                                        % 层，当前生成的 FPC 铜层数量，只支持 2 到 maxLayerCount 的偶数
-cfg.maxLayerCount = 8;                                     % 层，允许的最大铜层数，仅作为 layerCount 的上限校验
+cfg.maxLayerCount = 8;                                     % 层，允许的最大铜层数，只能取 2/4/6/8 且不得超过 8
 cfg.useRecommendedTurns = false;                           % 布尔，true 时自动使用安全推荐匝数（完整验证上限减 recommendedTurnMargin），忽略 turnsPerLayer
 cfg.turnsPerLayer = 12;                                     % 匝，手动模式下的每层匝数（每层整数圈数），超过理论上限会报错
 
@@ -70,7 +70,7 @@ cfg.padToCopperClearance = 0.20;                           % mm，焊盘边缘�
 cfg.viaDrillDiameter = 0.30;                               % mm，层间过孔钻孔直径
 cfg.viaPadDiameter = 0.60;                                 % mm，层间过孔焊盘直径
 cfg.viaToCopperClearance = 0.20;                           % mm，过孔焊盘到非连接铜层铜线的最小净距
-cfg.viaToBoardClearance = 0.30;                            % mm，层间过孔到板框的最小净距
+cfg.viaToBoardClearance = 0.50;                            % mm，层间过孔焊盘边缘到板框的最小净距
 cfg.viaToViaClearance = 0.20;                              % mm，相邻过孔之间的目标净间距
 cfg.viaToPadClearance = 0.20;                              % mm，过孔焊盘到 PAD_A/PAD_B 的目标净间距
 cfg.viaLandingLeadLength = 0.80;                           % mm，旧版自动模式（legacy_auto）内侧过孔朝线圈内部方向的逃逸引线长度
@@ -101,7 +101,7 @@ cfg.outputViaType = 'through_via';                         % 字符串，VOUT �
 cfg.outputViaTipInset = 4.00;                              % mm，auto 模式 VOUT 圆心到尾板右端尖端的最小水平内缩限制（实际位置可更靠左）
 cfg.outputViaAntiPadDiameter = 1.00;                       % mm，VOUT 在中间非连接层的反焊盘（禁铜开窗）直径
 cfg.outputViaToCopperClearance = 0.20;                     % mm，VOUT 到 L1 回路线铜线的最小净距
-cfg.outputViaToBoardClearance = 0.30;                      % mm，VOUT 到板框的最小净距
+cfg.outputViaToBoardClearance = 0.50;                      % mm，VOUT 焊盘边缘到板框的最小净距
 
 % User coordinate origin and manual via coordinates.
 % 用户坐标系与人工过孔坐标参数

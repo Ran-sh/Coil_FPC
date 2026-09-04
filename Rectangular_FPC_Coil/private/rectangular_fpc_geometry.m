@@ -622,10 +622,12 @@ end
 
 function outputVia = calculateAutoOutputVia(cfg)
 
-safeX = cfg.plateLength/2 + cfg.viaPadDiameter/2 + cfg.outputViaToBoardClearance;
+requiredBoardClearance = max( ...
+    cfg.outputViaToBoardClearance, cfg.viaToBoardClearance);
+safeX = cfg.plateLength/2 + cfg.viaPadDiameter/2 + ...
+    requiredBoardClearance;
 maxX = cfg.plateLength/2 + cfg.tabLength - cfg.outputViaTipInset;
-insetFloorX = cfg.plateLength/2 + cfg.viaPadDiameter/2 + cfg.viaToBoardClearance;
-if insetFloorX > maxX + cfg.geometryTolerance
+if safeX > maxX + cfg.geometryTolerance
     error('RectangularFPC:ViaPlanningFailed', ...
         '自动 VOUT 可用横向区间为空：安全左界 %.3f mm 大于最小内缩右界 %.3f mm。', ...
         safeX, maxX);
@@ -641,6 +643,8 @@ failureCode = '';
 failureReason = '';
 
 xyUser = cfg.manualSeriesViaXY;
+manualBoardXY = generateSmoothBoardOutline(cfg);
+closedManualBoardXY = [manualBoardXY; manualBoardXY(1, :)];
 % 防御性行数检查：manualSeriesViaXY 必须恰好 layerCount-1 行（V12、V23……）。
 % 过孔规划可能在配置验证之外被内部复用，因此在此复查。
 if size(xyUser, 1) ~= cfg.layerCount - 1
@@ -652,7 +656,8 @@ if size(xyUser, 1) ~= cfg.layerCount - 1
 end
 for k = 1:cfg.layerCount - 1
     xy = userToInternalXY(xyUser(k, :), cfg);
-    [ok, reason] = validateManualVia(cfg, k, xy, vias);
+    [ok, reason] = validateManualVia( ...
+        cfg, k, xy, vias, closedManualBoardXY);
     if ~ok
         failureCode = 'MANUAL_VIA_INVALID';
         failureReason = sprintf( ...
@@ -668,22 +673,19 @@ end
 end
 
 %% ---------------------------------------------------------------
-function [ok, reason] = validateManualVia(cfg, k, xy, vias)
+function [ok, reason] = validateManualVia(cfg, k, xy, vias, closedBoardXY)
 
 ok = false;
 reason = '';
 tol = cfg.geometryTolerance;
 
-% 板内（主体 + 尾板区域）
-bodyRightX = cfg.plateLength/2;
-tabTipX = bodyRightX + cfg.tabLength;
-tabHalf = cfg.tabWidth/2;
-inBoard = xy(1) >= -cfg.plateLength/2 + cfg.viaToBoardClearance && ...
-    xy(1) <= tabTipX - cfg.viaToBoardClearance && ...
-    xy(2) >= -tabHalf + cfg.viaToBoardClearance && ...
-    xy(2) <= tabHalf + cfg.viaToBoardClearance;
+[inBoard, centerToBoard, requiredDistance] = validateViaBoardLocation( ...
+    xy, cfg.viaPadDiameter, cfg.viaToBoardClearance, ...
+    closedBoardXY, tol);
 if ~inBoard
-    reason = sprintf('过孔不在板框（含尾板）内部，距板边不足 %.3f mm。', cfg.viaToBoardClearance);
+    reason = sprintf( ...
+        '过孔焊盘未完整位于真实圆角板框内：中心到板框 %.3f mm，要求至少 %.3f mm。', ...
+        centerToBoard, requiredDistance);
     return;
 end
 
@@ -698,6 +700,22 @@ for j = 1:k - 1
 end
 
 ok = true;
+end
+
+function [ok, centerToBoard, requiredDistance] = validateViaBoardLocation( ...
+    xy, padDiameter, clearance, closedBoardXY, tol)
+
+[inside, onBoundary] = inpolygon( ...
+    xy(1), xy(2), closedBoardXY(:, 1), closedBoardXY(:, 2));
+centerToBoard = inf;
+for segmentIndex = 1:size(closedBoardXY, 1) - 1
+    centerToBoard = min(centerToBoard, distancePointToSegment( ...
+        xy, closedBoardXY(segmentIndex, :), ...
+        closedBoardXY(segmentIndex + 1, :)));
+end
+requiredDistance = padDiameter / 2 + clearance;
+ok = (inside || onBoundary) && ...
+    centerToBoard >= requiredDistance - tol;
 end
 
 %% ---------------------------------------------------------------
@@ -1032,6 +1050,7 @@ layerXY = rawLayerXY;
     rawLayerXY{1}, d.padA, 'prepend', ...
     cfg.leadBendRadius, cfg.leadArcPointCount, boardXY, cfg, ...
     keepoutXY, keepoutRadii);
+requireRoutedLead(lead, d.padA, 'PAD_A', tol);
 escapeArcFallback = escapeArcFallback || ~okLead;
 layerXY{1} = [flipud(lead(2:end,:)); layerXY{1}];
 
@@ -1061,6 +1080,10 @@ for k = 1:cfg.layerCount-1
         rawLayerXY{k+1}, vias(k).xy, 'prepend', ...
         bendRadius, cfg.leadArcPointCount, boardXY, cfg, ...
         toKeepoutXY, toKeepoutRadii);
+    requireRoutedLead(lead1, vias(k).xy, ...
+        sprintf('%s from-layer', vias(k).name), tol);
+    requireRoutedLead(lead2raw, vias(k).xy, ...
+        sprintf('%s to-layer', vias(k).name), tol);
     okLead = ok1 && ok2;
     escapeArcFallback = escapeArcFallback || ~okLead;
     lead = lead1;
@@ -1088,9 +1111,22 @@ vout = struct( ...
     'drillDiameter', cfg.viaDrillDiameter, ...
     'padDiameter', cfg.viaPadDiameter, ...
     'antipadDiameter', cfg.outputViaAntiPadDiameter, ...
-    'placementRegion', 'OUTPUT_TAB', 'placementMode', 'auto', ...
+    'placementRegion', 'OUTPUT_TAB', ...
+    'placementMode', cfg.outputViaPlacementMode, ...
     'fromLeadLength', NaN, 'toLeadLength', NaN, ...
     'fromLeadPath', [], 'toLeadPath', []);
+if strcmp(cfg.outputViaPlacementMode, 'manual')
+    closedBoardXY = [boardXY; boardXY(1, :)];
+    [outputViaInside, centerToBoard, requiredDistance] = ...
+        validateViaBoardLocation(d.outputVia, cfg.viaPadDiameter, ...
+        cfg.outputViaToBoardClearance, closedBoardXY, tol);
+    if ~outputViaInside
+        error('RectangularFPC:ViaPlanningFailed', ...
+            ['VOUT 手动坐标未完整位于真实圆角板框内：中心到板框 ', ...
+             '%.3f mm，要求至少 %.3f mm。'], ...
+            centerToBoard, requiredDistance);
+    end
+end
 % VOUT lead is append (continues L_last end direction) via the orthogonal router.
 [keepoutXY, keepoutRadii] = ...
     throughViaKeepoutsForLayer(vias, cfg.layerCount, cfg);
@@ -1098,6 +1134,7 @@ vout = struct( ...
     rawLayerXY{cfg.layerCount}, d.outputVia, 'append', ...
     cfg.leadBendRadius, cfg.leadArcPointCount, boardXY, cfg, ...
     keepoutXY, keepoutRadii);
+requireRoutedLead(lead, d.outputVia, 'VOUT', tol);
 escapeArcFallback = escapeArcFallback || ~okLead;
 vout.fromLeadPath = lead;
 vout.fromLeadLength = calculatePathLength(lead);
@@ -1108,6 +1145,7 @@ vias(end+1) = vout;
 
 % VOUT 将最后一层送回顶层：L1 第二条独立 polyline（VOUT → PAD_B）
 topOutputLeadXY = [d.outputVia; d.padB];
+requireRoutedLead(topOutputLeadXY, d.padB, 'PAD_B', tol);
 
 % ---- 4) 整理与连接误差 ----
 for k = 1:cfg.layerCount
@@ -1129,6 +1167,15 @@ connectionErrors(cfg.layerCount) = ...
     norm(layerXY{cfg.layerCount}(end,:) - d.outputVia);
 connectionErrors(cfg.layerCount+1) = norm(topOutputLeadXY(1,:) - d.outputVia);
 
+end
+
+function requireRoutedLead(path, targetXY, label, tol)
+if isempty(path) || size(path, 2) ~= 2 || size(path, 1) < 2 || ...
+        any(~isfinite(path), 'all') || ...
+        norm(path(end, :) - targetXY) > tol
+    error('RectangularFPC:RoutingFailed', ...
+        '%s 引线为空、坐标无效或未连接到目标端点。', label);
+end
 end
 
 %% =========================================================

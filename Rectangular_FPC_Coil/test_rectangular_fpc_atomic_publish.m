@@ -60,6 +60,155 @@ verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
+function testPriorMoveThenFailureRestoresUsingObservedState(testCase)
+for mode = {'throw', 'false'}
+    paths = makeFixture();
+    cleanup = onCleanup(@() removeFixture(paths.root));
+    mover = @(source, destination) ambiguousPhaseMove( ...
+        source, destination, paths, 'prior', mode{1});
+
+    assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+        paths.staging, paths.output, mover), ...
+        'RectangularFPC:AtomicPublishFailed');
+    verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+    verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+    verifyEmpty(testCase, dir([paths.output '_backup_*.transaction']));
+    clear cleanup;
+end
+end
+
+function testPublishMoveThenFailureRestoresUsingObservedState(testCase)
+for mode = {'throw', 'false'}
+    paths = makeFixture();
+    cleanup = onCleanup(@() removeFixture(paths.root));
+    mover = @(source, destination) ambiguousPhaseMove( ...
+        source, destination, paths, 'publish', mode{1});
+
+    assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+        paths.staging, paths.output, mover), ...
+        'RectangularFPC:AtomicPublishFailed');
+    verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+    verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+    verifyEmpty(testCase, dir([paths.output '_backup_*.transaction']));
+    clear cleanup;
+end
+end
+
+function testRestoreMoveThenFailureIsRecognizedAsRestored(testCase)
+for mode = {'throw', 'false'}
+    paths = makeFixture();
+    cleanup = onCleanup(@() removeFixture(paths.root));
+    mover = @(source, destination) ambiguousRollbackMove( ...
+        source, destination, paths, mode{1});
+
+    assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+        paths.staging, paths.output, mover), ...
+        'RectangularFPC:AtomicPublishFailed');
+    verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+    verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+    verifyEmpty(testCase, dir([paths.output '_backup_*.transaction']));
+    clear cleanup;
+end
+end
+
+function testOwnerSwapMoveThenFailureUsesInstalledToken(testCase)
+for mode = {'throw', 'false'}
+    paths = makeFixture();
+    cleanup = onCleanup(@() removeFixture(paths.root));
+    lockFolder = [paths.output '_publish.lock'];
+    mkdir(lockFolder);
+    writeStaleOwnerRecord(lockFolder, '1');
+    mover = @(source, destination) ambiguousOwnerSwapMove( ...
+        source, destination, lockFolder, mode{1});
+
+    rectangular_fpc_publish_atomically(paths.staging, paths.output, mover);
+
+    verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+    verifyFalse(testCase, isfolder(lockFolder));
+    clear cleanup;
+end
+end
+
+function testPostPublishContractFailureRestoresPriorVersion(testCase)
+% The staged tree is valid before its move. Corrupt it only after it has
+% occupied the formal path, proving the mandatory post-move contract gate
+% runs before the recoverable prior version is deleted.
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+mover = @(source, destination) corruptAfterPublicationMove( ...
+    source, destination, paths);
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output, mover), ...
+    'RectangularFPC:AtomicPublishFailed');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyTrue(testCase, rectangular_fpc_publish_atomically( ...
+    'verify_committed', paths.output));
+backups = dir(paths.backupPattern);
+verifyEmpty(testCase, backups([backups.isdir]));
+verifyFalse(testCase, isfolder(paths.staging));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear cleanup;
+end
+
+function testPublisherRejectsEqualStagingAndOutputWithoutCleanup(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.output, paths.output), 'RectangularFPC:InvalidPublishRequest');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyTrue(testCase, rectangular_fpc_publish_atomically( ...
+    'verify_committed', paths.output));
+clear cleanup;
+end
+
+function testPublisherRejectsStagingAncestorWithoutCleanup(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.root, paths.output), 'RectangularFPC:InvalidPublishRequest');
+
+verifyTrue(testCase, isfolder(paths.root));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+clear cleanup;
+end
+
+function testPublisherRejectsStagingDescendantWithoutCleanup(testCase)
+paths = makeFixture();
+cleanup = onCleanup(@() removeFixture(paths.root));
+descendant = fullfile(paths.output, 'nested_staging');
+mkdir(descendant);
+writeMarker(fullfile(descendant, 'do_not_delete.txt'));
+
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    descendant, paths.output), 'RectangularFPC:InvalidPublishRequest');
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyTrue(testCase, isfile(fullfile(descendant, 'do_not_delete.txt')));
+clear cleanup;
+end
+
+function testPublisherCanonicalizesRelativePaths(testCase)
+originalFolder = pwd;
+paths = makeFixture();
+cleanup = onCleanup(@() restoreFolderAndRemove(originalFolder, paths.root));
+[~, outputName] = fileparts(paths.output);
+[~, stagingName] = fileparts(paths.staging);
+cd(paths.root);
+
+rectangular_fpc_publish_atomically(stagingName, outputName);
+
+verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+cd(originalFolder);
+clear cleanup;
+end
+
 function testOwnerReplacementAtDestructiveMoveFailsClosed(testCase)
 % A writer that loses its owner token at the output-to-backup boundary must
 % not publish over the replacement owner. The prior output is the recovery
@@ -78,7 +227,7 @@ verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyTrue(testCase, isfolder([paths.output '_publish.lock']));
 verifyTrue(testCase, contains(fileread(fullfile( ...
     [paths.output '_publish.lock'], 'owner.txt')), ...
-    'token=replacement_owner'));
+    ['token=' repmat('e', 1, 32)]));
 verifyFalse(testCase, isfolder(paths.staging));
 clear cleanup;
 end
@@ -116,6 +265,7 @@ end
 function testReaderRejectsUncommittedFolder(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
+delete(fullfile(paths.output, 'generation_status.txt'));
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for uncommitted output');
@@ -207,13 +357,15 @@ function testReaderCallbackFailureReleasesLock(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 writeCommitEvidence(paths.output);
+originalFolder = pwd;
+folderCleanup = onCleanup(@() cd(originalFolder));
 
-reader = @(folder) error('Test:InjectedReaderFailure', ...
-    'injected reader callback failure for %s', char(folder));
+reader = @(folder) changeDirectoryAndFail(folder, paths.root);
 assertError(testCase, @() rectangular_fpc_read_committed( ...
     paths.output, reader), 'Test:InjectedReaderFailure');
 
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+clear folderCleanup;
 clear cleanup;
 end
 
@@ -228,6 +380,47 @@ marker = rectangular_fpc_read_committed(string(paths.output), @(folder) ...
 verifyEqual(testCase, marker, 'marker');
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
+end
+
+function testReaderAcceptsRelativeAndTrailingSeparatorPaths(testCase)
+originalFolder = pwd;
+paths = makeFixture();
+cleanup = onCleanup(@() restoreFolderAndRemove(originalFolder, paths.root));
+[~, outputName] = fileparts(paths.output);
+cd(paths.root);
+
+relativeMarker = rectangular_fpc_read_committed(outputName, @(folder) ...
+    fileread(fullfile(folder, 'old_marker.txt')));
+trailingMarker = rectangular_fpc_read_committed( ...
+    [paths.output filesep], @(folder) ...
+    fileread(fullfile(folder, 'old_marker.txt')));
+
+verifyEqual(testCase, relativeMarker, 'marker');
+verifyEqual(testCase, trailingMarker, 'marker');
+verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+cd(originalFolder);
+clear cleanup;
+end
+
+function testReaderRejectsUnsupportedLayerCountBeforeExpansion(testCase)
+unsupported = [0, 1, 3, 9, 1000000000];
+for layerCount = unsupported
+    paths = makeFixture();
+    cleanup = onCleanup(@() removeFixture(paths.root));
+    statusFile = fullfile(paths.output, 'generation_status.txt');
+    statusText = fileread(statusFile);
+    statusText = regexprep(statusText, ...
+        '(?m)^LayerCount:\s*2\s*$', sprintf('LayerCount: %d', layerCount));
+    writeText(statusFile, statusText);
+    rewriteCommitManifest(paths.output, cell(0, 2));
+
+    reader = @(folder) error('Test:ReaderMustNotRun', ...
+        'reader callback must not run for LayerCount %d', layerCount);
+    verifyError(testCase, @() rectangular_fpc_read_committed( ...
+        paths.output, reader), 'RectangularFPC:OutputNotCommitted');
+    verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
+    clear cleanup;
+end
 end
 
 function testReaderRejectsHeaderOnlyManifest(testCase)
@@ -297,10 +490,7 @@ paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
 mkdir(lockFolder);
-fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
-staleOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
-clear staleOwnerCleanup;
+writeStaleOwnerRecord(lockFolder, '1');
 mover = @(source, destination) replaceOwnerDuringSwap( ...
     source, destination, lockFolder);
 
@@ -309,7 +499,7 @@ assertError(testCase, @() rectangular_fpc_publish_atomically( ...
 
 verifyTrue(testCase, isfolder(lockFolder));
 verifyTrue(testCase, contains(fileread(fullfile(lockFolder, 'owner.txt')), ...
-    'token=fresh_owner_a'));
+    ['token=' repmat('f', 1, 32)]));
 verifyFalse(testCase, isfolder(fullfile(lockFolder, 'reclaim.claim')));
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 clear cleanup;
@@ -321,15 +511,13 @@ paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
 mkdir(lockFolder);
-fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
-staleOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
-clear staleOwnerCleanup;
+writeStaleOwnerRecord(lockFolder, '1');
 claimDir = fullfile(lockFolder, 'reclaim.claim');
 mkdir(claimDir);
 fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
 claimOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=%s\n', ...
+    localHostName(0), repmat('2', 1, 32));
 verifyNotEmpty(testCase, localHostName(0), ...
     'stale-claim fixture must always write a non-empty host identity');
 fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
@@ -349,15 +537,13 @@ paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
 mkdir(lockFolder);
-fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
-staleOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
-clear staleOwnerCleanup;
+writeStaleOwnerRecord(lockFolder, '1');
 claimDir = fullfile(lockFolder, 'reclaim.claim');
 mkdir(claimDir);
 fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
 claimOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'pid=%d\nhost=%s\ntoken=busy_claim\n', matlabProcessID, localHostName(0));
+fprintf(fid, 'pid=%d\nhost=%s\ntoken=%s\n', ...
+    matlabProcessID, localHostName(0), repmat('3', 1, 32));
 fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
 clear claimOwnerCleanup;
@@ -372,7 +558,7 @@ verifyTrue(testCase, contains(fileread(fullfile(lockFolder, 'owner.txt')), ...
 clear cleanup;
 end
 
-function testExpiredMalformedLockCanBeRecovered(testCase)
+function testExpiredMalformedFixedLockFailsClosed(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
@@ -382,10 +568,12 @@ fileCleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear fileCleanup;
 
-rectangular_fpc_publish_atomically(paths.staging, paths.output);
+assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+    paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
 
-verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
-verifyFalse(testCase, isfolder(lockFolder));
+verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
+verifyTrue(testCase, isfolder(lockFolder));
+verifyFalse(testCase, isfolder(paths.staging));
 clear cleanup;
 end
 
@@ -396,6 +584,10 @@ writeCommitEvidence(paths.output);
 orphanBackup = legitimateBackupPath(paths, 'a');
 mkdir(orphanBackup);
 writeMarker(fullfile(orphanBackup, 'orphan_marker.txt'));
+writeCommitEvidence(orphanBackup);
+rewriteCommitManifest(orphanBackup, cell(0, 2));
+writeBackupTransactionFixture( ...
+    orphanBackup, paths.output, repmat('a', 1, 32));
 
 rectangular_fpc_publish_atomically(paths.staging, paths.output);
 
@@ -446,9 +638,14 @@ end
 function testIncompleteOutputPreservesRecoveryBackup(testCase)
 paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
+delete(fullfile(paths.output, 'generation_status.txt'));
 orphanBackup = legitimateBackupPath(paths, 'b');
 mkdir(orphanBackup);
 writeMarker(fullfile(orphanBackup, 'last_good_marker.txt'));
+writeCommitEvidence(orphanBackup);
+rewriteCommitManifest(orphanBackup, cell(0, 2));
+writeBackupTransactionFixture( ...
+    orphanBackup, paths.output, repmat('b', 1, 32));
 
 verifyError(testCase, @() rectangular_fpc_publish_atomically( ...
     paths.staging, paths.output), 'RectangularFPC:AtomicRecoveryFailed');
@@ -469,6 +666,8 @@ mkdir(paths.output);
 mkdir(paths.staging);
 writeMarker(fullfile(paths.output, 'old_marker.txt'));
 writeMarker(fullfile(paths.staging, 'new_marker.txt'));
+writeCommitEvidence(paths.output);
+writeCommitEvidence(paths.staging);
 end
 
 function [moved, message] = controlledMove( ...
@@ -484,6 +683,60 @@ else
 end
 end
 
+function [moved, message] = ambiguousPhaseMove( ...
+    source, destination, paths, phase, mode)
+isPrior = strcmp(source, paths.output) && ...
+    startsWith(destination, [paths.output '_backup_']);
+isPublish = strcmp(source, paths.staging) && strcmp(destination, paths.output);
+[moved, message] = movefile(source, destination);
+if (strcmp(phase, 'prior') && isPrior) || ...
+        (strcmp(phase, 'publish') && isPublish)
+    [moved, message] = reportMoveFailureAfterSuccess(mode);
+end
+end
+
+function [moved, message] = ambiguousRollbackMove( ...
+    source, destination, paths, mode)
+isPublish = strcmp(source, paths.staging) && strcmp(destination, paths.output);
+isRestore = startsWith(source, [paths.output '_backup_']) && ...
+    strcmp(destination, paths.output);
+if isPublish
+    moved = false;
+    message = 'injected publish failure';
+    return;
+end
+[moved, message] = movefile(source, destination);
+if isRestore
+    [moved, message] = reportMoveFailureAfterSuccess(mode);
+end
+end
+
+function [moved, message] = ambiguousOwnerSwapMove( ...
+    source, destination, lockFolder, mode)
+[moved, message] = movefile(source, destination);
+ownerFile = fullfile(lockFolder, 'owner.txt');
+if strcmp(destination, ownerFile) && contains(source, 'owner.txt.candidate_')
+    [moved, message] = reportMoveFailureAfterSuccess(mode);
+end
+end
+
+function [moved, message] = reportMoveFailureAfterSuccess(mode)
+if strcmp(mode, 'throw')
+    error('Test:MoveFailedAfterSuccess', ...
+        'injected failure after the filesystem move completed');
+end
+moved = false;
+message = 'mover returned false after the filesystem move completed';
+end
+
+function [moved, message] = corruptAfterPublicationMove( ...
+    source, destination, paths)
+[moved, message] = movefile(source, destination);
+if moved && strcmp(source, paths.staging) && strcmp(destination, paths.output)
+    delete(fullfile(destination, 'dxf', '00_board_outline.dxf'));
+end
+end
+
 function [moved, message] = replaceOwnerAtDestructiveMove( ...
     source, destination, paths)
 isPriorVersionMove = strcmp(source, paths.output) && ...
@@ -491,7 +744,10 @@ isPriorVersionMove = strcmp(source, paths.output) && ...
 if isPriorVersionMove
     lockFolder = [paths.output '_publish.lock'];
     writeOwnerRecord(lockFolder, localHostName(0), matlabProcessID, ...
-        'replacement_owner');
+        repmat('e', 1, 32));
+    moved = false;
+    message = 'ownership replaced before destructive move';
+    return;
 end
 [moved, message] = movefile(source, destination);
 end
@@ -505,15 +761,13 @@ paths = makeFixture();
 cleanup = onCleanup(@() removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
 mkdir(lockFolder);
-fid = fopen(fullfile(lockFolder, 'owner.txt'), 'w');
-staleOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
-clear staleOwnerCleanup;
+writeStaleOwnerRecord(lockFolder, '1');
 claimDir = fullfile(lockFolder, 'reclaim.claim');
 mkdir(claimDir);
 fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
 orphanOwnerCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=orphan_claim\n', localHostName(0));
+fprintf(fid, 'pid=2147483647\nhost=%s\ntoken=%s\n', ...
+    localHostName(0), repmat('2', 1, 32));
 verifyNotEmpty(testCase, localHostName(0), ...
     'stale-claim fixture must always write a non-empty host identity');
 fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
@@ -526,7 +780,7 @@ assertError(testCase, @() rectangular_fpc_publish_atomically( ...
 
 verifyTrue(testCase, isfolder(claimDir));
 verifyTrue(testCase, contains(fileread(fullfile(claimDir, 'owner.txt')), ...
-    'token=busy_claim'));
+    ['token=' repmat('c', 1, 32)]));
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 clear cleanup;
 end
@@ -540,7 +794,8 @@ if isTombstone
     mkdir(claimDir);
     fid = fopen(fullfile(claimDir, 'owner.txt'), 'w');
     busyCleanup = onCleanup(@() fclose(fid));
-    fprintf(fid, 'pid=%d\nhost=sim-host-b\ntoken=busy_claim\n', matlabProcessID);
+    fprintf(fid, 'pid=%d\nhost=sim-host-b\ntoken=%s\n', ...
+        matlabProcessID, repmat('c', 1, 32));
     fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
         'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
     clear busyCleanup;
@@ -554,10 +809,10 @@ end
 function [moved, message] = replaceOwnerDuringSwap(source, destination, lockFolder)
 % 模拟竞争转换：在原子换主一步，另一位写入者已把 owner 换成自己的新锁。
 ownerFile = fullfile(lockFolder, 'owner.txt');
-if strcmp(destination, ownerFile) && endsWith(source, 'owner.txt.new')
+if strcmp(destination, ownerFile) && contains(source, 'owner.txt.candidate_')
     fid = fopen(ownerFile, 'w');
     freshCleanup = onCleanup(@() fclose(fid));
-    fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=fresh_owner_a\n');
+    fprintf(fid, 'pid=1\nhost=sim-host-a\ntoken=%s\n', repmat('f', 1, 32));
     fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
     clear freshCleanup;
     delete(source);
@@ -608,7 +863,7 @@ clear cleanup;
 end
 
 function writeLockOwner(lockFolder, host, pid)
-writeOwnerRecord(lockFolder, host, pid, 'foreign_host_test');
+writeOwnerRecord(lockFolder, host, pid, repmat('d', 1, 32));
 end
 
 function writeOwnerRecord(lockFolder, host, pid, token)
@@ -621,13 +876,26 @@ fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear cleanup;
 end
 
+function writeStaleOwnerRecord(lockFolder, hexDigit)
+writeOwnerRecord(lockFolder, localHostName(0), 2147483647, ...
+    repmat(hexDigit, 1, 32));
+end
+
 function marker = verifyPublishBlockedDuringRead(testCase, folder, paths)
 verifyTrue(testCase, isfolder([paths.output '_publish.lock']));
+[~, outputName] = fileparts(paths.output);
+outputAlias = fullfile(paths.root, '.', outputName);
 verifyError(testCase, @() rectangular_fpc_publish_atomically( ...
-    paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
+    paths.staging, outputAlias), 'RectangularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(folder));
 marker = erase(fileread(fullfile(folder, 'old_marker.txt')), 'marker');
 marker = ['old_' marker 'marker'];
+end
+
+function changeDirectoryAndFail(folder, destination)
+cd(destination);
+error('Test:InjectedReaderFailure', ...
+    'injected reader callback failure for %s', char(folder));
 end
 
 function writeMarker(filename)
@@ -641,22 +909,29 @@ function writeCommitEvidence(outputFolder)
 statusFile = fullfile(outputFolder, 'generation_status.txt');
 fid = fopen(statusFile, 'w');
 cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'SchemaVersion: 2\n');
 fprintf(fid, 'Status: SUCCESS\n');
-fprintf(fid, 'LayerCount: 1\n');
+fprintf(fid, 'LayerCount: 2\n');
+fprintf(fid, 'PreviewEnabled: 0\n');
+fprintf(fid, 'PublicationId: %s\n', repmat('9', 1, 32));
 clear cleanup;
 
 dxfFolder = fullfile(outputFolder, 'dxf');
 layerFolder = fullfile(dxfFolder, 'L1');
 reportsFolder = fullfile(outputFolder, 'reports');
-mkdir(dxfFolder);
-mkdir(layerFolder);
-mkdir(reportsFolder);
+ensureFixtureFolder(dxfFolder);
+ensureFixtureFolder(layerFolder);
+ensureFixtureFolder(fullfile(dxfFolder, 'L2'));
+ensureFixtureFolder(reportsFolder);
 artifactPaths = { ...
     'dxf/00_board_outline.dxf', ...
     'dxf/00_drill_map.dxf', ...
     'dxf/L1/01_copper_L1.dxf', ...
     'dxf/L1/01_copper_physical_L1.dxf', ...
     'dxf/L1/01_antipad_keepout_L1.dxf', ...
+    'dxf/L2/02_copper_L2.dxf', ...
+    'dxf/L2/02_copper_physical_L2.dxf', ...
+    'dxf/L2/02_antipad_keepout_L2.dxf', ...
     'reports/01_pad_via_coordinates.csv', ...
     'reports/02_layer_mapping.csv', ...
     'reports/03_design_summary.txt', ...
@@ -709,6 +984,13 @@ end
 clear cleanup;
 end
 
+function writeText(filename, value)
+fid = fopen(filename, 'w');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, '%s', value);
+clear cleanup;
+end
+
 function role = fixtureArtifactRole(relativePath)
 if strcmp(relativePath, 'dxf/00_board_outline.dxf')
     role = 'board_outline';
@@ -746,8 +1028,31 @@ function backupFolder = legitimateBackupPath(paths, hexDigit)
 backupFolder = [paths.output '_backup_' repmat(hexDigit, 1, 32)];
 end
 
+function ensureFixtureFolder(folder)
+if ~isfolder(folder)
+    mkdir(folder);
+end
+end
+
 function backupFolder = unknownBackupLikePath(paths)
 backupFolder = [paths.output '_backup_keep'];
+end
+
+function writeBackupTransactionFixture( ...
+    backupFolder, outputFolder, transactionId)
+markerFile = [backupFolder '.transaction'];
+target = char(java.io.File(outputFolder).getCanonicalPath());
+target = strrep(strtrim(target), '/', filesep);
+if ispc
+    target = lower(target);
+end
+fid = fopen(markerFile, 'w', 'n', 'UTF-8');
+cleanup = onCleanup(@() fclose(fid));
+fprintf(fid, 'SchemaVersion: 1\n');
+fprintf(fid, 'Target: %s\n', target);
+fprintf(fid, 'TransactionId: %s\n', transactionId);
+fprintf(fid, 'Payload: prior_committed_output\n');
+clear cleanup;
 end
 
 function hash = sha256File(filename)
@@ -764,4 +1069,9 @@ function removeFixture(root)
 if isfolder(root)
     rmdir(root, 's');
 end
+end
+
+function restoreFolderAndRemove(folder, root)
+cd(folder);
+removeFixture(root);
 end

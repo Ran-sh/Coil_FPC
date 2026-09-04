@@ -8,10 +8,14 @@ function varargout = rectangular_fpc_read_committed(outputFolder, reader)
 %   entry matches on disk); otherwise RectangularFPC:OutputNotCommitted is
 %   raised instead of handing a partial output to the reader.
 
+if isstring(outputFolder) && isscalar(outputFolder)
+    outputFolder = char(outputFolder);
+end
 if ~ischar(outputFolder) || isempty(outputFolder)
     error('RectangularFPC:InvalidReadRequest', ...
-        'outputFolder must be a nonempty character vector.');
+        'outputFolder must be a nonempty character vector or string scalar.');
 end
+outputFolder = rectangular_fpc_publish_paths('normalize', outputFolder);
 if ~isa(reader, 'function_handle')
     error('RectangularFPC:InvalidReadRequest', ...
         'reader must be a function handle.');

@@ -1,13 +1,9 @@
 function varargout = rectangular_fpc_publish_atomically( ...
     tempOutputFolder, outputFolder, moveFolder)
-%RECTANGULAR_FPC_PUBLISH_ATOMICALLY Publish one minute-version atomically.
-%   RECTANGULAR_FPC_PUBLISH_ATOMICALLY(STAGING, OUTPUT) replaces OUTPUT
-%   with STAGING while retaining a recoverable backup until publication
-%   succeeds. An optional MOVEFOLDER function handle supports deterministic
-%   failure-path testing and defaults to @movefile.
-%   The sibling *_publish.lock directory is the commit barrier. Readers use
-%   the acquire_access operation through rectangular_fpc_read_committed so
-%   checking and reading occur while holding the same exclusive lock.
+%RECTANGULAR_FPC_PUBLISH_ATOMICALLY Publish one minute-version safely.
+%   The sibling *_publish.lock directory is the commit barrier. Lock
+%   ownership/fencing and backup recovery live in dedicated private modules;
+%   this function only coordinates the publication transaction.
 
 if nargin >= 1 && ischar(tempOutputFolder) && ...
         strcmp(tempOutputFolder, 'acquire_access')
@@ -15,8 +11,9 @@ if nargin >= 1 && ischar(tempOutputFolder) && ...
         error('RectangularFPC:InvalidPublishRequest', ...
             'acquire_access requires exactly one output folder.');
     end
-    varargout{1} = acquirePublishLock( ...
-        [outputFolder '_publish.lock'], @movefile);
+    outputFolder = rectangular_fpc_publish_paths('normalize', outputFolder);
+    [varargout{1}, ~] = rectangular_fpc_publish_lock( ...
+        'acquire', [outputFolder '_publish.lock'], @movefile);
     return;
 end
 
@@ -26,7 +23,7 @@ if nargin >= 1 && ischar(tempOutputFolder) && ...
         error('RectangularFPC:InvalidPublishRequest', ...
             'verify_committed requires exactly one output folder.');
     end
-    varargout{1} = isCommittedOutput(outputFolder);
+    varargout{1} = rectangular_fpc_commit_contract(outputFolder);
     return;
 end
 
@@ -38,52 +35,85 @@ if nargin < 3 || isempty(moveFolder)
     moveFolder = @movefile;
 elseif ~isa(moveFolder, 'function_handle')
     error('RectangularFPC:InvalidPublishMover', ...
-        'The injected folder mover must be a function handle.');
+        'The injected mover must be a function handle.');
 end
 
+% Pure validation is deliberately complete before onCleanup registration,
+% lock creation, marker creation, or any other filesystem mutation.
+[tempOutputFolder, outputFolder] = rectangular_fpc_publish_paths( ...
+    'validate', tempOutputFolder, outputFolder);
 stagingCleanup = onCleanup(@() removeStagingFolder(tempOutputFolder));
 lockFolder = [outputFolder '_publish.lock'];
-lockCleanup = acquirePublishLock( ...
-    lockFolder, moveFolder); %#ok<NASGU>
+[lockCleanup, lockToken] = rectangular_fpc_publish_lock( ...
+    'acquire', lockFolder, moveFolder); %#ok<ASGLU>
 
-recoverOrphanBackup(outputFolder, moveFolder);
-backupFolder = sprintf('%s_backup_%s', outputFolder, uniqueToken());
-
-hadPriorVersion = isfolder(outputFolder);
-if hadPriorVersion
-    [moved, message] = tryMoveFolder( ...
-        moveFolder, outputFolder, backupFolder);
-    if ~moved
-        error('RectangularFPC:AtomicPublishFailed', ...
-            'Unable to stage the prior version for replacement: %s', message);
-    end
-elseif isfile(outputFolder)
+rectangular_fpc_backup_recovery( ...
+    'recover', outputFolder, moveFolder, lockFolder, lockToken);
+[stagingCommitted, stagingReason] = ...
+    rectangular_fpc_commit_contract(tempOutputFolder);
+if ~stagingCommitted
     error('RectangularFPC:AtomicPublishFailed', ...
-        'Formal output path is occupied by a file: %s', outputFolder);
+        'Staged output does not satisfy the commit contract: %s', ...
+        stagingReason);
 end
 
+transactionToken = rectangular_fpc_publish_lock('new_token');
+backupFolder = sprintf('%s_backup_%s', outputFolder, transactionToken);
+backupMarker = rectangular_fpc_backup_recovery( ...
+    'marker_path', backupFolder);
+hadPriorVersion = isfolder(outputFolder);
+priorVersionMoved = false;
+newVersionPublished = false;
+
 try
-    [moved, message] = tryMoveFolder( ...
-        moveFolder, tempOutputFolder, outputFolder);
-    if ~moved
+    if hadPriorVersion
+        rectangular_fpc_publish_lock( ...
+            'assert_owned', lockFolder, lockToken);
+        backupMarker = rectangular_fpc_backup_recovery( ...
+            'write_marker', backupFolder, outputFolder, transactionToken);
+        rectangular_fpc_publish_lock( ...
+            'assert_owned', lockFolder, lockToken);
+        [moved, message, moveClean] = rectangular_fpc_publish_lock( ...
+            'move', moveFolder, outputFolder, backupFolder, ...
+            lockFolder, lockToken);
+        priorVersionMoved = moved;
+        if ~moveClean
+            if ~moved && isfolder(outputFolder) && ~isfolder(backupFolder)
+                rectangular_fpc_publish_lock( ...
+                    'delete_file', backupMarker, lockFolder, lockToken);
+            end
+            error('RectangularFPC:AtomicPublishFailed', ...
+                'Unable to stage the prior version for replacement: %s', ...
+                message);
+        end
+    elseif isfile(outputFolder)
+        error('RectangularFPC:AtomicPublishFailed', ...
+            'Formal output path is occupied by a file: %s', outputFolder);
+    end
+
+    [moved, message, moveClean] = rectangular_fpc_publish_lock( ...
+        'move', moveFolder, tempOutputFolder, outputFolder, ...
+        lockFolder, lockToken);
+    newVersionPublished = moved;
+    if ~moveClean
         error('RectangularFPC:AtomicPublishFailed', ...
             'Unable to publish the staged version: %s', message);
     end
+    [publishedCommitted, publishedReason] = ...
+        rectangular_fpc_commit_contract(outputFolder);
+    if ~publishedCommitted
+        error('RectangularFPC:AtomicPublishFailed', ...
+            'Published output failed the commit contract: %s', ...
+            publishedReason);
+    end
 catch publishError
     rollbackFailedPublish( ...
-        publishError, outputFolder, backupFolder, hadPriorVersion, moveFolder);
+        publishError, outputFolder, backupFolder, backupMarker, ...
+        priorVersionMoved, newVersionPublished, moveFolder, ...
+        lockFolder, lockToken);
 end
 
-if isfolder(backupFolder)
-    try
-        rmdir(backupFolder, 's');
-    catch cleanupError
-        warning('RectangularFPC:BackupCleanupFailed', ...
-            'Published successfully, but backup cleanup failed: %s', ...
-            cleanupError.message);
-    end
-end
-
+cleanupPriorBackup(backupFolder, backupMarker, lockFolder, lockToken);
 clear lockCleanup;
 clear stagingCleanup;
 
@@ -91,21 +121,24 @@ end
 
 
 function rollbackFailedPublish( ...
-    publishError, outputFolder, backupFolder, hadPriorVersion, moveFolder)
+    publishError, outputFolder, backupFolder, backupMarker, ...
+    priorVersionMoved, newVersionPublished, moveFolder, lockFolder, lockToken)
 
 cleanupFailure = '';
-if isfolder(outputFolder)
+if newVersionPublished && isfolder(outputFolder)
     try
-        rmdir(outputFolder, 's');
+        rectangular_fpc_publish_lock( ...
+            'remove_folder', outputFolder, lockFolder, lockToken);
     catch cleanupError
         cleanupFailure = cleanupError.message;
     end
 end
 
-if hadPriorVersion && isfolder(backupFolder)
+if priorVersionMoved && isfolder(backupFolder)
     if isempty(cleanupFailure)
-        [restored, restoreMessage] = tryMoveFolder( ...
-            moveFolder, backupFolder, outputFolder);
+        [restored, restoreMessage] = rectangular_fpc_publish_lock( ...
+            'move', moveFolder, backupFolder, outputFolder, ...
+            lockFolder, lockToken);
     else
         restored = false;
         restoreMessage = sprintf( ...
@@ -118,458 +151,39 @@ if hadPriorVersion && isfolder(backupFolder)
             'restored from %s: %s'], ...
             publishError.message, backupFolder, restoreMessage);
     end
+    rectangular_fpc_publish_lock( ...
+        'delete_file', backupMarker, lockFolder, lockToken);
 elseif ~isempty(cleanupFailure)
     error('RectangularFPC:AtomicRollbackFailed', ...
         ['Publish failed (%s), and the partial formal output could ', ...
         'not be removed: %s'], publishError.message, cleanupFailure);
+elseif isfile(backupMarker)
+    rectangular_fpc_publish_lock( ...
+        'delete_file', backupMarker, lockFolder, lockToken);
 end
-
 rethrow(publishError);
 
 end
 
 
-function cleanup = acquirePublishLock(lockFolder, moveFolder)
-% 原地认领协议（消除搬移式 stale 回收的无锁窗口）：
-%   - 锁目录路径永不消失，第三方无法趁虚 mkdir 建锁；
-%   - 固定名 reclaim.claim 子目录作为迁移互斥（自身带 owner 证据，
-%     孤儿认领仅在 claimant 已死/过期时按现有 stale 语义回收）；
-%   - 复核 owner.txt 未被替换后，经 owner.txt.new → owner.txt 原子换主。
-token = uniqueToken();
-if isfolder(lockFolder)
-    ownerTextBefore = readPublishLockOwnerText(lockFolder);
-    if ~isStalePublishLock(lockFolder)
-        error('RectangularFPC:ConcurrentPublish', ...
-            'Another process is publishing this minute version: %s', ...
-            lockFolder);
-    end
-    claimDir = fullfile(lockFolder, 'reclaim.claim');
-    [claimed, claimToken] = acquireReclaimClaim(claimDir, moveFolder);
-    if ~claimed
-        error('RectangularFPC:ConcurrentPublish', ...
-            'Another process is reclaiming the stale lock at %s', ...
-            lockFolder);
-    end
-    claimCleanup = onCleanup(@() releaseReclaimClaim(claimDir, claimToken));
-    ownerChanged = ~strcmp(readPublishLockOwnerText(lockFolder), ownerTextBefore);
-    if ~ownerChanged && ~strcmp(readPublishLockToken(claimDir), claimToken)
-        % 防御性复核：认领标记被他人占用即放弃（正常路径不可达）。
-        ownerChanged = true;
-    end
-    if ~ownerChanged
-        replaceOwnerAtomically(lockFolder, token, moveFolder);
-        ownerChanged = ~strcmp(readPublishLockToken(lockFolder), token);
-    end
-    clear claimCleanup;
-    if ownerChanged
-        error('RectangularFPC:ConcurrentPublish', ...
-            ['Publish lock at %s changed identity during stale claim; ', ...
-            'another writer now owns it.'], lockFolder);
-    end
-else
-    [created, message, messageId] = mkdir(lockFolder);
-    if ~created || strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists')
-        error('RectangularFPC:ConcurrentPublish', ...
-            'Another process is publishing this minute version: %s (%s)', ...
-            lockFolder, message);
-    end
-    try
-        writePublishLockOwner(lockFolder, token);
-    catch ownerError
-        rmdir(lockFolder, 's');
-        rethrow(ownerError);
-    end
-end
-cleanup = onCleanup(@() releasePublishLock(lockFolder, token));
-end
+function cleanupPriorBackup( ...
+    backupFolder, backupMarker, lockFolder, lockToken)
 
-function [ok, claimToken] = acquireReclaimClaim(claimDir, moveFolder)
-claimToken = '';
-ok = tryCreateClaimDir(claimDir);
-if ~ok && isStalePublishLock(claimDir)
-    % 崩溃残留的孤儿认领：仅当 claimant 自身已死/过期时才可回收；且回收
-    % 必须以原子 rename 竞争"这一个"claim（tombstone 唯一名）——基于
-    % stale 判定直接 rmdir 固定路径会删掉竞争者刚建好的新认领（TOCTOU）。
-    tombstone = sprintf('%s.tomb_%s', claimDir, uniqueToken());
-    [moved, ~] = tryMoveFolder(moveFolder, claimDir, tombstone);
-    if moved
-        rmdir(tombstone, 's');
-        ok = tryCreateClaimDir(claimDir);
-    end
-end
-if ok
-    claimToken = uniqueToken();
-    try
-        writePublishLockOwner(claimDir, claimToken);
-    catch
-        releaseReclaimClaim(claimDir, claimToken);
-        claimToken = '';
-        ok = false;
-    end
-end
-end
-
-function ok = tryCreateClaimDir(claimDir)
-[created, ~, messageId] = mkdir(claimDir);
-ok = created && ~strcmp(messageId, 'MATLAB:MKDIR:DirectoryExists');
-end
-
-function releaseReclaimClaim(claimDir, token)
-% token 感知释放：只移除自己写入的认领标记。
-if isfolder(claimDir) && strcmp(readPublishLockToken(claimDir), token)
-    rmdir(claimDir, 's');
-end
-end
-
-function replaceOwnerAtomically(lockFolder, token, moveFolder)
-pendingOwner = fullfile(lockFolder, 'owner.txt.new');
-fid = fopen(pendingOwner, 'w', 'n', 'US-ASCII');
-if fid == -1
-    error('RectangularFPC:ExportWriteFailed', ...
-        'Unable to create publish-lock owner swap file: %s', pendingOwner);
-end
-swapCleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'pid=%d\n', matlabProcessID);
-fprintf(fid, 'host=%s\n', localHostIdentity());
-fprintf(fid, 'token=%s\n', token);
-fprintf(fid, 'created=%s\n', char(datetime('now', ...
-    'TimeZone', 'UTC', 'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
-clear swapCleanup;
-[replaced, replaceMessage] = tryMoveFolder(moveFolder, pendingOwner, ...
-    fullfile(lockFolder, 'owner.txt'));
-if ~replaced
-    if isfile(pendingOwner)
-        delete(pendingOwner);
-    end
-    error('RectangularFPC:ConcurrentPublish', ...
-        'Unable to swap publish-lock owner at %s: %s', lockFolder, replaceMessage);
-end
-end
-
-
-function releasePublishLock(lockFolder, token)
-
-if isfolder(lockFolder) && strcmp(readPublishLockToken(lockFolder), token)
-    rmdir(lockFolder, 's');
-end
-
-end
-
-
-function writePublishLockOwner(lockFolder, token)
-
-filename = fullfile(lockFolder, 'owner.txt');
-fid = fopen(filename, 'w', 'n', 'US-ASCII');
-if fid == -1
-    error('RectangularFPC:ExportWriteFailed', ...
-        'Unable to create publish-lock owner: %s', filename);
-end
-cleanup = onCleanup(@() fclose(fid));
-fprintf(fid, 'pid=%d\n', matlabProcessID);
-fprintf(fid, 'host=%s\n', localHostIdentity());
-fprintf(fid, 'token=%s\n', token);
-fprintf(fid, 'created=%s\n', char(datetime('now', ...
-    'TimeZone', 'UTC', 'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
-clear cleanup;
-
-end
-
-
-function token = readPublishLockToken(lockFolder)
-
-token = '';
-filename = fullfile(lockFolder, 'owner.txt');
-if ~isfile(filename)
-    return;
-end
-match = regexp(fileread(filename), '(?m)^token=([^\r\n]+)$', ...
-    'tokens', 'once');
-if ~isempty(match)
-    token = match{1};
-end
-
-end
-
-
-function text = readPublishLockOwnerText(lockFolder)
-
-text = '';
-ownerFile = fullfile(lockFolder, 'owner.txt');
-if isfile(ownerFile)
-    text = fileread(ownerFile);
-end
-
-end
-
-
-function stale = isStalePublishLock(lockFolder)
-
-ownerFile = fullfile(lockFolder, 'owner.txt');
-if isfile(ownerFile)
-    ownerText = fileread(ownerFile);
-    pidMatch = regexp(ownerText, '(?m)^pid=(\d+)$', ...
-        'tokens', 'once');
-    hostMatch = regexp(ownerText, '(?m)^host=([^\r\n]+)$', ...
-        'tokens', 'once');
-    if isempty(pidMatch) || isempty(hostMatch)
-        stale = isExpiredIncompleteLock(ownerText, ownerFile);
-    elseif ~strcmpi(strtrim(hostMatch{1}), localHostIdentity())
-        stale = false;
-    else
-        stale = ~isProcessAlive(str2double(pidMatch{1}));
-    end
-else
-    stale = isExpiredIncompleteLock('', lockFolder);
-end
-
-end
-
-
-function alive = isProcessAlive(pid)
-
-alive = true;
-if ~isfinite(pid) || pid < 1 || pid ~= floor(pid)
-    return;
-end
-if ispc
-    try
-        process = System.Diagnostics.Process.GetProcessById(int32(pid));
-        alive = ~process.HasExited;
-        process.Dispose();
-    catch probeError
-        if ~isempty(probeError.ExceptionObject) && strcmp( ...
-                char(probeError.ExceptionObject.GetType().FullName), ...
-                'System.ArgumentException')
-            alive = false;
-        else
-            alive = true;
-        end
-    end
-elseif isunix
-    [status, ~] = system(sprintf('ps -p %d -o pid=', pid));
-    if status == 0
-        alive = true;
-    elseif status == 1
-        alive = false;
-    else
-        alive = true;
-    end
-end
-
-end
-
-
-function expired = isExpiredIncompleteLock(ownerText, fallbackPath)
-
-gracePeriod = minutes(5);
-created = NaT;
-match = regexp(ownerText, '(?m)^created=([^\r\n]+)$', ...
-    'tokens', 'once');
-if ~isempty(match)
-    try
-        created = datetime(match{1}, ...
-            'InputFormat', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX', ...
-            'TimeZone', 'UTC');
-    catch
-        created = NaT;
-    end
-end
-if isnat(created)
-    info = dir(fallbackPath);
-    if isempty(info)
-        expired = false;
-        return;
-    end
-    created = datetime(info(1).datenum, 'ConvertFrom', 'datenum', ...
-        'TimeZone', 'UTC');
-end
-expired = datetime('now', 'TimeZone', 'UTC') - created > gracePeriod;
-
-end
-
-
-function host = localHostIdentity()
-
-host = getenv('COMPUTERNAME');
-if isempty(host)
-    host = getenv('HOSTNAME');
-end
-if isempty(host)
-    try
-        host = char(java.net.InetAddress.getLocalHost().getHostName());
-    catch
-        host = '';
-    end
-end
-host = lower(strtrim(host));
-if isempty(host)
-    error('RectangularFPC:PublishHostUnavailable', ...
-        'Unable to determine the local host identity for publication locking.');
-end
-
-end
-
-
-function recoverOrphanBackup(outputFolder, moveFolder)
-
-if isfolder(outputFolder)
-    if hasOrphanBackups(outputFolder)
-        if isCommittedOutput(outputFolder)
-            removeOrphanBackups(outputFolder);
-        else
-            error('RectangularFPC:AtomicRecoveryFailed', ...
-                ['Formal output is incomplete while a recovery backup ', ...
-                'exists; both were preserved for manual inspection: %s'], ...
-                outputFolder);
-        end
-    end
-    return;
-end
-if isfile(outputFolder)
-    error('RectangularFPC:AtomicPublishFailed', ...
-        'Formal output path is occupied by a file: %s', outputFolder);
-end
-
-[parentFolder, outputName] = fileparts(outputFolder);
-backups = dir(fullfile(parentFolder, [outputName '_backup_*']));
-backups = backups([backups.isdir]);
-if isempty(backups)
-    return;
-end
-
-[~, newestIndex] = max([backups.datenum]);
-backupFolder = fullfile(backups(newestIndex).folder, backups(newestIndex).name);
-[restored, message] = tryMoveFolder( ...
-    moveFolder, backupFolder, outputFolder);
-if ~restored
-    error('RectangularFPC:AtomicRecoveryFailed', ...
-        'Unable to recover interrupted publication from %s: %s', ...
-        backupFolder, message);
-end
-
-end
-
-
-function present = hasOrphanBackups(outputFolder)
-
-[parentFolder, outputName] = fileparts(outputFolder);
-backups = dir(fullfile(parentFolder, [outputName '_backup_*']));
-present = any([backups.isdir]);
-
-end
-
-
-function committed = isCommittedOutput(outputFolder)
-
-committed = false;
-statusFile = fullfile(outputFolder, 'generation_status.txt');
-manifestFile = fullfile(outputFolder, 'reports', '08_file_manifest.csv');
-if ~isfile(statusFile) || ~isfile(manifestFile) || ...
-        isempty(regexp(fileread(statusFile), ...
-        '(?m)^Status:\s*SUCCESS\s*$', 'once'))
+if ~isfolder(backupFolder)
     return;
 end
 try
-    manifest = readtable(manifestFile, 'TextType', 'string');
-    required = {'relativePath', 'sizeBytes', 'sha256'};
-    if ~all(ismember(required, manifest.Properties.VariableNames))
-        return;
+    rectangular_fpc_publish_lock( ...
+        'remove_folder', backupFolder, lockFolder, lockToken);
+    rectangular_fpc_publish_lock( ...
+        'delete_file', backupMarker, lockFolder, lockToken);
+catch cleanupError
+    if strcmp(cleanupError.identifier, 'RectangularFPC:ConcurrentPublish')
+        rethrow(cleanupError);
     end
-    listed = strrep(string(manifest.relativePath), '\', '/');
-    if isempty(listed) || any(listed == "") || ...
-            numel(unique(listed)) ~= numel(listed)
-        return;
-    end
-    % 完整性门禁：清单必须与目录中除清单自身外的全部 regular files
-    % 集合完全相等。逐行校验无法发现空清单/截断清单（循环 0 次即通过），
-    % 集合全等才能保证半成品目录 fail closed。
-    actual = listOutputArtifacts(outputFolder, manifestFile);
-    if ~isequal(sort(listed), sort(actual))
-        return;
-    end
-    for rowIndex = 1:height(manifest)
-        artifact = fullfile(outputFolder, strrep( ...
-            char(manifest.relativePath(rowIndex)), '/', filesep));
-        info = dir(artifact);
-        if isempty(info) || info(1).isdir || ...
-                info(1).bytes ~= manifest.sizeBytes(rowIndex) || ...
-                ~strcmpi(sha256File(artifact), ...
-                char(manifest.sha256(rowIndex)))
-            return;
-        end
-    end
-catch
-    return;
-end
-committed = true;
-
-end
-
-
-function paths = listOutputArtifacts(outputFolder, manifestFile)
-
-entries = dir(fullfile(outputFolder, '**', '*'));
-entries = entries(~[entries.isdir]);
-paths = strings(0, 1);
-for entryIndex = 1:numel(entries)
-    fullPath = fullfile(entries(entryIndex).folder, ...
-        entries(entryIndex).name);
-    if strcmp(fullPath, manifestFile)
-        continue;
-    end
-    relative = extractAfter(fullPath, outputFolder);
-    relative = strrep(relative, filesep, '/');
-    if startsWith(relative, '/')
-        relative = extractAfter(relative, '/');
-    end
-    paths(end+1, 1) = string(relative); %#ok<AGROW>
-end
-
-end
-
-
-function removeOrphanBackups(outputFolder)
-
-[parentFolder, outputName] = fileparts(outputFolder);
-backups = dir(fullfile(parentFolder, [outputName '_backup_*']));
-for backupIndex = 1:numel(backups)
-    if backups(backupIndex).isdir
-        rmdir(fullfile(backups(backupIndex).folder, ...
-            backups(backupIndex).name), 's');
-    end
-end
-
-end
-
-
-function hash = sha256File(filename)
-
-fid = fopen(filename, 'rb');
-if fid == -1
-    hash = '';
-    return;
-end
-cleanup = onCleanup(@() fclose(fid));
-bytes = fread(fid, Inf, '*uint8');
-clear cleanup;
-digest = java.security.MessageDigest.getInstance('SHA-256');
-hashBytes = typecast(digest.digest(bytes), 'uint8');
-hash = lower(reshape(dec2hex(hashBytes, 2).', 1, []));
-
-end
-
-
-function [moved, message] = tryMoveFolder( ...
-    moveFolder, sourceFolder, destinationFolder)
-
-try
-    [moved, message] = moveFolder(sourceFolder, destinationFolder);
-catch moveError
-    moved = false;
-    message = moveError.message;
-end
-if ~moved && isempty(message)
-    message = 'unspecified folder move failure';
+    warning('RectangularFPC:BackupCleanupFailed', ...
+        'Published successfully, but backup cleanup failed: %s', ...
+        cleanupError.message);
 end
 
 end
@@ -580,13 +194,5 @@ function removeStagingFolder(tempOutputFolder)
 if isfolder(tempOutputFolder)
     rmdir(tempOutputFolder, 's');
 end
-
-end
-
-
-function token = uniqueToken()
-
-token = char(java.util.UUID.randomUUID());
-token = strrep(token, '-', '');
 
 end

@@ -12,6 +12,13 @@ switch operation
         varargout{1} = writeFormalExport(varargin{:});
     case 'engineering_artifacts'
         writeEngineeringArtifacts(varargin{:});
+    case 'verify_output'
+        cfg = varargin{1};
+        result = varargin{2};
+        outputFolder = varargin{3};
+        verifyReadableArtifactSet(outputFolder, cfg, result);
+        verifyFileManifest(fullfile(outputFolder, 'reports', ...
+            '08_file_manifest.csv'), outputFolder);
     otherwise
         error('RectangularFPC:UnknownExportOperation', ...
             'Unknown export operation: %s', operation);
@@ -38,11 +45,12 @@ if ~result.manufacturing.exportAllowed
         strjoin(result.manufacturing.failures, '; '));
 end
 
-outputFolder = fullfile(cfg.outputRoot, cfg.designName);
-if ~isfolder(cfg.outputRoot)
-    mkdir(cfg.outputRoot);
+outputRoot = canonicalAbsoluteFolder(cfg.outputRoot);
+outputFolder = fullfile(outputRoot, cfg.designName);
+if ~isfolder(outputRoot)
+    mkdir(outputRoot);
 end
-tempOutputFolder = [tempname(cfg.outputRoot), '_rectangular_fpc_staging'];
+tempOutputFolder = [tempname(outputRoot), '_rectangular_fpc_staging'];
 prepareFormalTempFolder(tempOutputFolder);
 stagingCleanup = onCleanup(@() removeStagingFolder(tempOutputFolder));
 
@@ -128,6 +136,24 @@ end
 end
 
 %% =========================================================
+function folder = canonicalAbsoluteFolder(folder)
+
+if isstring(folder) && isscalar(folder)
+    folder = char(folder);
+end
+if ~ischar(folder) || isempty(folder)
+    error('RectangularFPC:InvalidExportRequest', ...
+        'outputRoot must be a nonempty character vector or string scalar.');
+end
+file = java.io.File(folder);
+if ~file.isAbsolute()
+    folder = fullfile(pwd, folder);
+end
+folder = char(java.io.File(folder).getCanonicalPath());
+
+end
+
+%% =========================================================
 function prepareFormalTempFolder(tempOutputFolder)
 
 if isfolder(tempOutputFolder)
@@ -206,7 +232,7 @@ for viaIndex = 1:numel(result.vias)
         csvText(via.name), xyUser(1), xyUser(2), via.xy(1), via.xy(2), ...
         via.fromLayer, via.toLayer, csvText(via.type), ...
         csvText(via.placementRegion), csvText(via.placementMode));
-    fprintf(fid, '%.3f,%.3f,%.3f,%.3f,%s\n', ...
+    fprintf(fid, '%.9f,%.9f,%.9f,%.9f,%s\n', ...
         via.padDiameter, via.drillDiameter, annularRing, ...
         via.antipadDiameter, csvText(via.role));
 end
@@ -221,7 +247,7 @@ function writePadCoordinateRow(fid, pad, cfg, description)
 xyUser = rectangular_fpc_geometry('internal_to_user', pad.xy, cfg);
 fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,L1,external,pad,', ...
     csvText(pad.name), xyUser(1), xyUser(2), pad.xy(1), pad.xy(2));
-fprintf(fid, 'EXTERNAL_PAD,fixed,%.3f,0,0,0,%s\n', ...
+fprintf(fid, 'EXTERNAL_PAD,fixed,%.9f,0,0,0,%s\n', ...
     pad.diameter, csvText(description));
 
 end
@@ -236,22 +262,22 @@ fprintf(fid, '===================================\n');
 fprintf(fid, 'Design: %s\n', cfg.designName);
 fprintf(fid, 'Layers / turns per layer: %d / %d\n', ...
     result.layerCount, result.turnsPerLayer);
-fprintf(fid, 'Body size: %.3f x %.3f mm\n', cfg.plateLength, cfg.plateWidth);
-fprintf(fid, 'Right tab: %.3f x %.3f mm\n', cfg.tabLength, cfg.tabWidth);
-fprintf(fid, 'Trace width / spacing: %.3f / %.3f mm\n', ...
+fprintf(fid, 'Body size: %.12g x %.12g mm\n', cfg.plateLength, cfg.plateWidth);
+fprintf(fid, 'Right tab: %.12g x %.12g mm\n', cfg.tabLength, cfg.tabWidth);
+fprintf(fid, 'Trace width / spacing: %.12g / %.12g mm\n', ...
     cfg.traceWidth, cfg.traceSpacing);
-fprintf(fid, 'Total trace length: %.6f mm\n', result.totalTraceLengthMm);
-fprintf(fid, 'Estimated DC resistance: %.9f ohm\n', ...
+fprintf(fid, 'Total trace length: %.12g mm\n', result.totalTraceLengthMm);
+fprintf(fid, 'Estimated DC resistance: %.12g ohm\n', ...
     result.estimatedDcResistanceOhm);
 fprintf(fid, 'Fully validated maximum turns: %d\n', ...
     result.fullyValidatedMaximumTurns);
 fprintf(fid, 'Recommended turns: %d\n', result.recommendedTurns);
-fprintf(fid, 'Minimum copper spacing: %.6f mm\n', result.minCopperSpacing);
+fprintf(fid, 'Minimum copper spacing: %.12g mm\n', result.minCopperSpacing);
 fprintf(fid, 'Manufacturing status: %s\n', result.manufacturing.status);
 fprintf(fid, 'Manufacturing applicability: %s\n', ...
     result.manufacturing.applicability);
 for layerIndex = 1:cfg.layerCount
-    fprintf(fid, 'L%d trace length: %.6f mm\n', ...
+    fprintf(fid, 'L%d trace length: %.12g mm\n', ...
         layerIndex, result.layerLengthMm(layerIndex));
 end
 clear cleanup;
@@ -326,10 +352,13 @@ cleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'Rectangular FPC generation status\n');
 fprintf(fid, '=================================\n');
 fprintf(fid, 'Status: SUCCESS\n');
+fprintf(fid, 'SchemaVersion: 2\n');
+fprintf(fid, 'PublicationId: %s\n', uniqueToken());
 fprintf(fid, 'Generated: %s\n', char(datetime('now', ...
     'Format', 'yyyy-MM-dd HH:mm:ss')));
 fprintf(fid, 'Design: %s\n', cfg.designName);
 fprintf(fid, 'LayerCount: %d\n', cfg.layerCount);
+fprintf(fid, 'PreviewEnabled: %d\n', cfg.enablePreview);
 fprintf(fid, 'TurnsPerLayer: %d\n', result.turnsPerLayer);
 fprintf(fid, 'ManufacturingProfile: %s\n', result.manufacturing.profile);
 fprintf(fid, 'ManufacturingTier: %s\n', result.manufacturing.tier);
@@ -448,11 +477,8 @@ verifyTextArtifact(fullfile(outputFolder, 'reports', ...
     'Rectangular FPC fabrication notes', ...
     sprintf('Design: %s', cfg.designName), ...
     sprintf('Applicability: %s', result.manufacturing.applicability)});
-verifyTextArtifact(fullfile(outputFolder, 'generation_status.txt'), { ...
-    'Status: SUCCESS', sprintf('Design: %s', cfg.designName), ...
-    sprintf('LayerCount: %d', result.layerCount), ...
-    sprintf('TurnsPerLayer: %d', result.turnsPerLayer), ...
-    sprintf('ManufacturingStatus: %s', result.manufacturing.status)});
+verifyGenerationStatus(fullfile(outputFolder, 'generation_status.txt'), ...
+    cfg, result);
 
 svgFiles = dir(fullfile(outputFolder, 'previews', '*.svg'));
 expectedSvgCount = double(cfg.enablePreview) * (cfg.layerCount + 3);
@@ -468,11 +494,7 @@ if ~isequal(sort(actualSvgNames), sort(expectedSvgNames))
 end
 for fileIndex = 1:numel(svgFiles)
     filename = fullfile(svgFiles(fileIndex).folder, svgFiles(fileIndex).name);
-    svgText = lower(fileread(filename));
-    if ~contains(svgText, '<svg') || contains(svgText, '<image')
-        error('RectangularFPC:ExportReadbackFailed', ...
-            'SVG readback contract failed: %s', filename);
-    end
+    verifySvgArtifact(filename);
 end
 
 end
@@ -777,6 +799,244 @@ verifyCoordinates(filename, [data.x_internal_center_mm, ...
 verifyCoordinates(filename, [data.x_body_lower_left_mm, ...
     data.y_body_lower_left_mm], userXY, 1e-6);
 
+rowCount = numel(result.vias) + 2;
+expectedFrom = strings(rowCount, 1);
+expectedTo = strings(rowCount, 1);
+expectedType = strings(rowCount, 1);
+expectedRegion = strings(rowCount, 1);
+expectedMode = strings(rowCount, 1);
+expectedPadDiameter = zeros(rowCount, 1);
+expectedDrillDiameter = zeros(rowCount, 1);
+expectedAnnularRing = zeros(rowCount, 1);
+expectedAntipadDiameter = zeros(rowCount, 1);
+expectedDescription = strings(rowCount, 1);
+
+expectedFrom(1) = "L1";
+expectedTo(1) = "external";
+expectedType(1) = "pad";
+expectedRegion(1) = "EXTERNAL_PAD";
+expectedMode(1) = "fixed";
+expectedPadDiameter(1) = result.pads(1).diameter;
+expectedDescription(1) = "Top-layer input terminal";
+for viaIndex = 1:numel(result.vias)
+    rowIndex = viaIndex + 1;
+    via = result.vias(viaIndex);
+    expectedFrom(rowIndex) = sprintf('L%d', via.fromLayer);
+    expectedTo(rowIndex) = sprintf('L%d', via.toLayer);
+    expectedType(rowIndex) = string(via.type);
+    expectedRegion(rowIndex) = string(via.placementRegion);
+    expectedMode(rowIndex) = string(via.placementMode);
+    expectedPadDiameter(rowIndex) = via.padDiameter;
+    expectedDrillDiameter(rowIndex) = via.drillDiameter;
+    expectedAnnularRing(rowIndex) = ...
+        (via.padDiameter - via.drillDiameter) / 2;
+    expectedAntipadDiameter(rowIndex) = via.antipadDiameter;
+    expectedDescription(rowIndex) = string(via.role);
+end
+expectedFrom(end) = "L1";
+expectedTo(end) = "external";
+expectedType(end) = "pad";
+expectedRegion(end) = "EXTERNAL_PAD";
+expectedMode(end) = "fixed";
+expectedPadDiameter(end) = result.pads(2).diameter;
+expectedDescription(end) = "Top-layer output terminal";
+
+verifyTextColumn(filename, data.from_layer, expectedFrom, 'from_layer');
+verifyTextColumn(filename, data.to_layer, expectedTo, 'to_layer');
+verifyTextColumn(filename, data.object_type, expectedType, 'object_type');
+verifyTextColumn(filename, data.placement_region, expectedRegion, ...
+    'placement_region');
+verifyTextColumn(filename, data.placement_mode, expectedMode, ...
+    'placement_mode');
+verifyCoordinates(filename, data.pad_diameter_mm, expectedPadDiameter, 1e-6);
+verifyCoordinates(filename, data.drill_diameter_mm, ...
+    expectedDrillDiameter, 1e-6);
+verifyCoordinates(filename, data.annular_ring_mm, expectedAnnularRing, 1e-6);
+verifyCoordinates(filename, data.antipad_diameter_mm, ...
+    expectedAntipadDiameter, 1e-6);
+verifyTextColumn(filename, data.description, expectedDescription, 'description');
+
+end
+
+%% =========================================================
+function verifyTextColumn(filename, actual, expected, contract)
+
+actual = string(actual);
+actual(ismissing(actual)) = "";
+expected = string(expected);
+expected(ismissing(expected)) = "";
+if ~isequal(actual(:), expected(:))
+    readbackError(filename, [contract ' mismatch']);
+end
+
+end
+
+%% =========================================================
+function verifySvgArtifact(filename)
+
+svgText = fileread(filename);
+lowerText = lower(svgText);
+if contains(lowerText, '<!doctype') || contains(lowerText, '<!entity') || ...
+        contains(lowerText, '<image') || contains(lowerText, '<script') || ...
+        contains(lowerText, '<foreignobject') || ...
+        contains(lowerText, 'javascript:') || ...
+        ~isempty(regexp(lowerText, '\son[a-z]+\s*=', 'once'))
+    readbackError(filename, 'unsafe or embedded SVG content');
+end
+try
+    document = xmlread(filename);
+    root = document.getDocumentElement();
+    if ~strcmpi(char(root.getNodeName()), 'svg') || ...
+            ~validSvgViewBox(char(root.getAttribute('viewBox')))
+        readbackError(filename, 'SVG root or viewBox contract');
+    end
+    if ~hasRenderableVector(root)
+        readbackError(filename, 'SVG contains no nonempty vector geometry');
+    end
+catch verificationError
+    if strcmp(verificationError.identifier, ...
+            'RectangularFPC:ExportReadbackFailed')
+        rethrow(verificationError);
+    end
+    readbackError(filename, 'SVG is not well-formed XML');
+end
+
+end
+
+%% =========================================================
+function hasVector = hasRenderableVector(root)
+
+attributeContracts = { ...
+    'path', {'d'}; ...
+    'polyline', {'points'}; ...
+    'polygon', {'points'}; ...
+    'circle', {'r'}; ...
+    'ellipse', {'rx', 'ry'}; ...
+    'rect', {'width', 'height'}};
+hasVector = false;
+for contractIndex = 1:size(attributeContracts, 1)
+    nodes = root.getElementsByTagName(attributeContracts{contractIndex, 1});
+    attributes = attributeContracts{contractIndex, 2};
+    for nodeIndex = 0:nodes.getLength() - 1
+        complete = true;
+        for attributeIndex = 1:numel(attributes)
+            value = strtrim(char(nodes.item(nodeIndex).getAttribute( ...
+                attributes{attributeIndex})));
+            complete = complete && ~isempty(value);
+        end
+        if complete && attributeGeometryIsNonempty( ...
+                attributeContracts{contractIndex, 1}, ...
+                nodes.item(nodeIndex), attributes)
+            hasVector = true;
+            return;
+        end
+    end
+end
+
+lineNodes = root.getElementsByTagName('line');
+lineAttributes = {'x1', 'y1', 'x2', 'y2'};
+for nodeIndex = 0:lineNodes.getLength() - 1
+    coordinates = nan(1, numel(lineAttributes));
+    for attributeIndex = 1:numel(lineAttributes)
+        value = strtrim(char(lineNodes.item(nodeIndex).getAttribute( ...
+            lineAttributes{attributeIndex})));
+        coordinates(attributeIndex) = str2double(value);
+    end
+    if all(isfinite(coordinates)) && ...
+            any(coordinates(1:2) ~= coordinates(3:4))
+        hasVector = true;
+        return;
+    end
+end
+
+end
+
+%% =========================================================
+function valid = validSvgViewBox(viewBox)
+
+parts = regexp(strtrim(viewBox), '[,\s]+', 'split');
+parts = parts(~cellfun('isempty', parts));
+values = str2double(parts);
+valid = numel(values) == 4 && all(isfinite(values)) && ...
+    values(3) > 0 && values(4) > 0;
+
+end
+
+%% =========================================================
+function nonempty = attributeGeometryIsNonempty(tagName, node, attributes)
+
+values = cell(size(attributes));
+for attributeIndex = 1:numel(attributes)
+    values{attributeIndex} = char(node.getAttribute( ...
+        attributes{attributeIndex}));
+end
+numberPattern = '[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?';
+numbers = str2double(regexp(strjoin(values, ' '), ...
+    numberPattern, 'match'));
+if any(~isfinite(numbers))
+    nonempty = false;
+    return;
+end
+switch tagName
+    case 'path'
+        nonempty = ~isempty(regexp(values{1}, '^\s*[Mm]', 'once')) && ...
+            numel(numbers) >= 4;
+    case 'polyline'
+        nonempty = numel(numbers) >= 4 && mod(numel(numbers), 2) == 0;
+    case 'polygon'
+        nonempty = numel(numbers) >= 6 && mod(numel(numbers), 2) == 0;
+    case 'circle'
+        nonempty = isscalar(numbers) && numbers(1) > 0;
+    case {'ellipse', 'rect'}
+        nonempty = numel(numbers) == 2 && all(numbers > 0);
+    otherwise
+        nonempty = false;
+end
+
+end
+
+%% =========================================================
+function verifyGenerationStatus(filename, cfg, result)
+
+content = fileread(filename);
+expectedFields = { ...
+    'Status', 'SUCCESS'; ...
+    'SchemaVersion', '2'; ...
+    'Design', cfg.designName; ...
+    'LayerCount', sprintf('%d', result.layerCount); ...
+    'PreviewEnabled', sprintf('%d', cfg.enablePreview); ...
+    'TurnsPerLayer', sprintf('%d', result.turnsPerLayer); ...
+    'ManufacturingProfile', result.manufacturing.profile; ...
+    'ManufacturingTier', result.manufacturing.tier; ...
+    'ManufacturingStatus', result.manufacturing.status; ...
+    'ManufacturingApplicability', result.manufacturing.applicability; ...
+    'ManufacturingVerified', sprintf('%d', result.manufacturing.verified)};
+for fieldIndex = 1:size(expectedFields, 1)
+    actual = exactStatusField(filename, content, expectedFields{fieldIndex, 1});
+    if ~strcmp(actual, expectedFields{fieldIndex, 2})
+        readbackError(filename, sprintf('%s status field mismatch', ...
+            expectedFields{fieldIndex, 1}));
+    end
+end
+publicationId = exactStatusField(filename, content, 'PublicationId');
+if isempty(regexp(publicationId, '^[0-9a-fA-F]{32}$', 'once'))
+    readbackError(filename, 'PublicationId status field mismatch');
+end
+exactStatusField(filename, content, 'Generated');
+
+end
+
+%% =========================================================
+function value = exactStatusField(filename, content, fieldName)
+
+matches = regexp(content, ['(?m)^' regexptranslate('escape', fieldName) ...
+    ':\s*([^\r\n]+?)\s*$'], 'tokens');
+if numel(matches) ~= 1
+    readbackError(filename, sprintf( ...
+        '%s status field must occur exactly once', fieldName));
+end
+value = strtrim(matches{1}{1});
+
 end
 
 %% =========================================================
@@ -863,17 +1123,34 @@ if ~isequal(string(data.check_id), string({manufacturing.checks.id}.')) || ...
         ~isequal(string(data.status), string({manufacturing.checks.status}.'))
     readbackError(filename, 'manufacturing check rows');
 end
-verifyCoordinates(filename, data.measured_mm, ...
+verifyNumericContract(filename, data.measured_mm, ...
     [manufacturing.checks.measuredMm].', 1e-8);
-verifyCoordinates(filename, data.limit_mm, ...
+verifyNumericContract(filename, data.limit_mm, ...
     [manufacturing.checks.limitMm].', 1e-8);
-verifyCoordinates(filename, data.margin_mm, ...
+verifyNumericContract(filename, data.margin_mm, ...
     [manufacturing.checks.marginMm].', 1e-8);
 if ~isequal(normalizeMissingStrings(data.code), ...
         string({manufacturing.checks.code}.')) || ...
         ~isequal(normalizeMissingStrings(data.message), ...
         string({manufacturing.checks.message}.'))
     readbackError(filename, 'manufacturing code or message');
+end
+
+end
+
+%% =========================================================
+function verifyNumericContract(filename, actual, expected, tolerance)
+
+if ~isequal(size(actual), size(expected)) || ...
+        any(isinf(actual), 'all') || any(isinf(expected), 'all') || ...
+        ~isequal(isnan(actual), isnan(expected)) || ...
+        ~isequal(isfinite(actual), isfinite(expected))
+    readbackError(filename, 'numeric contract mismatch');
+end
+finiteValues = isfinite(expected);
+if any(finiteValues, 'all') && ...
+        max(abs(actual(finiteValues) - expected(finiteValues)), [], 'all') > tolerance
+    readbackError(filename, 'numeric contract mismatch');
 end
 
 end
@@ -1171,7 +1448,7 @@ fprintf(fid, ['check_id,status,measured_mm,limit_mm,margin_mm,', ...
     'code,message\n']);
 for checkIndex = 1:numel(manufacturing.checks)
     check = manufacturing.checks(checkIndex);
-    fprintf(fid, '%s,%s,%.9g,%.9g,%.9g,%s,%s\n', ...
+    fprintf(fid, '%s,%s,%.17g,%.17g,%.17g,%s,%s\n', ...
         csvText(check.id), csvText(check.status), check.measuredMm, ...
         check.limitMm, check.marginMm, csvText(check.code), ...
         csvText(check.message));
@@ -1189,8 +1466,8 @@ fprintf(fid, 'Rectangular FPC fabrication notes\n');
 fprintf(fid, '=================================\n');
 fprintf(fid, 'Design: %s\n', cfg.designName);
 fprintf(fid, 'Layer count: %d\n', cfg.layerCount);
-fprintf(fid, 'Copper: 1 oz nominal (%.3f mm)\n', cfg.copperThickness);
-fprintf(fid, 'Trace width / spacing: %.3f / %.3f mm\n', ...
+fprintf(fid, 'Copper: 1 oz nominal (%.12g mm)\n', cfg.copperThickness);
+fprintf(fid, 'Trace width / spacing: %.12g / %.12g mm\n', ...
     cfg.traceWidth, cfg.traceSpacing);
 fprintf(fid, 'Manufacturing profile: %s (%s)\n', ...
     manufacturing.profile, manufacturing.tier);
@@ -1205,10 +1482,10 @@ for sourceIndex = 1:numel(manufacturing.sourceUrls)
 end
 fprintf(fid, ['Import the physical-copper DXF when the EDA tool honors ', ...
     'LWPOLYLINE constant width; otherwise import the centerline DXF and ', ...
-    'assign %.3f mm trace width.\n'], cfg.traceWidth);
+    'assign %.12g mm trace width.\n'], cfg.traceWidth);
 fprintf(fid, ['The drill map is a positional reference. Create plated ', ...
     'vias and pads from 01_pad_via_coordinates.csv in the target EDA tool.\n']);
-if strcmp(manufacturing.applicability, 'SUPPORTED')
+if ismember(cfg.layerCount, [2, 4])
     fprintf(fid, ['All vias are plated through holes through the complete stack. ', ...
         'Create copper pads only on connectedLayers and apply each layer''s ', ...
         'antipad keepout DXF on every non-connected layer.\n']);
@@ -1736,5 +2013,13 @@ else
     plot(cx, cy, 'Color', lineColor, 'LineWidth', lineWidth, 'LineStyle', lineStyle, ...
         'DisplayName', displayName);
 end
+
+end
+
+%% =========================================================
+function token = uniqueToken()
+
+token = char(java.util.UUID.randomUUID());
+token = strrep(token, '-', '');
 
 end

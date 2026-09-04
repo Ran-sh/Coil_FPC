@@ -75,17 +75,17 @@ for k = 1:numel(scalarNumeric)
     end
 end
 
-if cfg.layerCount < 2 || cfg.layerCount ~= floor(cfg.layerCount) || ...
-        mod(cfg.layerCount, 2) ~= 0 || cfg.layerCount > cfg.maxLayerCount
+allowedLayerCounts = [2, 4, 6, 8];
+if ~ismember(cfg.layerCount, allowedLayerCounts) || ...
+        cfg.layerCount > cfg.maxLayerCount
     error('RectangularFPC:InvalidLayerCount', ...
-        ['layerCount=%g is invalid; layerCount must be an even value ', ...
-         '(偶数) from 2 through maxLayerCount=%g.'], ...
+        ['layerCount=%g is invalid; supported even values (偶数) are ', ...
+         '2, 4, 6, or 8 and must not exceed maxLayerCount=%g.'], ...
         cfg.layerCount, cfg.maxLayerCount);
 end
-if cfg.maxLayerCount < 2 || cfg.maxLayerCount ~= floor(cfg.maxLayerCount) || ...
-        mod(cfg.maxLayerCount, 2) ~= 0
+if ~ismember(cfg.maxLayerCount, allowedLayerCounts)
     error('RectangularFPC:InvalidLayerCount', ...
-        'maxLayerCount=%g must be an even value (偶数) of at least 2.', ...
+        'maxLayerCount=%g must be one of 2, 4, 6, or 8.', ...
         cfg.maxLayerCount);
 end
 if cfg.turnsPerLayer < 1 || cfg.turnsPerLayer ~= floor(cfg.turnsPerLayer)
@@ -308,6 +308,14 @@ if rectangular_fpc_geometry('has_zero_length', boardXY, tol) || ...
     failures{end+1} = '存在零长度线段';
 end
 
+[topologyPass, topologyIssues, topologyEndpointErrors] = ...
+    validateElectricalTopology(cfg, d, layerPaths, vias);
+if ~topologyPass
+    for issueIndex = 1:numel(topologyIssues)
+        failures{end+1} = topologyIssues{issueIndex}; %#ok<AGROW>
+    end
+end
+
 boardMinAngle = NaN;
 if cfg.enableBoardAngleCheck
     boardMinAngle = minimumClosedPolylineInteriorAngle(boardXY, tol);
@@ -522,6 +530,7 @@ minViaToUnrelatedCopperMm = measureMinViaToUnrelatedCopperMm( ...
 minDrillToNonConnectedCopperMm = measureMinDrillToNonConnectedCopperMm( ...
     vias, layerPaths, cfg);
 minDrillToBoardMm = measureMinDrillToBoardMm(vias, closedBoardXY);
+minViaToBoardMm = measureMinViaToBoardMm(vias, closedBoardXY);
 manufacturingRules = rectangular_fpc_manufacturing('resolve', cfg).rules;
 padTraceMeasuredPass = minPadToUnrelatedTraceMm >= ...
     cfg.padToCopperClearance - tol;
@@ -532,17 +541,17 @@ drillCopperMeasuredPass = minDrillToNonConnectedCopperMm >= ...
 drillBoardMeasuredPass = minDrillToBoardMm >= ...
     manufacturingRules.minDrillToBoardMm - tol;
 if cfg.enablePadClearanceCheck && ~padTraceMeasuredPass
-    failures{end+1} = '焊盘到无关连接走线的实测净距不足'; %#ok<AGROW>
+    failures{end+1} = '焊盘到无关连接走线的实测净距不足';
 end
 if cfg.enableViaClearanceCheck && ~viaTraceMeasuredPass
-    failures{end+1} = '过孔焊环到无关连接走线的实测净距不足'; %#ok<AGROW>
+    failures{end+1} = '过孔焊环到无关连接走线的实测净距不足';
 end
 if cfg.enableViaClearanceCheck && ismember(cfg.layerCount, [2, 4]) && ...
         ~drillCopperMeasuredPass
-    failures{end+1} = '钻孔到非连接层铜的实测净距不足'; %#ok<AGROW>
+    failures{end+1} = '钻孔到非连接层铜的实测净距不足';
 end
 if cfg.enableViaClearanceCheck && ~drillBoardMeasuredPass
-    failures{end+1} = '钻孔到板框的实测净距不足'; %#ok<AGROW>
+    failures{end+1} = '钻孔到板框的实测净距不足';
 end
 
 passed = isempty(failures);
@@ -555,7 +564,8 @@ reportLines = buildValidationReportLines( ...
     boardSelfIntersectionPass, copperSelfIntersectionPass, ...
     padBoardPass, padPadPass, padCopperPass, viaToViaPass, ...
     viaToBoardPass, viaToPadPass, viaConnectedPass, ...
-    viaNonConnectedPass, copperClearancePass, connectionPass);
+    viaNonConnectedPass, copperClearancePass, connectionPass, ...
+    topologyPass);
 validation = struct( ...
     'passed', passed, 'messages', {failures}, 'advisories', {{}}, ...
     'reportLines', {reportLines}, 'minBoardAngleDeg', boardMinAngle, ...
@@ -566,7 +576,11 @@ validation = struct( ...
     'minViaToUnrelatedCopperMm', minViaToUnrelatedCopperMm, ...
     'minDrillToNonConnectedCopperMm', minDrillToNonConnectedCopperMm, ...
     'minDrillToBoardMm', minDrillToBoardMm, ...
+    'minViaToBoardMm', minViaToBoardMm, ...
     'connectionErrorsMm', connectionErrors, ...
+    'topologyPassed', topologyPass, ...
+    'topologyIssues', {topologyIssues}, ...
+    'topologyEndpointErrorsMm', topologyEndpointErrors, ...
     'viaConnectedCopperPassed', viaConnectedPass, ...
     'viaNonConnectedCopperPassed', viaNonConnectedPass);
 
@@ -640,6 +654,13 @@ try
     viaXY = vertcat(vias.xy);
 catch ME
     reason = ME.message;
+    return;
+end
+
+[topologyPass, topologyIssues] = ...
+    validateElectricalTopology(cfg, d, layerPaths, vias);
+if ~topologyPass
+    reason = strjoin(topologyIssues, '; ');
     return;
 end
 
@@ -1684,6 +1705,15 @@ for viaIndex = 1:numel(vias)
 end
 end
 
+function dMin = measureMinViaToBoardMm(vias, boardXY)
+
+dMin = Inf;
+for viaIndex = 1:numel(vias)
+    dMin = min(dMin, minimumDistancePointToPolyline( ...
+        vias(viaIndex).xy, boardXY) - vias(viaIndex).padDiameter/2);
+end
+end
+
 %% =========================================================
 function lines = buildValidationReportLines( ...
     cfg, passed, failures, limits, fullyValidatedMaxTurns, ...
@@ -1695,7 +1725,7 @@ function lines = buildValidationReportLines( ...
     padBoardPass, padPadPass, padCopperPass, ...
     viaToViaPass, viaToBoardPass, viaToPadPass, ...
     viaConnectedPass, viaNonConnectedPass, ...
-    copperClearancePass, connectionPass)
+    copperClearancePass, connectionPass, topologyPass)
 
 passText = @(flag) ternaryText(flag, 'PASS', 'FAIL');
 
@@ -1791,6 +1821,8 @@ lines{end+1} = sprintf('层间连接误差             : %.6f mm', ...
     max(connectionErrors));
 lines{end+1} = sprintf('层间连接检查             : %s', ...
     passText(connectionPass));
+lines{end+1} = sprintf('电气拓扑端点检查         : %s', ...
+    passText(topologyPass));
 lines{end+1} = sprintf('过孔重合检查             : %s', ...
     passText(viaCoincidencePass));
 
@@ -1849,6 +1881,111 @@ if ~passed
     lines = [lines, failureLines];
 end
 
+end
+
+function [passed, issues, endpointErrors] = ...
+    validateElectricalTopology(cfg, d, layerPaths, vias)
+
+tol = cfg.connectionTolerance;
+issues = {};
+seriesMask = strcmp({vias.role}, 'series_interconnect');
+seriesVias = vias(seriesMask);
+endpointErrors = struct( ...
+    'seriesFromMm', nan(numel(seriesVias), 1), ...
+    'seriesToMm', nan(numel(seriesVias), 1), ...
+    'padAMm', NaN, ...
+    'voutFromMm', NaN, ...
+    'voutReturnMm', NaN, ...
+    'padBMm', NaN);
+
+if numel(seriesVias) ~= cfg.layerCount - 1
+    issues{end+1} = sprintf( ...
+        '串联过孔数量%d与预期%d不一致', ...
+        numel(seriesVias), cfg.layerCount - 1);
+end
+for viaIndex = 1:numel(seriesVias)
+    via = seriesVias(viaIndex);
+    [fromPass, fromError] = endpointPathPass( ...
+        via.fromLeadPath, 'end', via.xy, tol);
+    [toPass, toError] = endpointPathPass( ...
+        via.toLeadPath, 'start', via.xy, tol);
+    endpointErrors.seriesFromMm(viaIndex) = fromError;
+    endpointErrors.seriesToMm(viaIndex) = toError;
+    if ~fromPass
+        issues{end+1} = sprintf( ...
+            '%s 的 fromLeadPath 为空、无效或未连接到过孔', ...
+            via.name); %#ok<AGROW>
+    end
+    if ~toPass
+        issues{end+1} = sprintf( ...
+            '%s 的 toLeadPath 为空、无效或未连接到过孔', ...
+            via.name); %#ok<AGROW>
+    end
+end
+
+if isempty(layerPaths) || isempty(layerPaths{1})
+    issues{end+1} = 'L1 主路径缺失，PAD_A 无物理连接';
+else
+    [padAPass, endpointErrors.padAMm] = endpointPathPass( ...
+        layerPaths{1}{1}, 'start', d.padA, tol);
+    if ~padAPass
+        issues{end+1} = 'L1 主路径未连接到 PAD_A';
+    end
+end
+
+voutMask = strcmp({vias.name}, 'VOUT');
+if nnz(voutMask) ~= 1
+    issues{end+1} = 'VOUT 数量必须恰好为 1';
+else
+    vout = vias(voutMask);
+    if numel(layerPaths) < cfg.layerCount || ...
+            isempty(layerPaths{cfg.layerCount})
+        issues{end+1} = sprintf( ...
+            'L%d 主路径缺失，VOUT 无物理连接', ...
+            cfg.layerCount);
+    else
+        [voutFromPass, endpointErrors.voutFromMm] = endpointPathPass( ...
+            layerPaths{cfg.layerCount}{1}, 'end', vout.xy, tol);
+        if ~voutFromPass
+            issues{end+1} = sprintf( ...
+                'L%d 主路径未连接到 VOUT', cfg.layerCount);
+        end
+    end
+    if isempty(layerPaths) || numel(layerPaths{1}) < 2
+        issues{end+1} = 'L1 VOUT 返回路径缺失';
+    else
+        returnPath = layerPaths{1}{2};
+        [returnPass, endpointErrors.voutReturnMm] = endpointPathPass( ...
+            returnPath, 'start', vout.xy, tol);
+        [padBPass, endpointErrors.padBMm] = endpointPathPass( ...
+            returnPath, 'end', d.padB, tol);
+        if ~returnPass
+            issues{end+1} = 'L1 返回路径未从 VOUT 起始';
+        end
+        if ~padBPass
+            issues{end+1} = 'L1 返回路径未连接到 PAD_B';
+        end
+    end
+end
+passed = isempty(issues);
+end
+
+function [passed, endpointError] = endpointPathPass( ...
+    path, endpointName, targetXY, tol)
+
+passed = false;
+endpointError = Inf;
+if isempty(path) || ~isnumeric(path) || size(path, 2) ~= 2 || ...
+        size(path, 1) < 2 || any(~isfinite(path), 'all')
+    return;
+end
+if strcmp(endpointName, 'start')
+    endpoint = path(1, :);
+else
+    endpoint = path(end, :);
+end
+endpointError = norm(endpoint - targetXY);
+passed = endpointError <= tol;
 end
 
 function s = ternaryText(flag, trueText, falseText)
