@@ -52,3 +52,18 @@ verifyEqual(testCase, normalizedStaging, ...
 verifyEqual(testCase, normalizedOutput, ...
     char(java.io.File(output).getCanonicalPath()));
 end
+
+function testAccessTargetNormalizesSafePathAndRejectsRoots(testCase)
+safePath = fullfile(tempname, 'published_output');
+expected = char(java.io.File(safePath).getCanonicalPath());
+actual = rectangular_fpc_publish_paths( ...
+    'validate_access_target', safePath);
+verifyEqual(testCase, actual, expected);
+
+unsafeRoots = {'C:\', '\\offline-server\offline-share\', '/'};
+for rootIndex = 1:numel(unsafeRoots)
+    verifyError(testCase, @() rectangular_fpc_publish_paths( ...
+        'validate_access_target', unsafeRoots{rootIndex}), ...
+        'RectangularFPC:InvalidPublishRequest');
+end
+end
