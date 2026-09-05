@@ -20,6 +20,10 @@ if ~isa(reader, 'function_handle')
     error('RectangularFPC:InvalidReadRequest', ...
         'reader must be a function handle.');
 end
+if ~isfolder(outputFolder)
+    error('RectangularFPC:OutputNotFound', ...
+        'Published output folder does not exist: %s', outputFolder);
+end
 
 lockCleanup = rectangular_fpc_publish_atomically( ...
     'acquire_access', outputFolder); %#ok<NASGU>

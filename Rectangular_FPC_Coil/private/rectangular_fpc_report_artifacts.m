@@ -245,9 +245,28 @@ fprintf(fid, 'Trace width / spacing: %.12g / %.12g mm\n', ...
     cfg.traceWidth, cfg.traceSpacing);
 fprintf(fid, 'Manufacturing profile: %s (%s)\n', ...
     manufacturing.profile, manufacturing.tier);
+fprintf(fid, 'Requested profile: %s\n', manufacturing.requestedProfile);
+fprintf(fid, 'Base profile: %s\n', manufacturing.baseProfile);
+fprintf(fid, 'Rule classification: %s\n', ...
+    manufacturing.ruleClassification);
 fprintf(fid, 'Profile checked on: %s\n', manufacturing.sourceCheckedOn);
 fprintf(fid, 'Applicability: %s\n', manufacturing.applicability);
 fprintf(fid, 'Verified: %d\n', manufacturing.verified);
+baseRuleNames = fieldnames(manufacturing.baseRules);
+for ruleIndex = 1:numel(baseRuleNames)
+    ruleName = baseRuleNames{ruleIndex};
+    fprintf(fid, 'BaseRule.%s: %.17g\n', ...
+        ruleName, manufacturing.baseRules.(ruleName));
+    fprintf(fid, 'EffectiveRule.%s: %.17g\n', ...
+        ruleName, manufacturing.rules.(ruleName));
+end
+overrideNames = fieldnames(manufacturing.ruleOverrides);
+fprintf(fid, 'Rule override count: %d\n', numel(overrideNames));
+for overrideIndex = 1:numel(overrideNames)
+    ruleName = overrideNames{overrideIndex};
+    fprintf(fid, 'RuleOverride.%s: %.17g\n', ...
+        ruleName, manufacturing.ruleOverrides.(ruleName));
+end
 fprintf(fid, ['Publication read protocol: call ', ...
     'rectangular_fpc_read_committed(outputPath, reader) so the complete ', ...
     'read holds the same exclusive lock used for replacement.\n']);

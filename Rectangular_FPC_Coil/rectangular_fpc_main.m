@@ -10,15 +10,16 @@ if nargin < 1
 end
 
 requestedCfg = rectangular_fpc_default_config(overrides);
-logicalDesignName = requestedCfg.designName;
+validatedRequestedCfg = rectangular_fpc_validation('config', requestedCfg);
+logicalDesignName = validatedRequestedCfg.designName;
 runTimestamp = '';
 
-analysisCfg = requestedCfg;
+analysisCfg = validatedRequestedCfg;
 analysisCfg.analysisOnly = true;
 result = rectangular_fpc_engine(analysisCfg);
 effectiveCfg = result.config;
-effectiveCfg.analysisOnly = requestedCfg.analysisOnly;
-if ~requestedCfg.analysisOnly
+effectiveCfg.analysisOnly = validatedRequestedCfg.analysisOnly;
+if ~validatedRequestedCfg.analysisOnly
     runTimestamp = char(datetime('now', 'Format', 'yyyyMMdd_HHmm'));
     exportCfg = effectiveCfg;
     exportCfg.designName = sprintf('%s_%s', logicalDesignName, runTimestamp);
@@ -42,7 +43,8 @@ end
 % pop up the interactive figure viewer; headless runs (e.g. CI -batch) skip
 % the popup automatically. The viewer is implemented in private/rectangular_fpc_plot.m
 % and figures can be saved from the window menu.
-if ~requestedCfg.analysisOnly && requestedCfg.enableFigure && usejava('desktop')
+if ~validatedRequestedCfg.analysisOnly && ...
+        validatedRequestedCfg.enableFigure && usejava('desktop')
     rectangular_fpc_plot(result);
 end
 

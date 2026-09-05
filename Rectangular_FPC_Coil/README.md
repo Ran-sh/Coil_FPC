@@ -29,7 +29,7 @@ analysis = rectangular_fpc_main(struct('analysisOnly', true));
 rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/
 ```
 
-- 同一分钟同名设计原子替换，失败时恢复旧版本。
+- 同一分钟仅原子替换已通过提交契约的同名旧版本，失败时恢复；占位、残缺或被篡改的目录会原样保留并拒绝覆盖。
 - 目录存在不代表发布完成；读取必须通过 `rectangular_fpc_read_committed` 校验提交证据并持有访问锁，并发占用时稍后重试。
 - 跨分钟保留历史版本。
 - `analysisOnly=true` 不创建文件或目录。
