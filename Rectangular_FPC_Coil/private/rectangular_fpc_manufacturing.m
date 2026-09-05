@@ -55,7 +55,7 @@ validateManufacturingConfig(cfg);
 profile.requestedName = cfg.manufacturingProfile;
 profile.baseName = cfg.manufacturingProfile;
 profile.tier = cfg.manufacturingTier;
-profile.checkedOn = '2026-09-04';
+profile.checkedOn = '2026-09-05';
 profile.sourceUrls = { ...
     'https://jlcpcb.com/capabilities/flex-pcb-capabilities/', ...
     'https://jlcpcb.com/help/article/fpc-design-clearance', ...
@@ -259,6 +259,7 @@ if hasVias
     rows(end+1) = minimumRow('DRILL_TO_BOARD', ...
         result.minDrillToBoardMm, rules.minDrillToBoardMm, rules);
     rows(end+1) = viaTechnologyRow(cfg, result, rules);
+    rows(end+1) = viaStaggerRow(cfg, result);
     rows(end+1) = topologyRow(result.topologyPassed);
 end
 rows(end+1) = requiredValidationChecksRow(cfg);
@@ -413,6 +414,63 @@ else
 end
 row = makeRow('VIA_TECHNOLOGY', double(passed), 1, ...
     double(passed) - 1, status, code, message);
+end
+
+function row = viaStaggerRow(cfg, result)
+seriesVias = result.vias(strcmp( ...
+    {result.vias.role}, 'series_interconnect'));
+if numel(seriesVias) < 3
+    row = notApplicableRow('VIA_STAGGER', cfg.geometryTolerance, ...
+        'Fewer than three series vias; straight-row guidance is not applicable.');
+    return;
+end
+
+minimumStagger = minimumTripleAltitude(vertcat(seriesVias.xy));
+passed = minimumStagger > cfg.geometryTolerance;
+if passed
+    status = 'PASS';
+    code = 'PASS';
+    message = sprintf( ...
+        'Series vias are staggered; minimum triple altitude is %.6f mm.', ...
+        minimumStagger);
+elseif ismember(cfg.layerCount, [2, 4])
+    status = 'FAIL';
+    code = 'VIA_ROW_COLLINEAR';
+    message = ['Qualified-stack series vias are collinear; stagger the ', ...
+        'via row per the selected JLCPCB FPC design guidance.'];
+else
+    status = 'WARN';
+    code = 'UNVERIFIED_VIA_ROW';
+    message = ['Series vias are collinear in an unverified layer count; ', ...
+        'confirm the layout with the fabricator.'];
+end
+row = makeRow('VIA_STAGGER', minimumStagger, cfg.geometryTolerance, ...
+    minimumStagger - cfg.geometryTolerance, status, code, message);
+end
+
+function dMin = minimumTripleAltitude(xy)
+dMin = Inf;
+for firstIndex = 1:size(xy, 1) - 2
+    for secondIndex = firstIndex + 1:size(xy, 1) - 1
+        for thirdIndex = secondIndex + 1:size(xy, 1)
+            points = xy([firstIndex, secondIndex, thirdIndex], :);
+            pairLengths = [ ...
+                norm(points(2, :) - points(1, :)), ...
+                norm(points(3, :) - points(1, :)), ...
+                norm(points(3, :) - points(2, :))];
+            baseline = max(pairLengths);
+            if baseline <= eps
+                altitude = 0;
+            else
+                twiceArea = abs(det([ ...
+                    points(2, :) - points(1, :); ...
+                    points(3, :) - points(1, :)]));
+                altitude = twiceArea / baseline;
+            end
+            dMin = min(dMin, altitude);
+        end
+    end
+end
 end
 
 function row = topologyRow(passed)

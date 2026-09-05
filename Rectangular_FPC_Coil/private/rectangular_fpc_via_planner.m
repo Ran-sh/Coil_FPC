@@ -278,6 +278,7 @@ yList = yList(yList >= -yLim - tol & yList <= yLim + tol);
 
 bestMargin = -inf;
 bestDistance = inf;
+bestOffsetDistance = inf;
 bestXY = [];
 anchorXY = zeros(outerCount, 2);
 for m = 1:outerCount
@@ -318,8 +319,13 @@ for yi = yList
     end
     if ~conflict
         anchorDistance = sum(vecnorm(cand - anchorXY, 2, 2));
-        if anchorDistance < bestDistance - tol || ...
-                (abs(anchorDistance - bestDistance) <= tol && margin > bestMargin)
+        offsetDistance = abs(yi - cfg.outerViaRowOffsetY);
+        if offsetDistance < bestOffsetDistance - tol || ...
+                (abs(offsetDistance - bestOffsetDistance) <= tol && ...
+                (anchorDistance < bestDistance - tol || ...
+                (abs(anchorDistance - bestDistance) <= tol && ...
+                margin > bestMargin)))
+            bestOffsetDistance = offsetDistance;
             bestDistance = anchorDistance;
             bestMargin = margin;
             bestXY = cand;

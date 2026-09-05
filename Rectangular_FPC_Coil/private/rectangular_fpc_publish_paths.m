@@ -16,6 +16,12 @@ switch action
             invalidRequest('normalize requires exactly one path.');
         end
         varargout{1} = canonicalizePath(varargin{1}, 'path');
+    case 'validate_access_target'
+        if numel(varargin) ~= 1
+            invalidRequest( ...
+                'validate_access_target requires exactly one path.');
+        end
+        varargout{1} = validateAccessTarget(varargin{1});
     case 'is_ancestor'
         if numel(varargin) ~= 2
             invalidRequest('is_ancestor requires two paths.');
@@ -25,6 +31,19 @@ switch action
         varargout{1} = isStrictAncestor(ancestor, descendant);
     otherwise
         invalidRequest('Unknown publication-path operation: %s.', action);
+end
+
+end
+
+
+function outputFolder = validateAccessTarget(outputInput)
+
+rejectRootSyntax(outputInput, 'access target');
+outputFolder = canonicalizePath(outputInput, 'access target');
+rejectCanonicalRoot(outputFolder, 'access target');
+[~, outputName] = fileparts(outputFolder);
+if isempty(outputName)
+    invalidRequest('Access target must have a nonempty basename.');
 end
 
 end

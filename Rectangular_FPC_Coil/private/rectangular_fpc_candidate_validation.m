@@ -33,8 +33,14 @@ try
     geometryCache.escapeArcFallback = escapeArcFallback;
     viaXY = vertcat(vias.xy);
 catch ME
-    reason = ME.message;
-    return;
+    expectedFeasibilityErrors = { ...
+        'RectangularFPC:RoutingFailed', ...
+        'RectangularFPC:ViaPlanningFailed'};
+    if ismember(ME.identifier, expectedFeasibilityErrors)
+        reason = ME.message;
+        return;
+    end
+    rethrow(ME);
 end
 
 [topologyPass, topologyIssues] = ...

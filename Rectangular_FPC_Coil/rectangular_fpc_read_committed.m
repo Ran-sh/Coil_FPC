@@ -15,7 +15,8 @@ if ~ischar(outputFolder) || isempty(outputFolder)
     error('RectangularFPC:InvalidReadRequest', ...
         'outputFolder must be a nonempty character vector or string scalar.');
 end
-outputFolder = rectangular_fpc_publish_paths('normalize', outputFolder);
+outputFolder = rectangular_fpc_publish_paths( ...
+    'validate_access_target', outputFolder);
 if ~isa(reader, 'function_handle')
     error('RectangularFPC:InvalidReadRequest', ...
         'reader must be a function handle.');
