@@ -667,12 +667,14 @@ verifyTrue(testCase, isfile(after.fileManifest));
 verifyTrue(testCase, isfile(fullfile(oldVersion, 'old_version_marker.txt')));
 verifyTrue(testCase, isfile(fullfile(legacyRoot, 'historical_marker.txt')));
 
-writeMarker(fullfile(after.outputPath, 'published_marker.txt'));
+publishedId = readPublicationId(after.outputPath);
+publishedManifestHash = sha256File(after.fileManifest);
 bad = base;
 bad.manufacturingRuleOverrides = struct('minTraceWidthMm', 0.30);
 verifyError(testCase, @() rectangular_fpc_main(bad), ...
     'RectangularFPC:ManufacturingFailed');
-verifyTrue(testCase, isfile(fullfile(after.outputPath, 'published_marker.txt')));
+verifyEqual(testCase, readPublicationId(after.outputPath), publishedId);
+verifyEqual(testCase, sha256File(after.fileManifest), publishedManifestHash);
 verifyTrue(testCase, isfile(fullfile(legacyRoot, 'historical_marker.txt')));
 
 % Simulate a process interruption for the minute that the next call will
@@ -714,7 +716,8 @@ verifyFalse(testCase, isfolder(staleLockFolder));
 
 % A concurrent publication lock must fail closed without disturbing the
 % already published minute version or leaving a staging directory behind.
-writeMarker(fullfile(recovered.outputPath, 'lock_preservation_marker.txt'));
+lockedPublicationId = readPublicationId(recovered.outputPath);
+lockedManifestHash = sha256File(recovered.fileManifest);
 lockTimes = [datetime('now'), datetime('now') + minutes(1)];
 lockFolders = cell(1, numel(lockTimes));
 for lockIndex = 1:numel(lockTimes)
@@ -725,8 +728,10 @@ for lockIndex = 1:numel(lockTimes)
 end
 verifyError(testCase, @() rectangular_fpc_main(base), ...
     'RectangularFPC:ConcurrentPublish');
-verifyTrue(testCase, isfile(fullfile( ...
-    recovered.outputPath, 'lock_preservation_marker.txt')));
+verifyEqual(testCase, readPublicationId(recovered.outputPath), ...
+    lockedPublicationId);
+verifyEqual(testCase, sha256File(recovered.fileManifest), ...
+    lockedManifestHash);
 for lockIndex = 1:numel(lockFolders)
     if isfolder(lockFolders{lockIndex})
         rmdir(lockFolders{lockIndex});
@@ -850,22 +855,33 @@ end
 
 function [before, after] = generateSameMinutePair(overrides)
 before = rectangular_fpc_main(overrides);
+beforePublicationId = readPublicationId(before.outputPath);
 for attempt = 1:3
-    replacementMarker = fullfile(before.outputPath, ...
-        'same_minute_replacement_marker.txt');
-    writeMarker(replacementMarker);
     after = rectangular_fpc_main(overrides);
     if strcmp(before.runTimestamp, after.runTimestamp)
-        if isfile(replacementMarker)
+        afterPublicationId = readPublicationId(after.outputPath);
+        if strcmp(beforePublicationId, afterPublicationId)
             error('RectangularFPC:TestAtomicReplacement', ...
-                'Same-minute publication did not replace the prior version.');
+                'Same-minute publication retained the prior PublicationId.');
         end
         return;
     end
     before = after;
+    beforePublicationId = readPublicationId(before.outputPath);
 end
 error('RectangularFPC:TestClockBoundary', ...
     'Unable to generate two designs in the same minute.');
+end
+
+function publicationId = readPublicationId(outputFolder)
+statusText = fileread(fullfile(outputFolder, 'generation_status.txt'));
+match = regexp(statusText, ...
+    '(?m)^PublicationId:\s*([0-9a-fA-F]{32})\s*$', 'tokens');
+if numel(match) ~= 1
+    error('RectangularFPC:TestPublicationId', ...
+        'Expected exactly one valid PublicationId in %s.', outputFolder);
+end
+publicationId = lower(match{1}{1});
 end
 
 function count = countFiles(root)
