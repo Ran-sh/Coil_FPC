@@ -1,9 +1,14 @@
 function varargout = circular_fpc_export(operation, varargin)
 % Atomic DXF/SVG/CSV/TXT export with lightweight readback (R4).
-% Dual-track DXF: legacy centerline files (dxf/Ln/NN_copper_Ln.dxf) keep
+% Triple-track DXF: legacy centerline files (dxf/Ln/NN_copper_Ln.dxf) keep
 % their byte contract; physical CAM-reference files
 % (dxf/Ln/NN_copper_physical_Ln.dxf) add group-43 trace width and functional
-% via-pad circles. Drills are through-holes; non-functional pads are removed.
+% via-pad circles; COMSOL solid files
+% (dxf/Ln/NN_copper_solid_Ln.dxf) contain only the closed main-coil outline
+% so that a 2D DXF import can be selected as a domain or boundary. Terminal
+% arcs, connection leads, pads, vias, and layer-transition geometry are
+% intentionally omitted for COMSOL users to connect in their own model.
+% Drills are through-holes; non-functional pads are removed.
 % Engineering coordinates are +X right,
 % +Y up; only SVG display flips Y. The file manifest
 % (reports/08_file_manifest.csv) lists every generated regular file except
@@ -51,6 +56,7 @@ for li = 1:cfg.boardLayerCount
     mkdir(layerDir);
     writeCopperDxf(fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li)), result, li);
     writePhysicalCopperDxf(fullfile(layerDir, sprintf('%02d_copper_physical_L%d.dxf', li, li)), cfg, result, li);
+    writeSolidCopperDxf(fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li)), cfg, result, li);
 end
 if cfg.enablePreview
     prevDir = fullfile(outDir, 'previews');
@@ -174,6 +180,174 @@ for k = 1:numel(viaIds)
     writeCircle(fid, v.xy, v.padDiameter / 2, sprintf('VIA_PAD_L%d', li));
 end
 writeDxfFooter(fid);
+end
+
+function writeSolidCopperDxf(filename, cfg, result, li)
+% COMSOL-oriented copper geometry: convert only the main coil centerline
+% into a closed 2D copper strip outline. DXF LWPOLYLINE group 43 is only metadata
+% for a variable-width line and is not reliably converted into a 2D domain
+% by COMSOL's 2D DXF importer, so the outline is written explicitly. Open
+% path ends are clipped with straight short caps (not round end arcs).
+layerName = sprintf('COPPER_SOLID_L%d', li);
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+writeDxfHeader(fid, {layerName});
+lp = result.layerPaths(li);
+paths = {};
+if ~isempty(lp.coilXY)
+    paths{end + 1} = comsolMainCoilPath(cfg, result, li); %#ok<AGROW>
+end
+for k = 1:numel(paths)
+    rings = traceOutlineRings(paths{k}, cfg.traceWidth / 2);
+    for r = 1:numel(rings)
+        writeLwPolyline(fid, rings{r}, layerName, true);
+    end
+end
+writeDxfFooter(fid);
+end
+
+function xy = comsolMainCoilPath(cfg, result, li)
+% Isolate the main Archimedean spiral for the COMSOL copy: both the outer
+% via-contact arc and any inner via/terminal extension are trimmed, leaving
+% the open spiral ends for the straight cap closure. The manufacturing and
+% centerline DXFs continue to use the original layer path unchanged.
+xy = result.layerPaths(li).coilXY;
+activeIndex = find(result.activeCoilLayers == li, 1);
+if isempty(xy) || isempty(activeIndex)
+    return;
+end
+spanTurns = cfg.turnsPerCoilLayer;
+if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+    spanExtra = [0, 0.25, 0, -0.25];
+    spanTurns = spanTurns + spanExtra(activeIndex);
+end
+rStart = result.effectiveDimensions.coilInnerDiameter / 2 + cfg.traceWidth / 2;
+outerSpiralRadius = rStart + result.effectiveDimensions.coilPitch * spanTurns;
+radius = hypot(xy(:, 1), xy(:, 2));
+% 螺旋半径在 [rStart, outerSpiralRadius] 内单调；内外端延伸弧只在端点
+% 邻域进入该半径带。取带内第一个到最后一个索引得到完整螺旋，两端各留
+% 至多几个微米级弧尾点，由封口处理吸收。
+mainIds = find(radius >= rStart - 1e-9 & radius <= outerSpiralRadius + 1e-9);
+if isempty(mainIds)
+    error('CircularFPC:ExportReadbackFailed', ...
+        'Cannot isolate the main COMSOL spiral on layer %d.', li);
+end
+xy = xy(mainIds(1):mainIds(end), :);
+end
+
+function rings = traceOutlineRings(xy, halfWidth)
+% Return closed polygon rings for a buffered open path. polybuffer is part
+% of MATLAB's polyshape functionality in the supported R2026a runtime.
+rings = {};
+if isempty(xy) || size(xy, 1) < 2
+    return;
+end
+xy = double(xy);
+keep = [true; vecnorm(diff(xy, 1, 1), 2, 2) > 1e-12];
+xy = xy(keep, :);
+if size(xy, 1) < 2
+    return;
+end
+buffered = polybuffer(xy, 'lines', halfWidth);
+[bx, by] = boundary(buffered);
+if isempty(bx)
+    return;
+end
+start = 1;
+for k = 1:(numel(bx) + 1)
+    isBreak = k > numel(bx) || isnan(bx(k)) || isnan(by(k));
+    if ~isBreak
+        continue;
+    end
+    if k - start >= 3
+        ring = [bx(start:k - 1), by(start:k - 1)];
+        if size(ring, 1) >= 2 && norm(ring(1, :) - ring(end, :)) <= 1e-10
+            ring(end, :) = [];
+        end
+        if size(ring, 1) >= 3
+            if norm(xy(1, :) - xy(end, :)) > 1e-10
+                ring = flattenTraceEndCaps(ring, xy, halfWidth);
+            end
+            % The sampled spiral can otherwise create tens of thousands of
+            % nearly collinear CAD edges. Keep the outline within 5 um of
+            % the buffered geometry while making COMSOL Boolean operations
+            % practical; the exact CAM reference remains in the physical DXF.
+            rings{end + 1} = simplifyClosedRing(ring, 0.005); %#ok<AGROW>
+        end
+    end
+    start = k + 1;
+end
+end
+
+function ring = flattenTraceEndCaps(ring, xy, halfWidth)
+% Replace each local semicircular cap of a buffered open path with a flat
+% segment. Points farther than the cap radius are never modified, so other
+% turns of the spiral remain untouched.
+tol = 1e-7;
+if size(xy, 1) < 2
+    return;
+end
+startDirection = xy(2, :) - xy(1, :);
+startDirection = startDirection / norm(startDirection);
+endDirection = xy(end, :) - xy(end - 1, :);
+endDirection = endDirection / norm(endDirection);
+startDelta = ring - xy(1, :);
+startProjection = startDelta * startDirection.';
+startDistanceSquared = sum(startDelta .^ 2, 2);
+startLocal = startProjection < -tol & startDistanceSquared <= (halfWidth + tol) ^ 2;
+ring(startLocal, :) = ring(startLocal, :) - startProjection(startLocal) .* startDirection;
+endDelta = ring - xy(end, :);
+endProjection = endDelta * endDirection.';
+endDistanceSquared = sum(endDelta .^ 2, 2);
+endLocal = endProjection > tol & endDistanceSquared <= (halfWidth + tol) ^ 2;
+ring(endLocal, :) = ring(endLocal, :) - endProjection(endLocal) .* endDirection;
+end
+
+function reduced = simplifyClosedRing(points, tolerance)
+% Iterative Ramer-Douglas-Peucker simplification for a closed polygon.
+% The tolerance is in mm and is deliberately much smaller than the 0.2 mm
+% copper width, so this only removes redundant sampled points.
+if size(points, 1) < 4
+    reduced = points;
+    return;
+end
+closed = [points; points(1, :)];
+n = size(closed, 1);
+keep = false(n, 1);
+keep([1, n]) = true;
+stack = [1, n];
+while ~isempty(stack)
+    j = stack(end);
+    i = stack(end - 1);
+    stack(end - 1:end) = [];
+    if j <= i + 1
+        continue;
+    end
+    p0 = closed(i, :);
+    p1 = closed(j, :);
+    segment = p1 - p0;
+    segmentLengthSquared = dot(segment, segment);
+    candidates = (i + 1):(j - 1);
+    delta = closed(candidates, :) - p0;
+    if segmentLengthSquared <= eps
+        distances = sqrt(sum(delta .^ 2, 2));
+    else
+        projection = (delta * segment.') / segmentLengthSquared;
+        projection = max(0, min(1, projection));
+        nearest = p0 + projection .* segment;
+        distances = sqrt(sum((closed(candidates, :) - nearest) .^ 2, 2));
+    end
+    [maxDistance, relativeIndex] = max(distances);
+    if maxDistance > tolerance
+        split = candidates(relativeIndex);
+        keep(split) = true;
+        stack = [stack, i, split, split, j]; %#ok<AGROW>
+    end
+end
+reduced = closed(keep, :);
+if size(reduced, 1) >= 2 && norm(reduced(1, :) - reduced(end, :)) <= 1e-10
+    reduced(end, :) = [];
+end
 end
 
 function writeCircle(fid, xy, radius, layer)
@@ -653,6 +827,8 @@ elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_L\d+\.dxf$', 'once'))
     role = 'copper_centerline';
 elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_physical_L\d+\.dxf$', 'once'))
     role = 'copper_physical';
+elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_L\d+\.dxf$', 'once'))
+    role = 'copper_solid';
 elseif ~isempty(regexp(rel, '^previews/', 'once'))
     role = 'preview';
 elseif ~isempty(regexp(rel, '^reports/', 'once'))
@@ -778,6 +954,30 @@ for li = 1:cfg.boardLayerCount
     if numel(pc) ~= (li == 1) * 2 + numel(viaIds)
         error('CircularFPC:ExportReadbackFailed', 'Physical circle count mismatch: %s', physFile);
     end
+    solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li));
+    if ~isfile(solidFile)
+        error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL solid copper DXF: %s', solidFile);
+    end
+    solidTxt = fileread(solidFile);
+    checkDxfBase(solidTxt, solidFile);
+    if ~contains(solidTxt, sprintf('COPPER_SOLID_L%d', li))
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL solid DXF must declare COPPER_SOLID_L%d.', li);
+    end
+    [solidCircles, solidWidths, solidPolyCount] = readDxfEntities(solidTxt);
+    if ~isempty(solidCircles) || ~isempty(solidWidths) || ...
+            countClosedLwpolylines(solidTxt) ~= solidPolyCount
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL solid DXF must contain only closed widthless LWPOLYLINE rings: %s', solidFile);
+    end
+    hasMainCoil = ~isempty(result.layerPaths(li).coilXY);
+    if hasMainCoil && solidPolyCount ~= 1
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL solid DXF must contain exactly one main-coil ring: %s', solidFile);
+    elseif ~hasMainCoil && solidPolyCount ~= 0
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL solid DXF must be empty for an inactive layer: %s', solidFile);
+    end
 end
 if cfg.enablePreview
     for f = {fullfile(tempDir, 'previews', '01_preview_full.svg'), ...
@@ -892,7 +1092,7 @@ end
 if any(startsWith(rel8, '/')) || any(contains(rel8, '\')) || any(contains(rel8, '..'))
     error('CircularFPC:ExportReadbackFailed', '08 manifest relativePath invalid.');
 end
-roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', ...
+roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
     'preview', 'report', 'generation_status'};
 for k = 1:height(t8)
     rel = char(t8.relativePath(k));

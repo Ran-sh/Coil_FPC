@@ -795,6 +795,49 @@ for k = 1:size(combos, 1)
             verifyEqual(testCase, numel(pc), (li == 1) * 2 + numel(viaIds), ...
                 sprintf('physical %s total circle count', physFile));
         end
+        solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li));
+        verifyTrue(testCase, isfile(solidFile), sprintf('missing COMSOL solid copper %s', solidFile));
+        if isfile(solidFile)
+            solidTxt = fileread(solidFile);
+            verifyDxfBase(testCase, solidTxt, solidFile);
+            verifyTrue(testCase, contains(solidTxt, sprintf('COPPER_SOLID_L%d', li)), ...
+                sprintf('solid %s must declare its layer', solidFile));
+            solidCircles = dxfCircles(solidTxt);
+            [solidWidths, solidPolyCount] = dxfPolylineWidths(solidTxt);
+            verifyTrue(testCase, isempty(solidCircles), ...
+                sprintf('solid %s must not contain circles', solidFile));
+            verifyTrue(testCase, isempty(solidWidths), ...
+                sprintf('solid %s must not contain group 43', solidFile));
+            verifyEqual(testCase, dxfClosedPolylineCount(solidTxt), solidPolyCount, ...
+                sprintf('solid %s must contain only closed polylines', solidFile));
+            if ~isempty(lp.coilXY)
+                verifyEqual(testCase, solidPolyCount, 1, ...
+                    sprintf('solid %s must contain exactly one main-coil ring', solidFile));
+                activeIndex = find(result.activeCoilLayers == li, 1);
+                spanTurns = result.config.turnsPerCoilLayer;
+                if combos{k, 1} == 4 && combos{k, 2} == 4
+                    spanExtra = [0, 0.25, 0, -0.25];
+                    spanTurns = spanTurns + spanExtra(activeIndex);
+                end
+                rStart = result.effectiveDimensions.coilInnerDiameter / 2 + result.config.traceWidth / 2;
+                outer = rStart + result.effectiveDimensions.coilPitch * spanTurns;
+                solidXy = dxfPolylineVertices(solidTxt);
+                verifyFalse(testCase, isempty(solidXy), ...
+                    sprintf('solid %s must carry polyline vertices', solidFile));
+                if ~isempty(solidXy)
+                    r = hypot(solidXy(:, 1), solidXy(:, 2));
+                    verifyGreaterThanOrEqual(testCase, min(r), rStart - result.config.traceWidth / 2 - 0.02, ...
+                        sprintf('solid %s must trim the inner via/terminal extension', solidFile));
+                    verifyLessThanOrEqual(testCase, max(r), outer + result.config.traceWidth / 2 + 0.02, ...
+                        sprintf('solid %s must trim the outer via-contact arc', solidFile));
+                    verifyGreaterThanOrEqual(testCase, max(r), outer + result.config.traceWidth / 2 - 0.06, ...
+                        sprintf('solid %s must keep the full outermost turn', solidFile));
+                end
+            else
+                verifyEqual(testCase, solidPolyCount, 0, ...
+                    sprintf('solid %s must be empty for an inactive layer', solidFile));
+            end
+        end
         keepFile = fullfile(layerDir, sprintf('%02d_antipad_keepout_L%d.dxf', li, li));
         verifyFalse(testCase, isfile(keepFile), sprintf('obsolete antipad keepout must not exist: %s', keepFile));
     end
@@ -1145,7 +1188,7 @@ if isfile(csvManifest)
     rel8 = string(t8.relativePath);
     verifyFalse(testCase, any(strcmp(rel8, 'reports/08_file_manifest.csv')), ...
         '08 manifest must not list itself');
-    roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', ...
+    roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
         'preview', 'report', 'generation_status'};
     verifyTrue(testCase, all(ismember(string(t8.role), roles8)), ...
         '08 manifest roles must come from the fixed vocabulary');
@@ -1392,6 +1435,56 @@ while k + 1 <= numel(lines)
         k = k + 1;
     end
 end
+end
+
+function n = dxfClosedPolylineCount(txt)
+% Count LWPOLYLINE entities whose group 70 marks them as closed.
+lines = strtrim(strsplit(txt, newline));
+n = 0;
+k = 1;
+while k + 1 <= numel(lines)
+    if strcmp(lines{k}, '0') && strcmp(lines{k + 1}, 'LWPOLYLINE')
+        j = k + 2;
+        closed = false;
+        while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+            if strcmp(lines{j}, '70') && str2double(lines{j + 1}) == 1
+                closed = true;
+            end
+            j = j + 2;
+        end
+        if closed
+            n = n + 1;
+        end
+        k = j;
+    else
+        k = k + 1;
+    end
+end
+end
+
+function xy = dxfPolylineVertices(txt)
+% Collect every LWPOLYLINE vertex (group 10/20 pairs) as an Nx2 matrix.
+lines = strtrim(strsplit(txt, newline));
+x = [];
+y = [];
+k = 1;
+while k + 1 <= numel(lines)
+    if strcmp(lines{k}, '0') && strcmp(lines{k + 1}, 'LWPOLYLINE')
+        j = k + 2;
+        while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+            if strcmp(lines{j}, '10')
+                x(end + 1) = str2double(lines{j + 1}); %#ok<AGROW>
+            elseif strcmp(lines{j}, '20')
+                y(end + 1) = str2double(lines{j + 1}); %#ok<AGROW>
+            end
+            j = j + 2;
+        end
+        k = j;
+    else
+        k = k + 1;
+    end
+end
+xy = [x(:), y(:)];
 end
 
 function h = sha256File(path)
