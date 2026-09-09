@@ -42,9 +42,9 @@ cfg = struct( ...
     'minBoardInteriorAngleDeg', 90.0, ... % 板框/槽边内角必须严格大于该值 [deg]
     'angleToleranceDeg', 0.1, ... % 严格角度规则的数值安全余量 [deg]
     'terminalClearance', 0.25, ... % 焊盘/过孔端子间最小净距 [mm]
-    'copperThickness', 0.035, ... % 铜厚 [mm]
+    'copperThickness', 0.012, ... % 嘉立创 1/3 oz 铜厚 [mm]
     'copperResistivity', 1.724e-8, ... % 铜电阻率 [Ohm*m]
-    'manufacturingProfile', 'jlc_fpc_1oz', ...
+    'manufacturingProfile', 'jlc_fpc_1_3oz', ...
     'manufacturingTier', 'standard', ...
     'manufacturingRuleOverrides', struct(), ...
     'enablePreview', true, ...
@@ -58,6 +58,13 @@ for f = fieldnames(overrides).'
         error('CircularFPC:UnknownConfigField', 'Unknown config field: %s', f{1});
     end
     cfg.(f{1}) = overrides.(f{1});
+end
+
+% 兼容旧版 1 oz profile：只有显式请求旧 profile 且未显式给铜厚时才恢复旧名义值。
+% 新默认工艺始终是嘉立创 4 层 FPC0420TT-121A / 1/3 oz。
+if isfield(overrides, 'manufacturingProfile') && ...
+        strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz') && ~isfield(overrides, 'copperThickness')
+    cfg.copperThickness = 0.035;
 end
 
 % 新旧参数兼容：优先采用新参数；只覆盖旧 padPairSpacing 时同步到新参数。

@@ -22,6 +22,12 @@ result = circular_fpc_main(struct( ...
 公共入口：`circular_fpc_default_config(overrides)`、`circular_fpc_main(overrides)`。
 全部五种组合可运行 `examples/generate_all_variants.m`。
 
+当前圆形默认工艺按嘉立创 4 层 FPC `FPC0420TT-121A` 配置：成品厚度标称
+0.20 mm，内外层均为 1/3 oz（0.012 mm）电解铜，黄色覆盖膜为 PI 12.5 μm
++ 胶 15 μm。导出目录中的 `reports/09_comsol_stackup.csv` 提供顶层到末层的
+层厚度、Z 坐标和材料标识，适用于 COMSOL 三维建模；L1/L4 两层线圈的实际
+几何仍由对应的物理铜 DXF 提供。
+
 `turnsPerCoilLayer` 是每层物理匝数（完整 360° 圈数），默认 7，最少 2；4/4 模式下
 L2 多绕 0.25 圈、L4 少绕 0.25 圈，四层平均匝数等于该值。
 
@@ -45,7 +51,8 @@ L2 多绕 0.25 圈、L4 少绕 0.25 圈，四层平均匝数等于该值。
 Circular_FPC_<板层>L_<线圈层>C_yyyyMMdd_HHmm/
 ```
 
-输出包括板框、各层中心线/物理铜 DXF、SVG 预览、端子坐标、验证报告、设计摘要和清单。
+输出包括板框、各层中心线/物理铜 DXF、SVG 预览、端子坐标、验证报告、设计摘要和清单；
+4 层工艺另输出 COMSOL 层压参考表 `reports/09_comsol_stackup.csv`。
 当前不生成 Gerber，physical DXF 不能替代 Gerber。
 
 ## 测试

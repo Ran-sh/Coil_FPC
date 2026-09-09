@@ -397,6 +397,7 @@ function writeReports(cfg, result, reportsDir)
 %   03_design_summary.txt       设计摘要（尺寸、总长、直流电阻、串联序列、端子位置）
 %   04_turn_scan.csv            匝数可行性扫描（每匝所需径向宽度是否放得下）
 %   05_validation_report.txt    验证报告（各 PASS 指标 + 失败信息）
+%   09_comsol_stackup.csv       COMSOL 三维建模层压表（厚度与 Z 坐标）
 fid = fopen(fullfile(reportsDir, '01_pad_via_coordinates.csv'), 'w');
 fprintf(fid, 'name,xMm,yMm,diameterMm,drillMm,layer,fromLayer,toLayer,removable,role,placementRegion,bridgeAngleDeg\n');
 for k = 1:numel(result.pads)
@@ -423,6 +424,11 @@ fprintf(fid, 'Circular_FPC_Coil design summary\n');
 fprintf(fid, 'designName: %s\n', cfg.designName);
 fprintf(fid, 'boardLayerCount: %d\n', cfg.boardLayerCount);
 fprintf(fid, 'coilLayerCount: %d\n', cfg.coilLayerCount);
+fprintf(fid, 'manufacturingProfile: %s\n', result.manufacturing.profile);
+fprintf(fid, 'fpcStackup: %s\n', result.manufacturing.stackup.name);
+fprintf(fid, 'nominalFinishedBoardThickness: %.6f mm\n', result.manufacturing.stackup.nominalFinishedThicknessMm);
+fprintf(fid, 'computedStackupThickness: %.6f mm\n', result.manufacturing.stackup.computedThicknessMm);
+fprintf(fid, 'activeCopperCenterSpacing: %.6f mm\n', result.manufacturing.stackup.activeCopperCenterSpacingMm);
 fprintf(fid, 'boardOuterDiameter: %.6f mm\n', eff.boardOuterDiameter);
 fprintf(fid, 'boardSizingMode: %s\n', cfg.boardSizingMode);
 fprintf(fid, 'viaEndExtension: %.6f mm\n', eff.viaEndExtension);
@@ -459,6 +465,10 @@ fprintf(fid, 'maxConnectionTurnDeg: %.6f\n', result.validation.maxConnectionTurn
 fprintf(fid, 'minOuterViaContactSweepDeg: %.6f\n', result.validation.minOuterViaContactSweepDeg);
 fprintf(fid, 'maxOuterViaContactSweepDeg: %.6f\n', result.validation.maxOuterViaContactSweepDeg);
 fprintf(fid, 'connectionAngleDeg: %.6f\n', cfg.connectionAngleDeg);
+fprintf(fid, 'copperThickness: %.6f mm\n', cfg.copperThickness);
+fprintf(fid, 'copperType: %s\n', result.manufacturing.stackup.copperType);
+fprintf(fid, 'coverlay: %s, %.6f mm per side\n', result.manufacturing.stackup.coverlayColor, ...
+    result.manufacturing.stackup.coverlayThicknessMm);
 if isfield(result, 'terminalRouting')
     fprintf(fid, 'terminalRoutingMode: %s\n', result.terminalRouting.mode);
     fprintf(fid, 'terminalEntrySweepDeg: %.6f\n', result.terminalRouting.entrySweepDeg);
@@ -568,14 +578,36 @@ fprintf(fid7, 'Circular_FPC_Coil fabrication notes\n');
 fprintf(fid7, 'boardLayerCount: %d\n', cfg.boardLayerCount);
 fprintf(fid7, 'coilLayerCount: %d\n', cfg.coilLayerCount);
 fprintf(fid7, 'activeCoilLayers: %s\n', mat2str(result.activeCoilLayers));
-fprintf(fid7, 'copperThickness: %.6f mm (1 oz nominal profile)\n', cfg.copperThickness);
+fprintf(fid7, 'copperThickness: %.6f mm (1/3 oz nominal profile)\n', cfg.copperThickness);
 fprintf(fid7, 'manufacturingProfile: %s\n', result.manufacturing.profile);
 fprintf(fid7, 'manufacturingTier: %s\n', result.manufacturing.tier);
-fprintf(fid7, 'surfaceFinish: TO_BE_SELECTED\n');
+fprintf(fid7, 'fpcStackup: %s\n', result.manufacturing.stackup.name);
+fprintf(fid7, 'finishedBoardThickness: %.6f mm nominal\n', ...
+    result.manufacturing.stackup.nominalFinishedThicknessMm);
+fprintf(fid7, 'surfaceFinish: %s\n', result.manufacturing.stackup.surfaceFinish);
+fprintf(fid7, 'coverlay: %s, PI12.5um + adhesive15um = %.6f mm per side\n', ...
+    result.manufacturing.stackup.coverlayColor, result.manufacturing.stackup.coverlayThicknessMm);
+fprintf(fid7, 'copperType: %s\n', result.manufacturing.stackup.copperType);
 fprintf(fid7, 'coordinates: +X right, +Y up; SVG display only flips Y\n');
 fprintf(fid7, 'Physical DXF is a CAM reference and does not replace Gerber.\n');
-fprintf(fid7, 'NOT_GENERATED: coverlay, stiffener, Gerber, panelization\n');
+fprintf(fid7, 'NOT_GENERATED: coverlay geometry, stiffener geometry, Gerber, panelization\n');
+fprintf(fid7, 'COMSOL: use 09_comsol_stackup.csv for the nominal layer Z coordinates; verify against the fab stackup.\n');
 fprintf(fid7, 'File manifest 08_file_manifest.csv excludes itself.\n');
+clear c7;
+writeComsolStackupReport(fullfile(reportsDir, '09_comsol_stackup.csv'), result.manufacturing.stackup);
+end
+
+function writeComsolStackupReport(filename, stack)
+% 输出顶层到末层的 COMSOL 建模参考坐标，Z=0 位于计算层压厚度中心。
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+fprintf(fid, 'order,layerName,role,thicknessMm,zTopMm,zBottomMm,zCenterMm,material\n');
+for k = 1:numel(stack.layers)
+    layer = stack.layers(k);
+    fprintf(fid, '%d,%s,%s,%.6f,%.6f,%.6f,%.6f,%s\n', ...
+        layer.order, layer.name, layer.role, layer.thicknessMm, layer.zTopMm, ...
+        layer.zBottomMm, layer.zCenterMm, layer.material);
+end
 end
 
 function s = csvEscape(s)
@@ -819,6 +851,28 @@ end
 notes = fileread(txtNotes);
 if isempty(notes) || ~contains(notes, 'NOT_GENERATED') || ~contains(notes, 'Gerber')
     error('CircularFPC:ExportReadbackFailed', '07 fabrication notes content mismatch.');
+end
+csvStackup = fullfile(tempDir, 'reports', '09_comsol_stackup.csv');
+if ~isfile(csvStackup)
+    error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL stackup report: %s', csvStackup);
+end
+t9 = readtable(csvStackup);
+expCols9 = {'order', 'layerName', 'role', 'thicknessMm', 'zTopMm', 'zBottomMm', 'zCenterMm', 'material'};
+if ~isequal(t9.Properties.VariableNames, expCols9)
+    error('CircularFPC:ExportReadbackFailed', '09 COMSOL stackup columns mismatch.');
+end
+stackLayers = result.manufacturing.stackup.layers;
+if height(t9) ~= numel(stackLayers)
+    error('CircularFPC:ExportReadbackFailed', '09 COMSOL stackup row count mismatch.');
+end
+for k = 1:numel(stackLayers)
+    layer = stackLayers(k);
+    if t9.order(k) ~= layer.order || ~strcmp(char(t9.layerName(k)), layer.name) || ...
+            ~strcmp(char(t9.role(k)), layer.role) || abs(t9.thicknessMm(k) - layer.thicknessMm) > 1e-9 || ...
+            abs(t9.zTopMm(k) - layer.zTopMm) > 1e-9 || abs(t9.zBottomMm(k) - layer.zBottomMm) > 1e-9 || ...
+            abs(t9.zCenterMm(k) - layer.zCenterMm) > 1e-9 || ~strcmp(char(t9.material(k)), layer.material)
+        error('CircularFPC:ExportReadbackFailed', '09 COMSOL stackup row %d mismatch.', k);
+    end
 end
 csvManifest = fullfile(tempDir, 'reports', '08_file_manifest.csv');
 if ~isfile(csvManifest)

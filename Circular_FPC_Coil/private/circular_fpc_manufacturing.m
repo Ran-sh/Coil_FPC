@@ -24,8 +24,9 @@ function p = resolveProfile(cfg)
 validateManufacturingConfig(cfg);
 p.profile = cfg.manufacturingProfile;
 p.tier = cfg.manufacturingTier;
-p.standardRules = standardRules();      % 标准档基线，始终保留（用于 HIGH_COST_EXTREME 判定）
+p.standardRules = standardRules(cfg);   % 标准档基线，始终保留（用于 HIGH_COST_EXTREME 判定）
 p.rules = p.standardRules;
+p.stackup = stackupDefinition(cfg);
 p.sources = struct();
 for f = fieldnames(p.standardRules).'
     p.sources.(f{1}) = 'profile';
@@ -47,10 +48,12 @@ end
 end
 
 function validateManufacturingConfig(cfg)
-% 只支持 jlc_fpc_1oz / standard|extreme；overrides 必须是标量 struct，
+% 支持当前 1/3 oz 档与旧 1 oz 兼容档；overrides 必须是标量 struct，
 % 字段限 ADR-3 名单，值为正有限标量（nearLimitFraction 另需 <= 1）。
-if ~ischar(cfg.manufacturingProfile) || ~strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz')
-    error('CircularFPC:InvalidConfig', 'manufacturingProfile must be ''jlc_fpc_1oz''.');
+if ~ischar(cfg.manufacturingProfile) || ...
+        ~ismember(cfg.manufacturingProfile, {'jlc_fpc_1_3oz', 'jlc_fpc_1oz'})
+    error('CircularFPC:InvalidConfig', ...
+        'manufacturingProfile must be ''jlc_fpc_1_3oz'' or legacy ''jlc_fpc_1oz''.');
 end
 if ~ischar(cfg.manufacturingTier) || ~ismember(cfg.manufacturingTier, {'standard', 'extreme'})
     error('CircularFPC:InvalidConfig', 'manufacturingTier must be ''standard'' or ''extreme''.');
@@ -83,8 +86,13 @@ names = {'minTraceWidthMm', 'minTraceSpacingMm', 'minCopperToBoardMm', ...
     'copperThicknessToleranceMm', 'nearLimitFraction'};
 end
 
-function s = standardRules()
-% ADR-4 标准档数值（mm）：2L/4L 过孔均为 .30/.55；extreme 层降档在 resolveProfile 处理。
+function s = standardRules(cfg)
+% 当前标准档数值（mm）：2L/4L 过孔均为 .30/.55；extreme 层降档在 resolveProfile 处理。
+if strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz')
+    nominalCopper = 0.035;
+else
+    nominalCopper = 0.012;
+end
 s = struct( ...
     'minTraceWidthMm', 0.102, ...
     'minTraceSpacingMm', 0.102, ...
@@ -100,9 +108,78 @@ s = struct( ...
     'minViaPad4LayerMm', 0.55, ...
     'minViaPadDrillDifferenceMm', 0.20, ...
     'recommendedViaPadDrillDifferenceMm', 0.25, ...
-    'nominalCopperThicknessMm', 0.035, ...
+    'nominalCopperThicknessMm', nominalCopper, ...
     'copperThicknessToleranceMm', 0.001, ...
     'nearLimitFraction', 0.20);
+end
+
+function s = stackupDefinition(cfg)
+% 嘉立创 FPC0420TT-121A 层压结构，顺序为顶层到末层。
+% 单层厚度合计 0.203 mm，订单标称成品厚度为 0.20 mm。
+s = struct('name', '', 'nominalFinishedThicknessMm', NaN, ...
+    'computedThicknessMm', NaN, 'outerCopperThicknessMm', NaN, ...
+    'innerCopperThicknessMm', NaN, 'coverlayThicknessMm', NaN, ...
+    'coverlayColor', '', 'copperType', '', 'surfaceFinish', '', ...
+    'activeCopperCenterSpacingMm', NaN, 'layers', struct('order', {}, ...
+    'name', {}, 'role', {}, 'thicknessMm', {}, 'material', {}, ...
+    'zTopMm', {}, 'zBottomMm', {}, 'zCenterMm', {}));
+if strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz')
+    s.name = 'legacy-jlc-1oz';
+    return;
+end
+if cfg.boardLayerCount == 4
+    s.name = 'FPC0420TT-121A';
+    s.nominalFinishedThicknessMm = 0.20;
+    rows = { ...
+        'COVERLAY_TOP', 'coverlay', 0.0275, 'PI12.5um+AD15um'; ...
+        'L1_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'BASE_PI_TOP', 'dielectric', 0.0125, 'PI'; ...
+        'AD_TOP', 'dielectric', 0.0250, 'adhesive'; ...
+        'L2_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'CORE_PI', 'dielectric', 0.0250, 'PI'; ...
+        'L3_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'AD_BOTTOM', 'dielectric', 0.0250, 'adhesive'; ...
+        'BASE_PI_BOTTOM', 'dielectric', 0.0125, 'PI'; ...
+        'L4_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'COVERLAY_BOTTOM', 'coverlay', 0.0275, 'PI12.5um+AD15um'};
+    s.outerCopperThicknessMm = 0.012;
+    s.innerCopperThicknessMm = 0.012;
+    s.coverlayThicknessMm = 0.0275;
+    s.coverlayColor = 'yellow';
+    s.copperType = 'adhesiveless_electrolytic';
+    s.surfaceFinish = 'ENIG_1u';
+else
+    % 2 层变体继续使用同一 1/3 oz 铜档；其精确层压结构不冒充 4 层订单结构。
+    s.name = 'JLC_2L_1_3oz';
+    s.nominalFinishedThicknessMm = 0.11;
+    rows = { ...
+        'COVERLAY_TOP', 'coverlay', 0.0275, 'PI12.5um+AD15um'; ...
+        'L1_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'CORE_PI', 'dielectric', 0.0250, 'PI'; ...
+        'L2_COPPER', 'copper', 0.0120, 'electrolytic_copper_1_3oz'; ...
+        'COVERLAY_BOTTOM', 'coverlay', 0.0275, 'PI12.5um+AD15um'};
+    s.outerCopperThicknessMm = 0.012;
+    s.innerCopperThicknessMm = 0.012;
+    s.coverlayThicknessMm = 0.0275;
+    s.coverlayColor = 'yellow';
+    s.copperType = 'adhesiveless_electrolytic';
+    s.surfaceFinish = 'ENIG_1u';
+end
+s.computedThicknessMm = sum(cell2mat(rows(:, 3)));
+zTop = s.computedThicknessMm / 2;
+for k = 1:size(rows, 1)
+    thickness = rows{k, 3};
+    zBottom = zTop - thickness;
+    s.layers(end + 1) = struct('order', k, 'name', rows{k, 1}, ...
+        'role', rows{k, 2}, 'thicknessMm', thickness, 'material', rows{k, 4}, ...
+        'zTopMm', zTop, 'zBottomMm', zBottom, 'zCenterMm', (zTop + zBottom) / 2); %#ok<AGROW>
+    zTop = zBottom;
+end
+if cfg.boardLayerCount == 4
+    s.activeCopperCenterSpacingMm = abs(s.layers(2).zCenterMm - s.layers(10).zCenterMm);
+elseif cfg.boardLayerCount == 2
+    s.activeCopperCenterSpacingMm = abs(s.layers(2).zCenterMm - s.layers(4).zCenterMm);
+end
 end
 
 function report = checkConfig(cfg)
@@ -133,6 +210,7 @@ function report = buildReport(p, rows)
 report.profile = p.profile;
 report.tier = p.tier;
 report.rules = p.rules;
+report.stackup = p.stackup;
 report.checks = rows;
 report.warnings = {rows(strcmp({rows.status}, 'WARN')).message};
 report.failures = {rows(strcmp({rows.status}, 'FAIL')).message};

@@ -298,7 +298,8 @@ function testManufacturingProfileRules(testCase)
 % R1 制造档案契约：默认 profile/tier/overrides；非法取值与未知规则覆盖；
 % trace 宽度、过孔、铜厚边界；analyze 制造报告字段与 WARN/HIGH_COST_EXTREME 语义。
 cfg = circular_fpc_default_config();
-verifyEqual(testCase, cfg.manufacturingProfile, 'jlc_fpc_1oz');
+verifyEqual(testCase, cfg.manufacturingProfile, 'jlc_fpc_1_3oz');
+verifyEqual(testCase, cfg.copperThickness, 0.012, 'AbsTol', 1e-12);
 verifyEqual(testCase, cfg.manufacturingTier, 'standard');
 verifyTrue(testCase, isstruct(cfg.manufacturingRuleOverrides) && isscalar(cfg.manufacturingRuleOverrides) ...
     && isempty(fieldnames(cfg.manufacturingRuleOverrides)));
@@ -332,7 +333,7 @@ verifyEqual(testCase, chkOv.source, 'override');
 % 默认 analyze 制造报告结构
 res = analyzeInternal();
 mf = res.manufacturing;
-verifyEqual(testCase, mf.profile, 'jlc_fpc_1oz');
+verifyEqual(testCase, mf.profile, 'jlc_fpc_1_3oz');
 verifyEqual(testCase, mf.tier, 'standard');
 verifyTrue(testCase, isfield(mf, 'rules') && isfield(mf, 'checks') && isfield(mf, 'passed') ...
     && isfield(mf, 'warnings') && isfield(mf, 'failures'));
@@ -367,10 +368,36 @@ verifyEqual(testCase, chkX4d.status, 'WARN');
 verifyEqual(testCase, chkX4p.status, 'WARN');
 verifyTrue(testCase, contains(chkX4d.message, 'HIGH_COST_EXTREME') || contains(chkX4d.code, 'HIGH_COST_EXTREME'));
 verifyTrue(testCase, contains(chkX4p.message, 'HIGH_COST_EXTREME') || contains(chkX4p.code, 'HIGH_COST_EXTREME'));
-% 铜厚匹配：0.035 +/- 0.001 边界合法，超出容差 0.001 mm 失败
-verifyEqual(testCase, circular_fpc_default_config(struct('copperThickness', 0.034)).copperThickness, 0.034, 'AbsTol', 1e-9);
-verifyEqual(testCase, circular_fpc_default_config(struct('copperThickness', 0.036)).copperThickness, 0.036, 'AbsTol', 1e-9);
-verifyError(testCase, @() circular_fpc_default_config(struct('copperThickness', 0.036001)), 'CircularFPC:InvalidConfig');
+% 铜厚匹配：0.012 +/- 0.001 边界合法，超出容差 0.001 mm 失败
+verifyEqual(testCase, circular_fpc_default_config(struct('copperThickness', 0.011)).copperThickness, 0.011, 'AbsTol', 1e-9);
+verifyEqual(testCase, circular_fpc_default_config(struct('copperThickness', 0.013)).copperThickness, 0.013, 'AbsTol', 1e-9);
+verifyError(testCase, @() circular_fpc_default_config(struct('copperThickness', 0.013001)), 'CircularFPC:InvalidConfig');
+end
+
+function testJlcFourLayerOneThirdOzStackupContract(testCase)
+res = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2));
+verifyEqual(testCase, res.config.manufacturingProfile, 'jlc_fpc_1_3oz');
+verifyEqual(testCase, res.config.copperThickness, 0.012, 'AbsTol', 1e-12);
+verifyTrue(testCase, isfield(res.manufacturing, 'stackup'));
+stack = res.manufacturing.stackup;
+verifyEqual(testCase, stack.name, 'FPC0420TT-121A');
+verifyEqual(testCase, stack.nominalFinishedThicknessMm, 0.20, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.computedThicknessMm, 0.203, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.outerCopperThicknessMm, 0.012, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.innerCopperThicknessMm, 0.012, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.coverlayThicknessMm, 0.0275, 'AbsTol', 1e-12);
+verifyEqual(testCase, numel(stack.layers), 11);
+verifyEqual(testCase, stack.layers(2).name, 'L1_COPPER');
+verifyEqual(testCase, stack.layers(5).name, 'L2_COPPER');
+verifyEqual(testCase, stack.layers(7).name, 'L3_COPPER');
+verifyEqual(testCase, stack.layers(10).name, 'L4_COPPER');
+verifyEqual(testCase, stack.layers(2).thicknessMm, 0.012, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.layers(10).thicknessMm, 0.012, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.layers(2).zCenterMm - stack.layers(10).zCenterMm, 0.136, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.activeCopperCenterSpacingMm, 0.136, 'AbsTol', 1e-12);
+verifyEqual(testCase, stack.coverlayColor, 'yellow');
+verifyEqual(testCase, stack.copperType, 'adhesiveless_electrolytic');
+verifyEqual(testCase, stack.surfaceFinish, 'ENIG_1u');
 end
 
 function testAnalyzeIsReadOnlyAndLayerMatrix(testCase)
@@ -1085,15 +1112,28 @@ if isfile(csvCheck)
 end
 if isfile(txtNotes)
     notes = fileread(txtNotes);
-    for kw = {'boardLayerCount', 'coilLayerCount', 'activeCoilLayers', 'copperThickness', '1 oz', ...
-            'jlc_fpc_1oz', 'standard', 'TO_BE_SELECTED', '+X', '+Y', 'NOT_GENERATED', ...
-            'coverlay', 'stiffener', 'Gerber', 'panelization'}
+    for kw = {'boardLayerCount', 'coilLayerCount', 'activeCoilLayers', 'copperThickness', '1/3 oz', ...
+            'jlc_fpc_1_3oz', 'FPC0420TT-121A', 'standard', 'ENIG_1u', '+X', '+Y', 'NOT_GENERATED', ...
+            'coverlay', 'stiffener', 'Gerber', 'panelization', '09_comsol_stackup.csv'}
         verifyTrue(testCase, contains(notes, kw{1}), ...
             sprintf('07 notes missing keyword %s', kw{1}));
     end
     verifyTrue(testCase, contains(lower(notes), 'not replace gerber') || ...
         contains(lower(notes), 'cam reference'), ...
         '07 notes must state physical DXF is a CAM reference and does not replace Gerber');
+end
+csvStackup = fullfile(out, 'reports', '09_comsol_stackup.csv');
+verifyTrue(testCase, isfile(csvStackup), 'missing COMSOL stackup report');
+if isfile(csvStackup)
+    t9 = readtable(csvStackup);
+    verifyEqual(testCase, t9.Properties.VariableNames, ...
+        {'order', 'layerName', 'role', 'thicknessMm', 'zTopMm', 'zBottomMm', 'zCenterMm', 'material'});
+    verifyEqual(testCase, height(t9), 11);
+    verifyEqual(testCase, char(t9.layerName(2)), 'L1_COPPER');
+    verifyEqual(testCase, char(t9.layerName(10)), 'L4_COPPER');
+    verifyEqual(testCase, t9.thicknessMm(2), 0.012, 'AbsTol', 1e-9);
+    verifyEqual(testCase, t9.thicknessMm(10), 0.012, 'AbsTol', 1e-9);
+    verifyEqual(testCase, t9.zCenterMm(2) - t9.zCenterMm(10), 0.136, 'AbsTol', 1e-9);
 end
 if isfile(csvManifest)
     t8 = readtable(csvManifest);
@@ -1280,7 +1320,7 @@ verifyTrue(testCase, contains(workflow, 'rectangular_fpc_read_committed'), ...
     'CI must snapshot the exact rectangular committed output while holding its reader lock.');
 verifyTrue(testCase, contains(workflow, 'copyOk'), ...
     'CI must assert the result of copying the committed rectangular output.');
-for requiredArtifact = {'generation_status.txt', '08_file_manifest.csv', ...
+for requiredArtifact = {'generation_status.txt', '08_file_manifest.csv', '09_comsol_stackup.csv', ...
         'previews', 'dxf', 'reports'}
     verifyTrue(testCase, contains(workflow, requiredArtifact{1}), ...
         sprintf('CI must gate the staged artifact on %s.', requiredArtifact{1}));
