@@ -1,6 +1,7 @@
 function ear_zoom_figure(outPng, outSvg, overrides)
 % EAR_ZOOM_FIGURE 单个耳朵的局部放大图，标注三段弧与三个参数。
-%   EAR_ZOOM_FIGURE(PNG, SVG) 使用默认配置（4L/2C）生成 0° 耳朵的放大图。
+%   EAR_ZOOM_FIGURE(PNG, SVG) 使用默认配置（4L/4C，与公开生成器默认一致）
+%   生成 0° 耳朵的放大图。
 %   EAR_ZOOM_FIGURE(PNG, SVG, OVERRIDES) 用 OVERRIDES 覆盖配置。
 %
 %   图中标注：内侧弧（主体外径圆重合段）、中间弧（外凸）、最外侧弧（等距外偏）、
@@ -15,15 +16,15 @@ end
 if nargin < 3 || isempty(overrides)
     overrides = struct();
 end
-% The documented helper default is the 4-layer/2-coil variant, while the
-% public generator default remains 4/4. Preserve explicit caller overrides,
-% but fill only the omitted layer fields so the title and geometry always
-% describe the same variant.
+% The helper default follows the public generator default (4 layers / 4 active
+% coil layers) so the zoom matches the canonical artifact: the title renders the
+% variant from the result and the main-circle diameter is measured from it.
+% Explicit caller overrides (e.g. 4/2) are still honoured as given.
 if ~isfield(overrides, 'boardLayerCount')
     overrides.boardLayerCount = 4;
 end
 if ~isfield(overrides, 'coilLayerCount')
-    overrides.coilLayerCount = 2;
+    overrides.coilLayerCount = 4;
 end
 result = circular_fpc_analyze(overrides);
 lr = result.layoutRegions;

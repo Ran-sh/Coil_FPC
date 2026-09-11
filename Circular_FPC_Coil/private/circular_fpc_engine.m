@@ -67,7 +67,10 @@ for sizingPass = 1:maxOuterSizingPasses
     if requiredExtension <= 1e-9
         break;
     end
-    % 加 1 um 防止下一轮因浮点误差反复停在边界上。
+    % 加 1e-6 mm（1 nm）作为浮点收敛余量，让下一轮不再因浮点误差停在边界上。
+    % 注意这只是收敛 epsilon，远小于任何制造公差：净距因此收敛到"刚好达标"
+    % （4/4 实测 DRILL_TO_COPPER = 0.176001 mm，余量 1 nm）。若要真实工艺余量，
+    % 应提高 minDrillToCopper/viaCoilSpacing 规则值，而不是依赖这里。
     eff.viaEndExtension = eff.viaEndExtension + requiredExtension + 1e-6;
 end
 mfRules = circular_fpc_manufacturing('resolve', cfg).rules;

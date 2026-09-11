@@ -59,6 +59,15 @@ result = circular_fpc_main(struct( ...
 `turnsPerCoilLayer` 是每层物理匝数（完整 360° 圈数），默认 7，最少 2；4/4 模式下
 L2 多绕 0.25 圈、L4 少绕 0.25 圈，6/6 模式下 L2/L4/L6 分别多绕
 0.25/0.50/0.25 圈，用于把层间过孔落在约 135°/225°/45°；改变匝数后板框主体圆会自动随最大跨度重算。
+默认 4/4 下四层实测为 7 / 7.25 / 7 / 6.75 圈，平均恰为 `turnsPerCoilLayer`。
+
+奇数活动层从内向外绕制、偶数层从外向内绕制，但四层的**电流环绕方向一致**，
+使各层磁场在板法向上同向叠加而非相消。该性质由 `validate_result` 的
+`windingSuperpositionConsistent` 独立测量（对生成的线圈折线求有向环绕角
+`Σ (x·dy − y·dx)/r²`，不读取 `windingDirection` 标签），四层环绕角必须同号且
+幅值大于半圈；`minSignedCirculationDeg` 给出幅值最小那层的带符号环绕角，
+一并写入 `reports/05_validation_report.txt` 供核对。任一层被反向都会使校验失败、
+拒绝导出。
 
 `terminalLeadSpacing` 和 `terminalLeadLength` 分别控制平行端子引线的中心距和直线长度；
 自动端子使用由原始阿基米德螺旋端点切线确定的单一相切圆弧，不改变线圈点，

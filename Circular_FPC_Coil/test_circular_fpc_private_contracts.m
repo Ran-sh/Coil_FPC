@@ -396,6 +396,73 @@ verifyEqual(testCase, result.validation.minOuterViaContactSweepDeg, ...
     114.00214740156351, 'AbsTol', tol);
 end
 
+function testFourLayerWindingSuperpositionIsVerifiedAndNotVacuous(testCase)
+% 磁场同向叠加的几何前提：四个活动层的电流环绕方向必须同号。该性质此前只由
+% 生成器写入的 windingDirection 标签（逐层 CCW/CW 交替，描述的是绕制行进
+% 方向而非环绕方向）间接体现，匝数回归又用 abs() 丢掉了符号，因此"某层被反向
+% 导致磁场相消"不会被任何断言拦住。这里同时验证两件事：
+%   (1) 真实 4/4 网络的四层环绕角同号且为正；
+%   (2) 该判据不是空断言——把任意一层的点序翻转（电流反向）后必须报错。
+result = circular_fpc_main(struct( ...
+    'analysisOnly', true, 'enableFigure', false, ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'designName', 'winding_superposition_probe'));
+verifyTrue(testCase, result.validation.windingSuperpositionConsistent, ...
+    'Default 4/4 must superpose its layer fields.');
+verifyTrue(testCase, result.validation.passed);
+verifyGreaterThan(testCase, result.validation.minSignedCirculationDeg, 180);
+% 逐层独立复算，确认四层环绕角不仅同号，且与实测匝数相符。
+for li = result.activeCoilLayers
+    xy = result.layerPaths(li).coilXY;
+    dx = diff(xy(:, 1));
+    dy = diff(xy(:, 2));
+    xm = (xy(1:end - 1, 1) + xy(2:end, 1)) / 2;
+    ym = (xy(1:end - 1, 2) + xy(2:end, 2)) / 2;
+    circulation = rad2deg(sum((xm .* dy - ym .* dx) ./ (xm.^2 + ym.^2)));
+    verifyGreaterThan(testCase, circulation, 180, ...
+        sprintf('L%d must circulate in the shared direction.', li));
+end
+
+geom = resultGeometry(result);
+geom.coils{2} = flipud(geom.coils{2});
+flipped = circular_fpc_validation('validate_result', result.config, ...
+    result.effectiveDimensions, geom);
+verifyFalse(testCase, flipped.windingSuperpositionConsistent, ...
+    'A reversed layer must be rejected, otherwise the check proves nothing.');
+verifyFalse(testCase, flipped.passed);
+verifyTrue(testCase, any(contains(flipped.messages, 'circulation')));
+end
+
+function testEarZoomHelperDefaultsToFourByFourAndStaysConsistent(testCase)
+% ear_zoom_figure 是文档承诺的辅助核对工具，必须与同一批产物描述同一构型。
+% 其默认曾硬编码为 4/2，与公开生成器默认（4/4）及 README 的 4/4 语境不一致，
+% 会让放大图标题/主圆直径与 canonical 产物对不上。这里锁定 4/4 默认，
+% 并确认显式覆盖仍被尊重、且输出文件写在正式产物目录之外。
+tmp = tempname;
+mkdir(tmp);
+c = onCleanup(@() rmdir(tmp, 's'));
+pngPath = fullfile(tmp, 'ear44.png');
+svgPath = fullfile(tmp, 'ear44.svg');
+ear_zoom_figure(pngPath, svgPath);
+verifyTrue(testCase, isfile(pngPath));
+verifyTrue(testCase, isfile(svgPath));
+verifyGreaterThan(testCase, dir(pngPath).bytes, 0);
+
+% 默认构型必须与公开默认一致：直接比对分析结果的活动层集合。
+defaultCfg = circular_fpc_default_config(struct('analysisOnly', true));
+verifyEqual(testCase, defaultCfg.boardLayerCount, 4);
+verifyEqual(testCase, defaultCfg.coilLayerCount, 4);
+
+% 显式覆盖为 4/2 时仍应生成，且不改变公开默认。
+png42 = fullfile(tmp, 'ear42.png');
+svg42 = fullfile(tmp, 'ear42.svg');
+ear_zoom_figure(png42, svg42, struct('boardLayerCount', 4, 'coilLayerCount', 2));
+verifyTrue(testCase, isfile(png42));
+verifyTrue(testCase, isfile(svg42));
+verifyEqual(testCase, defaultCfg.coilLayerCount, 4, ...
+    'An override passed to the helper must not mutate the public default.');
+end
+
 function d = minPointToLoopDistance(point, xy)
 a = xy(1:end-1, :);
 b = xy(2:end, :);

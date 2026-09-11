@@ -1223,6 +1223,8 @@ fprintf(fid, 'PASS maxConnectionTurnDeg: %.6f\n', v.maxConnectionTurnDeg);
 fprintf(fid, 'PASS minOuterViaContactSweepDeg: %.6f\n', v.minOuterViaContactSweepDeg);
 fprintf(fid, 'PASS maxOuterViaContactSweepDeg: %.6f\n', v.maxOuterViaContactSweepDeg);
 fprintf(fid, 'PASS viaOverlapFree: %d\n', v.viaOverlapFree);
+fprintf(fid, 'PASS windingSuperpositionConsistent: %d\n', v.windingSuperpositionConsistent);
+fprintf(fid, 'PASS minSignedCirculationDeg: %.6f\n', v.minSignedCirculationDeg);
 for m = v.messages
     fprintf(fid, 'FAIL %s\n', m{1});
 end

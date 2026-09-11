@@ -179,6 +179,8 @@ function v = validateResult(cfg, eff, geom)
 %   actualBridgeWidthMm    : 实际桥宽（须 ≥ bridgeTargetWidth）
 %   uniqueSeriesNetwork    : 串联网络唯一且连续
 %   maxSeriesContinuityErrorMm / maxConnectionTurnDeg / viaOverlapFree : 连接质量指标
+%   windingSuperpositionConsistent : 所有活动层电流环绕方向同向（磁场叠加而非相消）
+%   minSignedCirculationDeg       : 幅值最小的那层有向环绕角（保留符号，供报告核对）
 v = struct();
 if isfield(geom, 'electrodePads')
     electrodePads = geom.electrodePads;
@@ -272,6 +274,12 @@ else
     v.minOuterViaContactSweepDeg = min(outerViaSweeps);
     v.maxOuterViaContactSweepDeg = max(outerViaSweeps);
 end
+% 各活动层的电流环流方向必须同向：这是磁场在板法向上叠加（而不是相邻层相消）
+% 的充分几何条件。指标完全由生成的线圈折线独立测量，不读取 windingDirection
+% 标签——该标签只描述绕制行进方向（奇数层内→外、偶数层外→内），四层的环绕
+% 方向按设计均为同一符号。
+[v.windingSuperpositionConsistent, v.minSignedCirculationDeg] = ...
+    checkWindingSuperposition(geom.coils, geom.activeLayers);
 if ~v.finiteCoordinates
     v.messages{end + 1} = 'non-finite coordinates found'; %#ok<AGROW>
 end
@@ -351,6 +359,11 @@ end
 if ~v.viaOverlapFree
     v.messages{end + 1} = 'via overlap detected'; %#ok<AGROW>
 end
+if ~v.windingSuperpositionConsistent
+    v.messages{end + 1} = ...
+        ['active coil layers do not share one current circulation direction; ', ...
+         'the layer fields would partly cancel instead of adding']; %#ok<AGROW>
+end
 v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersections && ...
     v.closedBoardLoopCount == expectedBoardLoops && ...
     v.minCopperSpacingMm >= cfg.traceSpacing - 1e-9 && ...
@@ -367,7 +380,47 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.maxOuterViaContactSweepDeg <= 150 && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
-    v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree;
+    v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree && ...
+    v.windingSuperpositionConsistent;
+end
+
+function [consistent, minSignedDeg] = checkWindingSuperposition(coils, activeLayers)
+% 各活动层的有向环绕角（signed circulation）必须同号，磁场才同向叠加。
+% 环绕角按 Σ (x·dy − y·dx)/r² 对折线做中点求和，正负号即俯视电流环绕方向；
+% 该量只依赖几何，与折线点序（内→外或外→内）无关。
+% 判据取半圈（180°）为下限：跨度接近零的退化折线不构成明确环流方向。
+circulations = [];
+for li = activeLayers
+    if li < 1 || li > numel(coils)
+        continue;
+    end
+    xy = coils{li};
+    if isempty(xy) || size(xy, 1) < 2
+        continue;
+    end
+    dx = diff(xy(:, 1));
+    dy = diff(xy(:, 2));
+    xm = (xy(1:end - 1, 1) + xy(2:end, 1)) / 2;
+    ym = (xy(1:end - 1, 2) + xy(2:end, 2)) / 2;
+    r2 = xm.^2 + ym.^2;
+    valid = isfinite(r2) & r2 > eps;
+    if ~any(valid)
+        continue;
+    end
+    increments = zeros(numel(r2), 1);
+    increments(valid) = (xm(valid) .* dy(valid) - ym(valid) .* dx(valid)) ./ r2(valid);
+    increments(~isfinite(increments)) = 0;
+    circulations(end + 1) = rad2deg(sum(increments)); %#ok<AGROW>
+end
+if isempty(circulations)
+    consistent = true;
+    minSignedDeg = 0;
+    return;
+end
+minSweepDeg = 180;
+consistent = all(circulations > minSweepDeg) || all(circulations < -minSweepDeg);
+[~, idx] = min(abs(circulations));
+minSignedDeg = circulations(idx);
 end
 
 function degMin = computeMinCopperInteriorAngle(coils, connectionPaths)
