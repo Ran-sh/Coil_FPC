@@ -76,7 +76,7 @@ function plan = figurePlan(rel, t, result)
 % 按统一命名判定图的种类并选标注文案。命名由 DxfSvgReports 产生：
 %   01_overview / 02_connection_zone / 1x_layer_Lx_<role>
 plan = struct('rel', rel, 'title', '', 'subtitle', '', 'legend', struct('color', {}, 'label', {}), ...
-    'notes', {{}}, 'hasTerminalLabels', false);
+    'notes', {{}});
 isComsol = startsWith(rel, 'COMSOL/');
 isTerminals = contains(rel, 'with_terminals/');
 isOverview = endsWith(rel, '01_overview.svg');
@@ -116,7 +116,6 @@ elseif isOverview
         plan.title = t.ovTitle;
         plan.subtitle = t.ovSub;
         plan.notes = t.ovNotes;
-        plan.hasTerminalLabels = true;
     end
     plan.legend = jlcLegend(t, result);
 elseif isZone
@@ -147,7 +146,6 @@ else
         plan.title = sprintf(t.layerTitle, li, roleLabel);
         plan.subtitle = sprintf(t.layerSub, m.turns, m.circ, ...
             senseSuffix(strcmp(t.lang, 'zh'), t.multiSenseZh));
-        plan.hasTerminalLabels = (li == 1);
     end
 end
 end
@@ -445,8 +443,13 @@ vx = b(1) - pad;
 vy = b(2) - pad;
 vw = (b(3) - b(1)) + 2 * pad;
 vh = (b(4) - b(2)) + 2 * pad;
-if plan.hasTerminalLabels
+% 端子标注是否存在由源文件决定：总览与端子连接区都带 artifact 的 leader/label，
+% 逐层图只有 L1 有。按内容判断可以避免"新增带标注的视图却忘了翻译"。
+if ~isempty(terminalNames(inner))
     inner = rewriteTerminalLabels(inner, lang, [vx, vy, vw, vh]);
+    % artifact 自带的半透明图例底板在为标注带预留的空间里会显得突兀，去掉它；
+    % 标注图有自己的图例区。
+    inner = regexprep(inner, '<rect class="terminal-legend-bg"[^>]*/>\s*', '');
 end
 
 % 字号随帧宽等比缩放，使不同层数/缩放下的可读性一致。
