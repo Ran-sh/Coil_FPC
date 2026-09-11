@@ -132,6 +132,36 @@ Circular_FPC_<板层>L_<线圈层>C__yyyyMMdd_HHmmss/
 `UNVERIFIED_LAYER_COUNT`，不能直接当作已确认的六层厂商叠层。
 当前不生成 Gerber，physical DXF 不能替代 Gerber。
 
+### 附加预览集（`preview/base/`、`preview/zh/`、`preview/en/`）
+
+除上面按用途分组的预览外，预览目录下另有三组**结构相同**的附加预览，各含
+`JLC/` 与 `COMSOL/` 两个子文件夹，便于按语言或按用途直接取图：
+
+| 文件夹 | 内容 |
+| --- | --- |
+| `preview/base/` | 基础预览：与 `preview/JLC/`、`preview/COMSOL/` 对应文件**逐字节相同**的副本 |
+| `preview/zh/` | 中文标注版：标题、图例、说明与端子标注均为中文 |
+| `preview/en/` | 英文标注版：同上，全英文 |
+
+每组四张图（活动线圈层多于一层时另加末层分层图；单活动层组合为五张）：
+
+- `JLC/01_centerline_overview.svg`：中心线总览，含端子引线标注；
+- `JLC/02_centerline_layer_L1_top.svg`：首个活动线圈层；
+- `JLC/03_centerline_layer_L<末层>_<role>.svg`：末个活动线圈层（仅多活动层组合）；
+- `JLC/<NN>_physical_overview.svg`：物理铜总览（实际线宽/焊盘/过孔）；
+- `COMSOL/01_main_overview.svg`：闭合主螺旋铜轮廓；
+- `COMSOL/02_with_terminals_overview.svg`：带端子变体。
+
+标注图**不重新绘制几何**：每张都由上面已经写出的基础预览读回后封装（加标题带、
+图例、说明），因此与它所说明的预览使用同一批图元；端子标注只搬动锚点、放大字号
+并转写文字，`data-name` 等机器可读属性原样保留。图例色块的颜色取自被标注源 SVG
+中实际出现的颜色，导出时会回读核对，避免图例与画面不符。
+
+这些文件属于**原子发布**并各自登记 manifest role（`preview_base`、
+`preview_annotated`），既有的 `preview/JLC/`、`preview/COMSOL/` 文件字节契约不变。
+导出时还会回读校验每组文字不越出帧宽、正文互不重叠，排版失败会阻止发布。
+本组图片只说明导出几何，不代表已通过 COMSOL 实际导入或求解验证。
+
 ## 测试
 
 ```matlab

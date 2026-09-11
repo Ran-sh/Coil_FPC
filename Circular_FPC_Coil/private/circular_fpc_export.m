@@ -97,6 +97,13 @@ if cfg.enablePreview
         comsolTerminalName = sprintf('%02d_comsol_with_terminals_layer_L%d_%s.svg', 1 + li, li, role);
         writeSvgComsolTerminalsLayer(fullfile(comsolTerminalDir, comsolTerminalName), cfg, result, li);
     end
+    % 附加预览集：base/（基础预览逐字节副本）+ zh/、en/（中英标注版）。
+    % 每张标注图都读回上面刚写出的基础预览再封装，几何同源；三个文件夹结构相同，
+    % 各含 JLC 与 COMSOL 子目录。写在这里是为了让它们进入同一批原子发布与 manifest。
+    firstLi = result.activeCoilLayers(1);
+    lastLi = result.activeCoilLayers(end);
+    circular_fpc_annotated_preview('write', cfg, result, previewRoot, ...
+        svgLayerRole(result, firstLi), svgLayerRole(result, lastLi));
 end
 writeReports(cfg, result, reportsDir);
 writeStatus(cfg, formalPath, fullfile(outDir, 'generation_status.txt'));
@@ -1340,6 +1347,10 @@ elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_L\d+\.dxf$', 'once'))
     role = 'copper_solid';
 elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_with_terminals_L\d+\.dxf$', 'once'))
     role = 'copper_solid_with_terminals';
+elseif ~isempty(regexp(rel, '^preview/base/(JLC|COMSOL)/', 'once'))
+    role = 'preview_base';
+elseif ~isempty(regexp(rel, '^preview/(zh|en)/(JLC|COMSOL)/', 'once'))
+    role = 'preview_annotated';
 elseif ~isempty(regexp(rel, '^preview/(JLC/(centerline|physical)|COMSOL)/', 'once'))
     role = 'preview';
 elseif ~isempty(regexp(rel, '^reports/', 'once'))
@@ -1633,6 +1644,9 @@ if cfg.enablePreview
         end
         xmlread(comsolTermFile);
     end
+    % 附加预览集：base/zh/en 三组必须齐全，文字不得越界或重叠，且 base 组必须与
+    % 上面校验过的 JLC/、COMSOL/ 预览逐字节一致。排版失败会阻止原子发布。
+    circular_fpc_annotated_preview('audit', fullfile(tempDir, 'preview'));
 end
 for f = {'01_pad_via_coordinates.csv', '02_layer_map.csv', '10_electrode_pad_coordinates.csv'}
     p = fullfile(tempDir, 'reports', f{1});
@@ -1744,7 +1758,8 @@ if any(startsWith(rel8, '/')) || any(contains(rel8, '\')) || any(contains(rel8, 
     error('CircularFPC:ExportReadbackFailed', '08 manifest relativePath invalid.');
 end
 roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
-    'copper_solid_with_terminals', 'preview', 'report', 'generation_status'};
+    'copper_solid_with_terminals', 'preview', 'preview_base', 'preview_annotated', ...
+    'report', 'generation_status'};
 for k = 1:height(t8)
     rel = char(t8.relativePath(k));
     if ~ismember(char(t8.role(k)), roles8)

@@ -463,6 +463,139 @@ verifyEqual(testCase, defaultCfg.coilLayerCount, 4, ...
     'An override passed to the helper must not mutate the public default.');
 end
 
+function testAttachedPreviewSetsShipBaseChineseAndEnglish(testCase)
+% preview/ 下必须同时存在三组平行预览：base（基础版，与既有 JLC/、COMSOL/ 逐
+% 字节一致）、zh（中文标注）、en（英文标注），每组都含 JLC 与 COMSOL 子目录。
+% 这三组属于原子发布并各自登记 manifest role，所以任何一个文件缺失或未登记都
+% 应让导出失败，而不是静默少图。
+outRoot = tempname;
+mkdir(outRoot);
+c = onCleanup(@() rmdir(outRoot, 's'));
+result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'attached_preview', ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'enableFigure', false, 'enablePreview', true));
+pv = fullfile(result.outputPath, 'preview');
+
+expected = { ...
+    'base', 'JLC',   '01_centerline_overview.svg'; ...
+    'base', 'COMSOL', '01_main_overview.svg'; ...
+    'base', 'COMSOL', '02_with_terminals_overview.svg'; ...
+    'zh',   'JLC',   '01_centerline_overview.svg'; ...
+    'zh',   'JLC',   '02_centerline_layer_L1_top.svg'; ...
+    'zh',   'JLC',   '03_centerline_layer_L4_bottom.svg'; ...
+    'zh',   'COMSOL', '01_main_overview.svg'; ...
+    'zh',   'COMSOL', '02_with_terminals_overview.svg'; ...
+    'en',   'JLC',   '01_centerline_overview.svg'; ...
+    'en',   'COMSOL', '02_with_terminals_overview.svg'};
+for k = 1:size(expected, 1)
+    p = fullfile(pv, expected{k, 1}, expected{k, 2}, expected{k, 3});
+    verifyTrue(testCase, isfile(p), sprintf('missing attached preview: %s', p));
+end
+% 物理铜总览的序号随活动层数变化，用后缀定位。
+physBase = dir(fullfile(pv, 'base', 'JLC', '*_physical_overview.svg'));
+physZh = dir(fullfile(pv, 'zh', 'JLC', '*_physical_overview.svg'));
+verifyEqual(testCase, numel(physBase), 1);
+verifyEqual(testCase, numel(physZh), 1);
+
+% base 组是既有契约预览的逐字节副本，不能变成"第二套画法"。
+basePairs = { ...
+    fullfile('JLC', 'centerline', '01_preview_full.svg'), ...
+        fullfile('base', 'JLC', '01_centerline_overview.svg'); ...
+    fullfile('COMSOL', 'with_terminals', '01_comsol_with_terminals_full.svg'), ...
+        fullfile('base', 'COMSOL', '02_with_terminals_overview.svg')};
+for k = 1:size(basePairs, 1)
+    a = fileread(fullfile(pv, basePairs{k, 1}));
+    b = fileread(fullfile(pv, basePairs{k, 2}));
+    verifyEqual(testCase, b, a, ...
+        'base preview must be a byte copy of the contract preview.');
+end
+
+% zh/en 必须真的分别用中文与英文，且语言元数据不得互换。
+zhTxt = fileread(fullfile(pv, 'zh', 'JLC', '01_centerline_overview.svg'));
+enTxt = fileread(fullfile(pv, 'en', 'JLC', '01_centerline_overview.svg'));
+verifyTrue(testCase, contains(zhTxt, 'data-annotated-lang="zh"'));
+verifyTrue(testCase, contains(enTxt, 'data-annotated-lang="en"'));
+verifyTrue(testCase, contains(zhTxt, '图例'));
+verifyTrue(testCase, contains(zhTxt, '说明'));
+verifyTrue(testCase, contains(enTxt, 'Legend'));
+verifyTrue(testCase, contains(enTxt, 'Notes'));
+% 中文版必须含中文端子标注，且不得残留基线的英文方括号写法。
+verifyTrue(testCase, contains(zhTxt, '入口桥'));
+verifyFalse(testCase, contains(zhTxt, '[ENTRY_BRIDGE]'));
+verifyFalse(testCase, contains(enTxt, '[ENTRY_BRIDGE]'));
+
+% 端子标注的机器可读属性必须保留，否则下游按 data-name 取端子会失效。
+verifyTrue(testCase, contains(zhTxt, 'data-name="PAD_A"'));
+verifyTrue(testCase, contains(zhTxt, 'data-name="V14"'));
+verifyTrue(testCase, contains(zhTxt, 'class="terminal-leader"'));
+
+% manifest 必须登记三组 role，且每个附加预览文件都在清单里。
+man = readtable(fullfile(result.outputPath, 'reports', '08_file_manifest.csv'));
+roles = string(man.role);
+verifyEqual(testCase, sum(roles == "preview_base"), 6);
+verifyEqual(testCase, sum(roles == "preview_annotated"), 12);
+listed = string(man.relativePath);
+verifyTrue(testCase, all(ismember( ...
+    ["preview/base/JLC/01_centerline_overview.svg", ...
+     "preview/zh/COMSOL/02_with_terminals_overview.svg", ...
+     "preview/en/JLC/01_centerline_overview.svg"], listed)));
+end
+
+function testAttachedPreviewTextStaysInsideItsFrame(testCase)
+% 标注文字不得越出帧宽，正文之间不得重叠。这是在导出时由
+% circular_fpc_annotated_preview('audit') 强制的；此处用独立实现复核，避免
+% "同一个函数自己检查自己"。
+outRoot = tempname;
+mkdir(outRoot);
+c = onCleanup(@() rmdir(outRoot, 's'));
+result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'attached_layout', ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'enableFigure', false, 'enablePreview', true));
+pv = fullfile(result.outputPath, 'preview');
+for lang = {'zh', 'en'}
+    files = dir(fullfile(pv, lang{1}, '**', '*.svg'));
+    verifyEqual(testCase, numel(files), 6);
+    for k = 1:numel(files)
+        p = fullfile(files(k).folder, files(k).name);
+        txt = fileread(p);
+        % 'tokens','once' 返回的是嵌套 cell（{1x1 cell}），要先取出来再 sscanf。
+        vbTok = regexp(txt, 'viewBox="([^"]+)"', 'tokens', 'once');
+        verifyFalse(testCase, isempty(vbTok));
+        vb = sscanf(vbTok{1}, '%f');
+        verifyEqual(testCase, numel(vb), 4);
+        x0 = vb(1);
+        x1 = vb(1) + vb(3);
+        tok = regexp(txt, '<text\b([^>]*)>([^<]*)</text>', 'tokens');
+        for q = 1:numel(tok)
+            attrs = tok{q}{1};
+            body = tok{q}{2};
+            sizeTok = regexp(attrs, 'font-size="([^"]+)"', 'tokens', 'once');
+            xTok = regexp(attrs, 'x="([^"]+)"', 'tokens', 'once');
+            verifyFalse(testCase, isempty(sizeTok) || isempty(xTok));
+            sz = str2double(sizeTok{1});
+            x = str2double(xTok{1});
+            % 内联估宽：本文件里的辅助函数必须是单参数，否则会被测试框架当成
+            % 测试用例（"must accept one input argument"）而整体排除。
+            w = 0;
+            for ci = 1:numel(body)
+                cp = double(body(ci));
+                wide = (cp >= 4352 & cp <= 4447) || (cp >= 11904 & cp <= 42191) || ...
+                    (cp >= 44032 & cp <= 55215) || (cp >= 63744 & cp <= 64255) || ...
+                    (cp >= 65072 & cp <= 65103) || (cp >= 65280 & cp <= 65519);
+                if wide
+                    w = w + sz;
+                else
+                    w = w + sz * 0.56;
+                end
+            end
+            verifyLessThanOrEqual(testCase, x + w, x1 + 1e-6, ...
+                sprintf('%s: text overflows the frame: "%s"', ...
+                files(k).name, body));
+            verifyGreaterThanOrEqual(testCase, x, x0 - 1e-6, ...
+                sprintf('%s: text starts before the frame', files(k).name));
+        end
+    end
+end
+end
+
 function d = minPointToLoopDistance(point, xy)
 a = xy(1:end-1, :);
 b = xy(2:end, :);
