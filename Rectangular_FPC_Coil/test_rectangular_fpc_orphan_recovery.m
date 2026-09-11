@@ -4,7 +4,7 @@ tests = functiontests(localfunctions);
 end
 
 function testStaleClaimOwnerReplacedDuringTransition(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % 原地认领协议回归：stale 判定后、原子换主前，若 owner 已被其他写入者
 % 换成新锁，认领方必须识别身份变化、fail closed，且不得破坏新锁。
 paths = support.makeFixture();
@@ -15,7 +15,7 @@ support.writeStaleOwnerRecord(lockFolder, '1');
 mover = @(source, destination) support.replaceOwnerDuringSwap( ...
     source, destination, lockFolder);
 
-assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+assertError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output, mover), 'RectangularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(lockFolder));
@@ -27,7 +27,7 @@ clear cleanup;
 end
 
 function testStaleClaimRecoversOrphanedReclaimClaim(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % 崩溃残留的孤儿认领（claimant 已死）必须可回收，发布正常完成。
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
@@ -46,7 +46,7 @@ fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
 clear claimOwnerCleanup;
 
-rectangular_fpc_publish_atomically(paths.staging, paths.output);
+RectangularFpc.Publish.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(lockFolder));
@@ -54,7 +54,7 @@ clear cleanup;
 end
 
 function testStaleClaimRefusesBusyReclaimClaim(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % 另一写入者正在认领（claimant 存活）时必须 fail closed，主锁不被破坏。
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
@@ -71,7 +71,7 @@ fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
     'Format', 'yyyy-MM-dd''T''HH:mm:ss.SSSXXX')));
 clear claimOwnerCleanup;
 
-assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+assertError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
@@ -82,7 +82,7 @@ clear cleanup;
 end
 
 function testExpiredMalformedFixedLockFailsClosed(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 lockFolder = [paths.output '_publish.lock'];
@@ -92,7 +92,7 @@ fileCleanup = onCleanup(@() fclose(fid));
 fprintf(fid, 'created=2000-01-01T00:00:00.000Z\n');
 clear fileCleanup;
 
-assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+assertError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output), 'RectangularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
@@ -102,7 +102,7 @@ clear cleanup;
 end
 
 function testCommittedOutputCleansLegitimateOrphanBackup(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -114,7 +114,7 @@ support.rewriteCommitManifest(orphanBackup, cell(0, 2));
 support.writeBackupTransactionFixture( ...
     orphanBackup, paths.output, repmat('a', 1, 32));
 
-rectangular_fpc_publish_atomically(paths.staging, paths.output);
+RectangularFpc.Publish.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(orphanBackup));
@@ -123,7 +123,7 @@ clear cleanup;
 end
 
 function testUnknownBackupLikeDirectorySurvivesCommittedReplacement(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % Only publisher-issued, token-shaped backup names are recovery state.
 % A user directory that merely shares the prefix is outside that protocol.
 paths = support.makeFixture();
@@ -133,7 +133,7 @@ unknownBackup = support.unknownBackupLikePath(paths);
 mkdir(unknownBackup);
 support.writeMarker(fullfile(unknownBackup, 'do_not_touch.txt'));
 
-rectangular_fpc_publish_atomically(paths.staging, paths.output);
+RectangularFpc.Publish.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyTrue(testCase, isfile(fullfile(unknownBackup, 'do_not_touch.txt')));
@@ -142,7 +142,7 @@ clear cleanup;
 end
 
 function testUnknownBackupLikeDirectoryWithoutOutputFailsClosed(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % With no formal output and no legitimate publication backup, recovery has
 % no authoritative source. The unknown directory must not be moved/deleted.
 paths = support.makeFixture();
@@ -152,7 +152,7 @@ unknownBackup = support.unknownBackupLikePath(paths);
 mkdir(unknownBackup);
 support.writeMarker(fullfile(unknownBackup, 'do_not_touch.txt'));
 
-assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+assertError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output), 'RectangularFPC:AtomicRecoveryFailed');
 
 verifyFalse(testCase, isfolder(paths.output));
@@ -163,7 +163,7 @@ clear cleanup;
 end
 
 function testIncompleteOutputPreservesRecoveryBackup(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 delete(fullfile(paths.output, 'generation_status.txt'));
@@ -175,7 +175,7 @@ support.rewriteCommitManifest(orphanBackup, cell(0, 2));
 support.writeBackupTransactionFixture( ...
     orphanBackup, paths.output, repmat('b', 1, 32));
 
-verifyError(testCase, @() rectangular_fpc_publish_atomically( ...
+verifyError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output), 'RectangularFPC:AtomicRecoveryFailed');
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
@@ -186,7 +186,7 @@ clear cleanup;
 end
 
 function testStaleClaimOrphanStealLoserFailsClosed(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % 孤儿回收原子性回归：两个回收者竞争同一孤儿认领时，基于过期判定
 % rmdir 固定路径会删掉竞争者刚建好的新认领（TOCTOU，双持锁）。
 % 原子 tombstone 竞争下，rename 落败的一方必须 fail closed，
@@ -209,7 +209,7 @@ fprintf(fid, 'created=%s\n', char(datetime('now', 'TimeZone', 'UTC', ...
 clear orphanOwnerCleanup;
 mover = @(source, destination) support.stealTombstoneRace(source, destination, claimDir);
 
-assertError(testCase, @() rectangular_fpc_publish_atomically( ...
+assertError(testCase, @() RectangularFpc.Publish.PublishAtomically( ...
     paths.staging, paths.output, mover), 'RectangularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(claimDir));

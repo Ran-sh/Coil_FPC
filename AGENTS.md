@@ -6,10 +6,19 @@ Preserve the public geometry, electrical, manufacturing-check, and export contra
 ## Repository map
 
 - `Circular_FPC_Coil/`: public entrypoints `circular_fpc_default_config` and
-  `circular_fpc_main`; helpers belong in `private/`.
+  `circular_fpc_main`; helpers live under `+CircularFpc/`.
 - `Rectangular_FPC_Coil/`: public entrypoints `rectangular_fpc_default_config`,
-  `rectangular_fpc_main`, and `rectangular_fpc_read_committed`; helpers belong in
-  `private/`.
+  `rectangular_fpc_main`, and `rectangular_fpc_read_committed`; helpers live under
+  `+RectangularFpc/`.
+- Helper packages are grouped by function: `+Pipeline/` (orchestration and config
+  validation), `+Geometry/` (board, coil, lead routing, vias), `+Quality/` (result
+  validation, design checks, JLC rules), `+Export/` (DXF/SVG/report/preview writing,
+  plotting), and, in rectangular, `+Publish/` (atomic publication and recovery).
+- `private/` cannot be renamed or nested under MATLAB's rules, so helpers use package
+  folders instead. The package name must stay module-specific (`+CircularFpc`,
+  `+RectangularFpc`): two same-named packages on one path silently shadow each other,
+  and a call would resolve to the wrong module. Package internals are conventional
+  rather than enforced, so treat everything under them as private.
 - Each module has `tests/run_all_verification.m`. The root workflow is
   `.github/workflows/matlab-tests.yml`.
 - Load `.agents/skills/coil-fpc-verification/SKILL.md` for geometry or export evidence,

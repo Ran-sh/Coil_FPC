@@ -4,7 +4,7 @@ tests = functiontests(localfunctions);
 end
 
 function testCommittedReaderHoldsExclusiveAccessLock(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -19,7 +19,7 @@ clear cleanup;
 end
 
 function testReaderRejectsUncommittedFolder(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 delete(fullfile(paths.output, 'generation_status.txt'));
@@ -34,7 +34,7 @@ clear cleanup;
 end
 
 function testMissingOutputDoesNotCreateParentDirectories(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 workspaceRoot = tempname;
 outputFolder = fullfile(workspaceRoot, 'missing_parent', 'missing_output');
 cleanup = onCleanup(@() support.removeFixture(workspaceRoot));
@@ -50,7 +50,7 @@ clear cleanup;
 end
 
 function testReaderRejectsTamperedManifest(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -68,7 +68,7 @@ clear cleanup;
 end
 
 function testReaderAcceptsCommittedTree(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -82,7 +82,7 @@ clear cleanup;
 end
 
 function testReaderRejectsSelfConsistentManifestMissingRequiredArtifacts(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % Removing a required handoff artifact and rebuilding a perfectly
 % self-consistent manifest must still be rejected. This isolates the
 % semantic commit contract from ordinary missing-file/hash failures.
@@ -114,7 +114,7 @@ end
 end
 
 function testReaderRejectsIncorrectManifestRole(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 % Path, size and digest remain valid; only the semantic role is wrong.
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
@@ -131,7 +131,7 @@ clear cleanup;
 end
 
 function testReaderCallbackFailureReleasesLock(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -148,7 +148,7 @@ clear cleanup;
 end
 
 function testReaderAcceptsStringScalarOutputPath(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -162,7 +162,7 @@ clear cleanup;
 end
 
 function testReaderAcceptsRelativeAndTrailingSeparatorPaths(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 originalFolder = pwd;
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.restoreFolderAndRemove(originalFolder, paths.root));
@@ -183,7 +183,7 @@ clear cleanup;
 end
 
 function testReaderRejectsUnsupportedLayerCountBeforeExpansion(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 unsupported = [0, 1, 3, 9, 1000000000];
 for layerCount = unsupported
     paths = support.makeFixture();
@@ -205,7 +205,7 @@ end
 end
 
 function testReaderRejectsHeaderOnlyManifest(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -223,7 +223,7 @@ clear cleanup;
 end
 
 function testReaderRejectsTruncatedManifest(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -245,7 +245,7 @@ clear cleanup;
 end
 
 function testReaderRejectsDuplicateManifestRows(testCase)
-support = test_rectangular_fpc_publish_support();
+support = RectangularFpc.Publish.PublishSupport();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);

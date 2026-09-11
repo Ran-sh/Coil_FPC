@@ -26,7 +26,7 @@ end
 if ~isfield(overrides, 'coilLayerCount')
     overrides.coilLayerCount = 4;
 end
-result = circular_fpc_analyze(overrides);
+result = CircularFpc.Pipeline.AnalyzeReadOnly(overrides);
 lr = result.layoutRegions;
 cfg = result.config;
 angleDeg = lr.mountingAnglesDeg(1);

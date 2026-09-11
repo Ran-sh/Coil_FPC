@@ -11,8 +11,8 @@ cfg = circular_fpc_default_config(struct( ...
     'boardLayerCount', 4, ...
     'coilLayerCount', 4, ...
     'designName', 'preserve_archimedean_spiral'));
-base = circular_fpc_engine(cfg);
-routed = circular_fpc_terminal_reroute(cfg, base);
+base = CircularFpc.Pipeline.Generate(cfg);
+routed = CircularFpc.Geometry.TerminalRouting(cfg, base);
 
 verifyEqual(testCase, routed.layerPaths(1).coilXY, ...
     base.layerPaths(1).coilXY, 'AbsTol', 1e-12, ...
@@ -50,7 +50,7 @@ candidate = midPoint + 0.45 * normal;
 v12Index = find(strcmp({geom.vias.name}, 'V12'), 1);
 geom.vias(v12Index).xy = candidate;
 
-validation = circular_fpc_validation( ...
+validation = CircularFpc.Quality.ResultValidation( ...
     'validate_result', result.config, result.effectiveDimensions, geom);
 verifyTrue(testCase, isfield(validation, ...
     'minTerminalToConnectionTraceMm'));
@@ -67,7 +67,7 @@ cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 mover = @(source, destination) failPublishMove( ...
     source, destination, paths);
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output, mover), ...
     'CircularFPC:AtomicPublishFailed');
 verifyFalse(testCase, isfolder(paths.staging));
@@ -80,7 +80,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 mkdir(paths.lock);
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyFalse(testCase, isfolder(paths.staging));
 verifyTrue(testCase, isfolder(paths.lock));
@@ -91,7 +91,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', 2147483647, '');
 
-circular_fpc_publish_atomically(paths.staging, paths.output);
+CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -103,7 +103,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', matlabProcessID, '');
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -115,7 +115,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, 'definitely-not-this-host', 2147483647, '');
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -128,7 +128,7 @@ cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', NaN, ...
     'created=2000-01-01T00:00:00.000Z');
 
-circular_fpc_publish_atomically(paths.staging, paths.output);
+CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -140,7 +140,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', NaN, '');
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -185,7 +185,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 mover = @(source, destination) replaceOwnerDuringSwap( ...
     source, destination, paths.lock);
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output, mover), 'CircularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(paths.lock));
@@ -204,7 +204,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', 2147483647, '');
 
-circular_fpc_publish_atomically(paths.staging, paths.output);
+CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -219,7 +219,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', matlabProcessID, '');
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 
 % 忙碌认领属于其他写入者：其 claim 目录必须原样保留，主锁不被破坏
@@ -242,7 +242,7 @@ claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', 2147483647, '');
 mover = @(source, destination) stealTombstoneRace(source, destination, claimDir);
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output, mover), 'CircularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(claimDir));
@@ -294,7 +294,7 @@ function testAtomicPublishPreservesExistingFormalOutput(testCase)
 paths = makePublishFixture(true);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 
-verifyError(testCase, @() circular_fpc_publish_atomically( ...
+verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
     paths.staging, paths.output), 'CircularFPC:OutputExists');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
@@ -306,7 +306,7 @@ function testAtomicPublishSuccessCommitsWholeTree(testCase)
 paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 
-circular_fpc_publish_atomically(paths.staging, paths.output);
+CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.staging));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -365,7 +365,7 @@ for endpointIndex = 1:2
 end
 
 geom.connectionPaths{1} = [geom.connectionPaths{1}, {[p1; p2]}];
-validation = circular_fpc_validation('validate_result', result.config, ...
+validation = CircularFpc.Quality.ResultValidation('validate_result', result.config, ...
     result.effectiveDimensions, geom);
 verifyLessThan(testCase, validation.minCopperToSlotsMm, cfg.edgeClearance - 0.05);
 verifyFalse(testCase, validation.passed);
@@ -425,7 +425,7 @@ end
 
 geom = resultGeometry(result);
 geom.coils{2} = flipud(geom.coils{2});
-flipped = circular_fpc_validation('validate_result', result.config, ...
+flipped = CircularFpc.Quality.ResultValidation('validate_result', result.config, ...
     result.effectiveDimensions, geom);
 verifyFalse(testCase, flipped.windingSuperpositionConsistent, ...
     'A reversed layer must be rejected, otherwise the check proves nothing.');
@@ -463,86 +463,80 @@ verifyEqual(testCase, defaultCfg.coilLayerCount, 4, ...
     'An override passed to the helper must not mutate the public default.');
 end
 
-function testAttachedPreviewSetsShipBaseChineseAndEnglish(testCase)
-% preview/ 下必须同时存在三组平行预览：base（基础版，与既有 JLC/、COMSOL/ 逐
-% 字节一致）、zh（中文标注）、en（英文标注），每组都含 JLC 与 COMSOL 子目录。
-% 这三组属于原子发布并各自登记 manifest role，所以任何一个文件缺失或未登记都
-% 应让导出失败，而不是静默少图。
+function testAnnotatedPreviewMirrorsTheFullContractSet(testCase)
+% preview/ 下 zh/ 与 en/ 必须是 JLC/、COMSOL/ 的**完整镜像**：每个契约预览都有
+% 对应的一份中文与一份英文，且相对路径、文件名完全一致——规则只有"同名不同语言"
+% 一条，不需要额外记住哪些图有标注版。镜像属于原子发布并登记 manifest role，缺图
+% 或未登记都应让导出失败，而不是静默少图。
 outRoot = tempname;
 mkdir(outRoot);
 c = onCleanup(@() rmdir(outRoot, 's'));
-result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'attached_preview', ...
+result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'mirror_preview', ...
     'boardLayerCount', 4, 'coilLayerCount', 2, 'enableFigure', false, 'enablePreview', true));
 pv = fullfile(result.outputPath, 'preview');
 
-expected = { ...
-    'base', 'JLC',   '01_centerline_overview.svg'; ...
-    'base', 'COMSOL', '01_main_overview.svg'; ...
-    'base', 'COMSOL', '02_with_terminals_overview.svg'; ...
-    'zh',   'JLC',   '01_centerline_overview.svg'; ...
-    'zh',   'JLC',   '02_centerline_layer_L1_top.svg'; ...
-    'zh',   'JLC',   '03_centerline_layer_L4_bottom.svg'; ...
-    'zh',   'COMSOL', '01_main_overview.svg'; ...
-    'zh',   'COMSOL', '02_with_terminals_overview.svg'; ...
-    'en',   'JLC',   '01_centerline_overview.svg'; ...
-    'en',   'COMSOL', '02_with_terminals_overview.svg'};
-for k = 1:size(expected, 1)
-    p = fullfile(pv, expected{k, 1}, expected{k, 2}, expected{k, 3});
-    verifyTrue(testCase, isfile(p), sprintf('missing attached preview: %s', p));
+% 契约组清单取自磁盘，再要求 zh/en 逐个同路径存在。
+contract = {};
+for grp = {'JLC', 'COMSOL'}
+    d = dir(fullfile(pv, grp{1}, '**', '*.svg'));
+    for k = 1:numel(d)
+        full = fullfile(d(k).folder, d(k).name);
+        contract{end + 1} = strrep(strrep(full, [pv filesep], ''), '', '/'); %#ok<AGROW>
+    end
 end
-% 物理铜总览的序号随活动层数变化，用后缀定位。
-physBase = dir(fullfile(pv, 'base', 'JLC', '*_physical_overview.svg'));
-physZh = dir(fullfile(pv, 'zh', 'JLC', '*_physical_overview.svg'));
-verifyEqual(testCase, numel(physBase), 1);
-verifyEqual(testCase, numel(physZh), 1);
-
-% base 组是既有契约预览的逐字节副本，不能变成"第二套画法"。
-basePairs = { ...
-    fullfile('JLC', 'centerline', '01_preview_full.svg'), ...
-        fullfile('base', 'JLC', '01_centerline_overview.svg'); ...
-    fullfile('COMSOL', 'with_terminals', '01_comsol_with_terminals_full.svg'), ...
-        fullfile('base', 'COMSOL', '02_with_terminals_overview.svg')};
-for k = 1:size(basePairs, 1)
-    a = fileread(fullfile(pv, basePairs{k, 1}));
-    b = fileread(fullfile(pv, basePairs{k, 2}));
-    verifyEqual(testCase, b, a, ...
-        'base preview must be a byte copy of the contract preview.');
+verifyEqual(testCase, numel(contract), 22, ...
+    'the 4/2 contract set is expected to hold 22 previews');
+for lang = {'zh', 'en'}
+    for k = 1:numel(contract)
+        p = fullfile(pv, lang{1}, strrep(contract{k}, '/', filesep));
+        verifyTrue(testCase, isfile(p), ...
+            sprintf('missing %s mirror of %s', lang{1}, contract{k}));
+    end
 end
 
-% zh/en 必须真的分别用中文与英文，且语言元数据不得互换。
-zhTxt = fileread(fullfile(pv, 'zh', 'JLC', '01_centerline_overview.svg'));
-enTxt = fileread(fullfile(pv, 'en', 'JLC', '01_centerline_overview.svg'));
+% 统一命名与固定图号：01 总览、02 连接区，逐层恒为 1x_layer_Lx_<role>。
+verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '01_overview.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '02_connection_zone.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '11_layer_L1_top.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '14_layer_L4_bottom.svg')));
+verifyFalse(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '01_preview_full.svg')), ...
+    'the legacy preview_ naming must be gone');
+verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', 'main', '01_overview.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', 'with_terminals', '01_overview.svg')));
+
+% zh/en 必须真的分别是中文与英文，且语言元数据不得互换。
+zhTxt = fileread(fullfile(pv, 'zh', 'JLC', 'centerline', '01_overview.svg'));
+enTxt = fileread(fullfile(pv, 'en', 'JLC', 'centerline', '01_overview.svg'));
 verifyTrue(testCase, contains(zhTxt, 'data-annotated-lang="zh"'));
 verifyTrue(testCase, contains(enTxt, 'data-annotated-lang="en"'));
 verifyTrue(testCase, contains(zhTxt, '图例'));
 verifyTrue(testCase, contains(zhTxt, '说明'));
 verifyTrue(testCase, contains(enTxt, 'Legend'));
 verifyTrue(testCase, contains(enTxt, 'Notes'));
-% 中文版必须含中文端子标注，且不得残留基线的英文方括号写法。
+% 中文版含中文端子标注，且不得残留基线的英文方括号写法。
 verifyTrue(testCase, contains(zhTxt, '入口桥'));
 verifyFalse(testCase, contains(zhTxt, '[ENTRY_BRIDGE]'));
 verifyFalse(testCase, contains(enTxt, '[ENTRY_BRIDGE]'));
-
 % 端子标注的机器可读属性必须保留，否则下游按 data-name 取端子会失效。
 verifyTrue(testCase, contains(zhTxt, 'data-name="PAD_A"'));
-verifyTrue(testCase, contains(zhTxt, 'data-name="V14"'));
 verifyTrue(testCase, contains(zhTxt, 'class="terminal-leader"'));
 
-% manifest 必须登记三组 role，且每个附加预览文件都在清单里。
+% manifest 必须登记全部镜像，且每个文件都在清单里。
 man = readtable(fullfile(result.outputPath, 'reports', '08_file_manifest.csv'));
 roles = string(man.role);
-verifyEqual(testCase, sum(roles == "preview_base"), 6);
-verifyEqual(testCase, sum(roles == "preview_annotated"), 12);
+verifyEqual(testCase, sum(roles == "preview_annotated"), 44, ...
+    '22 contract previews must each have a zh and an en mirror');
+verifyFalse(testCase, any(roles == "preview_base"), ...
+    'the redundant base/ copy set is gone');
 listed = string(man.relativePath);
 verifyTrue(testCase, all(ismember( ...
-    ["preview/base/JLC/01_centerline_overview.svg", ...
-     "preview/zh/COMSOL/02_with_terminals_overview.svg", ...
-     "preview/en/JLC/01_centerline_overview.svg"], listed)));
+    ["preview/zh/JLC/centerline/14_layer_L4_bottom.svg", ...
+     "preview/en/COMSOL/with_terminals/01_overview.svg"], listed)));
 end
 
 function testAttachedPreviewTextStaysInsideItsFrame(testCase)
 % 标注文字不得越出帧宽，正文之间不得重叠。这是在导出时由
-% circular_fpc_annotated_preview('audit') 强制的；此处用独立实现复核，避免
+% CircularFpc.Export.AnnotatedPreviews('audit') 强制的；此处用独立实现复核，避免
 % "同一个函数自己检查自己"。
 outRoot = tempname;
 mkdir(outRoot);
@@ -552,7 +546,8 @@ result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'attached
 pv = fullfile(result.outputPath, 'preview');
 for lang = {'zh', 'en'}
     files = dir(fullfile(pv, lang{1}, '**', '*.svg'));
-    verifyEqual(testCase, numel(files), 6);
+    verifyEqual(testCase, numel(files), 22, ...
+        'each language set mirrors the whole 22-figure contract set');
     for k = 1:numel(files)
         p = fullfile(files(k).folder, files(k).name);
         txt = fileread(p);

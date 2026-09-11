@@ -766,7 +766,7 @@ verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'Ab
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
-fullSvg = fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg');
+fullSvg = fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
@@ -1246,11 +1246,11 @@ for k = 1:cfg.boardLayerCount
     layerDxf = fullfile(out, 'dxf', sprintf('L%d', k), sprintf('%02d_copper_L%d.dxf', k, k));
     verifyTrue(testCase, isfile(layerDxf), sprintf('missing %s', layerDxf));
 end
-previewFull = fullfile(out, 'preview', 'JLC', 'physical', '01_preview_full.svg');
-previewZone = fullfile(out, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg');
-centerlineFull = fullfile(out, 'preview', 'JLC', 'centerline', '01_preview_full.svg');
-centerlineZone = fullfile(out, 'preview', 'JLC', 'centerline', '02_preview_connection_zone.svg');
-comsolFull = fullfile(out, 'preview', 'COMSOL', '01_comsol_dxf_full.svg');
+previewFull = fullfile(out, 'preview', 'JLC', 'physical', '01_overview.svg');
+previewZone = fullfile(out, 'preview', 'JLC', 'physical', '02_connection_zone.svg');
+centerlineFull = fullfile(out, 'preview', 'JLC', 'centerline', '01_overview.svg');
+centerlineZone = fullfile(out, 'preview', 'JLC', 'centerline', '02_connection_zone.svg');
+comsolFull = fullfile(out, 'preview', 'COMSOL', 'main', '01_overview.svg');
 verifyTrue(testCase, isfile(previewFull));
 verifyTrue(testCase, isfile(previewZone));
 verifyTrue(testCase, isfile(centerlineFull));
@@ -1273,8 +1273,8 @@ for li = 1:cfg.boardLayerCount
     else
         role = sprintf('inner%d', li - 1);
     end
-    comsolLayer = fullfile(out, 'preview', 'COMSOL', ...
-        sprintf('%02d_comsol_dxf_layer_L%d_%s.svg', 1 + li, li, role));
+    comsolLayer = fullfile(out, 'preview', 'COMSOL', 'main', ...
+        sprintf('1%d_layer_L%d_%s.svg', li, li, role));
     verifyTrue(testCase, isfile(comsolLayer), sprintf('missing COMSOL preview for L%d', li));
     if isfile(comsolLayer)
         comsolLayerTxt = fileread(comsolLayer);
@@ -1479,18 +1479,19 @@ if isfile(csvManifest)
     verifyFalse(testCase, any(strcmp(rel8, 'reports/08_file_manifest.csv')), ...
         '08 manifest must not list itself');
     roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
-        'copper_solid_with_terminals', 'preview', 'preview_base', 'preview_annotated', ...
+        'copper_solid_with_terminals', 'preview', 'preview_annotated', ...
         'report', 'generation_status'};
     verifyTrue(testCase, all(ismember(string(t8.role), roles8)), ...
         '08 manifest roles must come from the fixed vocabulary');
-    % 附加预览集必须被登记，而不是以匿名 'preview' 混过去。
-    verifyEqual(testCase, sum(string(t8.role) == "preview_base"), ...
-        numel(dir(fullfile(out, 'preview', 'base', '**', '*.svg'))), ...
-        'every base preview must be registered with its own role');
+    % zh/en 镜像必须逐个登记，而不是以匿名 'preview' 混过去；数量要等于契约预览
+    % 总数的两倍，避免只登记一部分却仍然通过。
+    contractCount = numel(dir(fullfile(out, 'preview', 'JLC', '**', '*.svg'))) + ...
+        numel(dir(fullfile(out, 'preview', 'COMSOL', '**', '*.svg')));
     verifyEqual(testCase, sum(string(t8.role) == "preview_annotated"), ...
-        numel(dir(fullfile(out, 'preview', 'zh', '**', '*.svg'))) + ...
-        numel(dir(fullfile(out, 'preview', 'en', '**', '*.svg'))), ...
-        'every annotated preview must be registered with its own role');
+        2 * contractCount, ...
+        'every contract preview must be registered twice: one zh and one en mirror');
+    verifyFalse(testCase, any(string(t8.role) == "preview_base"), ...
+        'the redundant base/ copy set must be gone');
     verifyFalse(testCase, any(startsWith(rel8, '/')), ...
         '08 relativePath must be relative, not absolute');
     verifyFalse(testCase, any(contains(rel8, '\')), ...
@@ -1516,8 +1517,8 @@ end
 cfg2 = circular_fpc_default_config(struct('outputRoot', outRoot, 'designName', 'cfpc_red_nopreview', 'enablePreview', false));
 circular_fpc_main(cfg2);
 out2 = fullfile(outRoot, 'cfpc_red_nopreview');
-verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '01_preview_full.svg')));
-verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '01_overview.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '02_connection_zone.svg')));
 verifyFalse(testCase, isfolder(fullfile(out2, 'preview')));
 verifyTrue(testCase, isfile(fullfile(out2, 'dxf', '00_board_outline.dxf')));
 verifyTrue(testCase, isfile(fullfile(out2, 'reports', '05_validation_report.txt')));
@@ -1548,7 +1549,7 @@ end
 end
 
 function testFigurePlotContract(testCase)
-% circular_fpc_plot 已移入 private/（内部函数，仅由 circular_fpc_main 调用，
+% CircularFpc.Export.FigurePlot 已移入 +CircularFpc/+Export/（内部函数，仅由 circular_fpc_main 调用，
 % 对 tests/ 不可见）；此处校验 enableFigure 配置契约与无头环境跳过行为。
 outRoot = tempname;
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'plot_contract', ...
@@ -1584,10 +1585,10 @@ for k = 1:6
         verifyTrue(testCase, isfile(fullfile(r.outputPath, 'dxf', sprintf('L%d', li), ...
             sprintf('%02d_copper_L%d.dxf', li, li))));
     end
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '01_preview_full.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '02_preview_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '02_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '01_overview.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '02_connection_zone.svg')));
     for li = 1:r.boardLayerCount
         if li == 1
             role = 'top';
@@ -1597,10 +1598,10 @@ for k = 1:6
             role = sprintf('inner%d', li - 1);
         end
         verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', ...
-            sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role))), ...
+            sprintf('1%d_layer_L%d_%s.svg', li, li, role))), ...
             sprintf('missing per-layer preview for L%d', li));
         verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', ...
-            sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role))), ...
+            sprintf('1%d_layer_L%d_%s.svg', li, li, role))), ...
             sprintf('missing per-layer centerline preview for L%d', li));
     end
     for f = {'01_pad_via_coordinates.csv', '02_layer_map.csv', '03_design_summary.txt', ...
@@ -1737,7 +1738,7 @@ for c = 1:size(combos, 1)
     end
     % 预览：with_terminals 目录、kind 元数据与实体计数。
     capDir = fullfile(out, 'preview', 'COMSOL', 'with_terminals');
-    capFull = fullfile(capDir, '01_comsol_with_terminals_full.svg');
+    capFull = fullfile(capDir, '01_overview.svg');
     verifyTrue(testCase, isfile(capFull), sprintf('%s missing %s', tag, capFull));
     if isfile(capFull)
         capTxt = fileread(capFull);
@@ -1760,7 +1761,7 @@ for c = 1:size(combos, 1)
         else
             role = sprintf('inner%d', li - 1);
         end
-        capLayer = fullfile(capDir, sprintf('%02d_comsol_with_terminals_layer_L%d_%s.svg', 1 + li, li, role));
+        capLayer = fullfile(capDir, sprintf('1%d_layer_L%d_%s.svg', li, li, role));
         verifyTrue(testCase, isfile(capLayer), sprintf('%s missing %s', tag, capLayer));
         if isfile(capLayer)
             layerTxt = fileread(capLayer);
@@ -2449,8 +2450,8 @@ for k = 1:numel(result.vias)
     verifyEqual(testCase, row.toLayer, v.toLayer, ...
         sprintf('%s toLayer must match result', v.name));
 end
-svgFiles = {fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg'), ...
-    fullfile(result.outputPath, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')};
+svgFiles = {fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg'), ...
+    fullfile(result.outputPath, 'preview', 'JLC', 'physical', '02_connection_zone.svg')};
 for f = svgFiles
     verifyTrue(testCase, isfile(f{1}), sprintf('missing %s', f{1}));
     if ~isfile(f{1})
@@ -2630,7 +2631,7 @@ if any(labelX < bgX | labelX > bgX + bgW | labelY < bgY | labelY > bgY + bgH)
         'SVG terminal legend background must contain all label anchors in %s.', svgPath);
 end
 [~, svgName] = fileparts(svgPath);
-if strcmp(svgName, '02_preview_connection_zone')
+if strcmp(svgName, '02_connection_zone')
     w = result.effectiveDimensions.centerPlatformWidth;
     h = result.effectiveDimensions.centerPlatformHeight;
     if xMin > -w / 2 - 2 + 1e-6 || yMin > -h / 2 - 2 + 1e-6 || ...

@@ -122,45 +122,44 @@ Circular_FPC_<板层>L_<线圈层>C__yyyyMMdd_HHmmss/
 ```
 
 输出包括板框（1 个外边界、4 个平台槽、4 个耳朵挖槽）、各层中心线/物理铜/闭合实体铜 DXF、COMSOL 带端子仿真 DXF、端子坐标、独立电极坐标、验证报告、设计摘要和清单；
-预览按用途分为 `preview/JLC/centerline/`（`*_copper_L*.dxf` 中心线）、
-`preview/JLC/physical/`（`*_copper_physical_L*.dxf` 实际线宽/焊盘/过孔）、
-`preview/COMSOL/`（由 `*_copper_solid_L*.dxf` 闭合铜实体生成的预览）与
-`preview/COMSOL/with_terminals/`（由 `*_copper_solid_with_terminals_L*.dxf` 生成，
-含 L1 焊盘与中心引线）。
+预览**统一命名**为 `01` 总览、`02` 端子连接区，逐层固定为 `1x_layer_Lx_<role>`
+（`x` 就是物理层号，例如 L3 在任何层数下都是 `13`），因此文件名可以安全写进文档与
+脚本：
+
+```text
+preview/
+├── JLC/centerline/   01_overview.svg  02_connection_zone.svg  11..1N_layer_Lx_<role>.svg
+├── JLC/physical/     同上（按实际线宽/焊盘/过孔绘制）
+├── COMSOL/main/      由 *_copper_solid_L*.dxf 闭合铜实体生成
+├── COMSOL/with_terminals/  由 *_copper_solid_with_terminals_L*.dxf 生成，含 L1 焊盘与中心引线
+├── zh/               上述四组的**完整镜像**，同名文件、中文标注
+└── en/               同上，英文标注
+```
+
+`zh/` 与 `en/` 是 `JLC/`、`COMSOL/` 的完整镜像：同一相对路径、同一文件名，只有
+标注语言不同，因此规则只有"同名不同语言"一条，不需要记哪些图有标注版。三组结构
+一致，各含上述两个 JLC 子目录与两个 COMSOL 子目录。
+
 4 层工艺另输出 COMSOL 层压参考表 `reports/09_comsol_stackup.csv`；6/6 暂无已验证的
 六层制造叠层，因此该表保留铜层厚度输入但 Z 坐标标为 `NaN`，摘要和制造检查会标记
 `UNVERIFIED_LAYER_COUNT`，不能直接当作已确认的六层厂商叠层。
 当前不生成 Gerber，physical DXF 不能替代 Gerber。
 
-### 附加预览集（`preview/base/`、`preview/zh/`、`preview/en/`）
+### 标注预览（`preview/zh/`、`preview/en/`）
 
-除上面按用途分组的预览外，预览目录下另有三组**结构相同**的附加预览，各含
-`JLC/` 与 `COMSOL/` 两个子文件夹，便于按语言或按用途直接取图：
+标注图**不重新绘制几何**：每张都由上面已经写出的契约预览读回后封装（加标题带、
+图例、说明），因此与它所说明的预览使用同一批图元，不可能画出与 DXF 不一致的图。
+端子标注只搬动锚点、放大字号并转写文字，`data-name` 等机器可读属性原样保留。
 
-| 文件夹 | 内容 |
-| --- | --- |
-| `preview/base/` | 基础预览：与 `preview/JLC/`、`preview/COMSOL/` 对应文件**逐字节相同**的副本 |
-| `preview/zh/` | 中文标注版：标题、图例、说明与端子标注均为中文 |
-| `preview/en/` | 英文标注版：同上，全英文 |
+图例**严格跟着该层实际画出的图元**：逐层预览只有 L1 画焊盘与独立电极，非活动层
+没有铜箔，这些情况都不列对应色块；导出时会回读被标注源 SVG 的实际 fill/stroke 颜色
+逐一核对，色块不在画面里就拒绝发布——这条校验在开发中确实拦下过"图例有、画面无"
+的错误。
 
-每组四张图（活动线圈层多于一层时另加末层分层图；单活动层组合为五张）：
-
-- `JLC/01_centerline_overview.svg`：中心线总览，含端子引线标注；
-- `JLC/02_centerline_layer_L1_top.svg`：首个活动线圈层；
-- `JLC/03_centerline_layer_L<末层>_<role>.svg`：末个活动线圈层（仅多活动层组合）；
-- `JLC/<NN>_physical_overview.svg`：物理铜总览（实际线宽/焊盘/过孔）；
-- `COMSOL/01_main_overview.svg`：闭合主螺旋铜轮廓；
-- `COMSOL/02_with_terminals_overview.svg`：带端子变体。
-
-标注图**不重新绘制几何**：每张都由上面已经写出的基础预览读回后封装（加标题带、
-图例、说明），因此与它所说明的预览使用同一批图元；端子标注只搬动锚点、放大字号
-并转写文字，`data-name` 等机器可读属性原样保留。图例色块的颜色取自被标注源 SVG
-中实际出现的颜色，导出时会回读核对，避免图例与画面不符。
-
-这些文件属于**原子发布**并各自登记 manifest role（`preview_base`、
-`preview_annotated`），既有的 `preview/JLC/`、`preview/COMSOL/` 文件字节契约不变。
-导出时还会回读校验每组文字不越出帧宽、正文互不重叠，排版失败会阻止发布。
-本组图片只说明导出几何，不代表已通过 COMSOL 实际导入或求解验证。
+镜像文件属于**原子发布**并登记 manifest role（`preview_annotated`），契约组
+`preview/JLC/`、`preview/COMSOL/` 的文件字节不变。导出时回读校验每个契约预览都有
+zh、en 两份、文字不越出帧宽、正文互不重叠，排版失败会阻止发布。本组图片只说明
+导出几何，不代表已通过 COMSOL 实际导入或求解验证。
 
 ## 测试
 

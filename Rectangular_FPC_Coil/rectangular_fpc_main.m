@@ -10,13 +10,13 @@ if nargin < 1
 end
 
 requestedCfg = rectangular_fpc_default_config(overrides);
-validatedRequestedCfg = rectangular_fpc_validation('config', requestedCfg);
+validatedRequestedCfg = RectangularFpc.Quality.ResultValidation('config', requestedCfg);
 logicalDesignName = validatedRequestedCfg.designName;
 runTimestamp = '';
 
 analysisCfg = validatedRequestedCfg;
 analysisCfg.analysisOnly = true;
-result = rectangular_fpc_engine(analysisCfg);
+result = RectangularFpc.Pipeline.Generate(analysisCfg);
 effectiveCfg = result.config;
 effectiveCfg.analysisOnly = validatedRequestedCfg.analysisOnly;
 if ~validatedRequestedCfg.analysisOnly
@@ -28,7 +28,7 @@ if ~validatedRequestedCfg.analysisOnly
             'Manufacturing checks failed: %s', ...
             strjoin(result.manufacturing.failures, '; '));
     end
-    result = rectangular_fpc_export('formal_export', exportCfg, result);
+    result = RectangularFpc.Export.ExportAll('formal_export', exportCfg, result);
 end
 result.runTimestamp = runTimestamp;
 result.logicalDesignName = logicalDesignName;
@@ -41,11 +41,11 @@ end
 
 % When enableFigure is true (default) and a MATLAB desktop is available,
 % pop up the interactive figure viewer; headless runs (e.g. CI -batch) skip
-% the popup automatically. The viewer is implemented in private/rectangular_fpc_plot.m
+% the popup automatically. The viewer is implemented in private/RectangularFpc.Export.FigurePlot.m
 % and figures can be saved from the window menu.
 if ~validatedRequestedCfg.analysisOnly && ...
         validatedRequestedCfg.enableFigure && usejava('desktop')
-    rectangular_fpc_plot(result);
+    RectangularFpc.Export.FigurePlot(result);
 end
 
 end

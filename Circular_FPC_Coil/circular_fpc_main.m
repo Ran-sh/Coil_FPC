@@ -11,20 +11,20 @@ function result = circular_fpc_main(overrides)
 if nargin < 1
     overrides = struct();
 end
-% 几何、端子重布线、验证与制造检查由 private/circular_fpc_analyze
+% 几何、端子重布线、验证与制造检查由 +CircularFpc/+Pipeline/AnalyzeReadOnly
 % 统一完成；公共层不暴露这些实现函数。
-result = circular_fpc_analyze(overrides);
+result = CircularFpc.Pipeline.AnalyzeReadOnly(overrides);
 cfg = result.config;
 if cfg.analysisOnly
     result.outputPath = '';
     return;
 end
-outputPath = circular_fpc_export('write_all', cfg, result); % 原子写入 DXF/SVG/CSV/TXT
+outputPath = CircularFpc.Export.DxfSvgReports('write_all', cfg, result); % 原子写入 DXF/SVG/CSV/TXT
 result.outputPath = outputPath;
 for k = 1:numel(result.validation.advisories)
     fprintf('ADVISORY: %s\n', result.validation.advisories{k});
 end
 if cfg.enableFigure && usejava('desktop')
-    circular_fpc_plot(result);
+    CircularFpc.Export.FigurePlot(result);
 end
 end
