@@ -21,12 +21,14 @@ end
 
 function p = resolveProfile(cfg)
 % 解析制造档案：标准档 -> extreme 层降档 -> 规则覆盖；sources 标记覆盖来源。
+% 六层几何暂可生成，但没有已验证的厂商层压档案，资格状态单独标记。
 validateManufacturingConfig(cfg);
 p.profile = cfg.manufacturingProfile;
 p.tier = cfg.manufacturingTier;
 p.standardRules = standardRules(cfg);   % 标准档基线，始终保留（用于 HIGH_COST_EXTREME 判定）
 p.rules = p.standardRules;
 p.stackup = stackupDefinition(cfg);
+p.qualificationStatus = layerCountQualification(cfg);
 p.sources = struct();
 for f = fieldnames(p.standardRules).'
     p.sources.(f{1}) = 'profile';
@@ -87,7 +89,8 @@ names = {'minTraceWidthMm', 'minTraceSpacingMm', 'minCopperToBoardMm', ...
 end
 
 function s = standardRules(cfg)
-% 当前标准档数值（mm）：2L/4L 过孔均为 .30/.55；extreme 层降档在 resolveProfile 处理。
+% 当前标准档数值（mm）：已知 2L/4L 过孔均为 .30/.55；六层沿用规则检查，
+% 但层压资格仍由 qualificationStatus 单独标记。
 if strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz')
     nominalCopper = 0.035;
 else
@@ -125,6 +128,21 @@ s = struct('name', '', 'nominalFinishedThicknessMm', NaN, ...
     'zTopMm', {}, 'zBottomMm', {}, 'zCenterMm', {}));
 if strcmp(cfg.manufacturingProfile, 'jlc_fpc_1oz')
     s.name = 'legacy-jlc-1oz';
+    return;
+end
+if cfg.boardLayerCount == 6
+    % No verified six-layer fabrication profile is currently stored. Keep
+    % copper thickness as an input fact, but leave laminate Z positions
+    % unknown instead of inventing a COMSOL stackup.
+    s.name = 'UNVERIFIED_6L_STACKUP';
+    s.copperType = 'UNVERIFIED_6L_COPPER';
+    for k = 1:6
+        s.layers(end + 1) = struct('order', k, ...
+            'name', sprintf('L%d_COPPER', k), 'role', 'copper', ...
+            'thicknessMm', cfg.copperThickness, ...
+            'material', 'UNVERIFIED_6L_COPPER', 'zTopMm', NaN, ...
+            'zBottomMm', NaN, 'zCenterMm', NaN); %#ok<AGROW>
+    end
     return;
 end
 if cfg.boardLayerCount == 4
@@ -165,6 +183,7 @@ else
     s.copperType = 'adhesiveless_electrolytic';
     s.surfaceFinish = 'ENIG_1u';
 end
+
 s.computedThicknessMm = sum(cell2mat(rows(:, 3)));
 zTop = s.computedThicknessMm / 2;
 for k = 1:size(rows, 1)
@@ -179,6 +198,14 @@ if cfg.boardLayerCount == 4
     s.activeCopperCenterSpacingMm = abs(s.layers(2).zCenterMm - s.layers(10).zCenterMm);
 elseif cfg.boardLayerCount == 2
     s.activeCopperCenterSpacingMm = abs(s.layers(2).zCenterMm - s.layers(4).zCenterMm);
+end
+end
+
+function status = layerCountQualification(cfg)
+if cfg.boardLayerCount == 6
+    status = 'UNVERIFIED_LAYER_COUNT';
+else
+    status = 'VERIFIED_PROFILE';
 end
 end
 
@@ -211,9 +238,14 @@ report.profile = p.profile;
 report.tier = p.tier;
 report.rules = p.rules;
 report.stackup = p.stackup;
+report.qualificationStatus = p.qualificationStatus;
 report.checks = rows;
 report.warnings = {rows(strcmp({rows.status}, 'WARN')).message};
 report.failures = {rows(strcmp({rows.status}, 'FAIL')).message};
+if strcmp(p.qualificationStatus, 'UNVERIFIED_LAYER_COUNT')
+    report.warnings{end + 1} = ...
+        'Six-layer manufacturing profile and laminate Z positions are unverified.';
+end
 report.passed = isempty(report.failures);
 end
 

@@ -47,6 +47,7 @@ for li = 1:nL
     end
 end
 plotPads(result);
+plotElectrodePads(result);
 plotVias(result, []);
 title('Overview (all layers)', 'FontSize', 10);
 xlabel('mm');
@@ -73,6 +74,7 @@ for li = 1:nL
     end
     if li == 1
         plotPads(result);
+        plotElectrodePads(result);
     end
     plotVias(result, li);
     role = layerRole(result, li);
@@ -114,6 +116,23 @@ for k = 1:numel(result.pads)
     patch(xy(1) + r * cos(th), xy(2) + r * sin(th), [0.90 0.10 0.10], ...
         'FaceColor', [0.90 0.10 0.10], 'EdgeColor', 'k', 'LineWidth', 1.2);
     text(xy(1), xy(2) + r + 0.25, result.pads(k).name, ...
+        'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', ...
+        'FontSize', 8, 'Color', 'k');
+end
+end
+
+function plotElectrodePads(result)
+if ~isfield(result, 'electrodePads')
+    return;
+end
+th = linspace(0, 2 * pi, 65);
+for k = 1:numel(result.electrodePads)
+    p = result.electrodePads(k);
+    xy = p.xy;
+    r = p.diameter / 2;
+    patch(xy(1) + r * cos(th), xy(2) + r * sin(th), [1.0 0.50 0.05], ...
+        'FaceColor', [1.0 0.50 0.05], 'EdgeColor', 'k', 'LineWidth', 1.2);
+    text(xy(1), xy(2) + r + 0.25, p.name, ...
         'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom', ...
         'FontSize', 8, 'Color', 'k');
 end

@@ -212,6 +212,7 @@ geom = struct('boardLoops', result.boardLoops, ...
     'actualBridgeWidth', result.effectiveDimensions.actualBridgeWidth, ...
     'coils', {coils}, 'connectionPaths', {connectionPaths}, ...
     'pads', result.pads, 'vias', result.vias, ...
+    'electrodePads', result.electrodePads, ...
     'seriesRoute', result.seriesRoute, 'activeLayers', active);
 validation = circular_fpc_validation('validate_result', cfg, result.effectiveDimensions, geom);
 if ~validation.passed
@@ -259,37 +260,17 @@ function result = closeAutoBoardAroundFinalCopper(cfg, result)
 if ~strcmp(cfg.boardSizingMode, 'auto')
     return;
 end
-maxCopperR = 0;
-for li = 1:numel(result.layerPaths)
-    xy = result.layerPaths(li).coilXY;
-    if ~isempty(xy)
-        maxCopperR = max(maxCopperR, max(sqrt(sum(xy.^2, 2))) + cfg.traceWidth / 2);
-    end
-    for k = 1:numel(result.layerPaths(li).connectionPaths)
-        xy = result.layerPaths(li).connectionPaths{k};
-        if ~isempty(xy)
-            maxCopperR = max(maxCopperR, max(sqrt(sum(xy.^2, 2))) + cfg.traceWidth / 2);
-        end
-    end
-end
-for k = 1:numel(result.pads)
-    maxCopperR = max(maxCopperR, norm(result.pads(k).xy) + result.pads(k).diameter / 2);
-end
-for k = 1:numel(result.vias)
-    maxCopperR = max(maxCopperR, norm(result.vias(k).xy) + result.vias(k).padDiameter / 2);
-end
-requiredDiameter = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
-if requiredDiameter <= result.effectiveDimensions.boardOuterDiameter + 1e-9
-    return;
-end
+% The engine sizes the base circle from the main spiral. Outer via lugs and
+% electrode fingers are local features of that circle, so do not expand the
+% entire circumference from their radial extent after terminal rerouting.
 eff = result.effectiveDimensions;
-eff.boardOuterDiameter = requiredDiameter;
-circular_fpc_validation('validate_feasibility', cfg, eff);
-[boardLoops, actualBridgeWidth, layoutRegions] = circular_fpc_geometry('board', cfg, eff);
+[boardLoops, actualBridgeWidth, layoutRegions] = ...
+    circular_fpc_geometry('board', cfg, eff, result.activeCoilLayers);
 eff.actualBridgeWidth = actualBridgeWidth;
 result.effectiveDimensions = eff;
 result.boardLoops = boardLoops;
 result.layoutRegions = layoutRegions;
+return;
 end
 
 function [arc, startPoint, radius, sweepDeg] = tangentArcEndingAtLane( ...

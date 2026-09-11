@@ -1,15 +1,21 @@
 function varargout = circular_fpc_geometry(operation, varargin)
 % 板框、线圈与端子几何构造（R2-R3），三个子操作：
 %   'effective'  : 由 cfg 计算缩放后的有效尺寸（eff 结构体）
-%   'board'      : 构造板框（外圆 + 内孔环区 + 中央平台 + 4 条连接桥）与布局参考系
+%   'board'      : 构造主体圆、局部过孔/安装/电极凸耳、4 槽与布局参考系
 %   'network'    : 构造线圈螺旋线、连接路径、焊盘、过孔与完整串联路由
 switch operation
     case 'effective'
         varargout{1} = buildEffectiveDimensions(varargin{1});
     case 'board'
-        [varargout{1}, varargout{2}, varargout{3}] = buildBoardGeometry(varargin{1}, varargin{2});
+        if numel(varargin) >= 3
+            activeLayers = varargin{3};
+        else
+            activeLayers = [];
+        end
+        [varargout{1}, varargout{2}, varargout{3}] = ...
+            buildBoardGeometry(varargin{1}, varargin{2}, activeLayers);
     case 'network'
-        [varargout{1}, varargout{2}, varargout{3}, varargout{4}, varargout{5}, varargout{6}] = ...
+        [varargout{1}, varargout{2}, varargout{3}, varargout{4}, varargout{5}, varargout{6}, varargout{7}] = ...
             buildNetwork(varargin{:});
     otherwise
         error('CircularFPC:InvalidOperation', 'Unknown geometry operation: %s', operation);
@@ -30,9 +36,9 @@ eff.turnsPerCoilLayer = cfg.turnsPerCoilLayer;
 eff.actualBridgeWidth = NaN; % 由 buildBoardGeometry 回填
 end
 
-function [boardLoops, actualBridgeWidth, layoutRegions] = buildBoardGeometry(cfg, eff)
+function [boardLoops, actualBridgeWidth, layoutRegions] = buildBoardGeometry(cfg, eff, activeLayers)
 % 板框 = 圆环区（外圆减内圆）+ 中央平台 + 四条连接桥（入口桥/回流桥交替）。
-% 结果板框有 5 个闭环：1 个外边界 + 4 个孔槽（hole），孔槽即平台与桥之外的空隙。
+% 基础主体有 5 个闭环（1 外边界 + 4 平台槽）；最终板框再加 4 个耳朵挖槽闭环。
 nCircle = 720;
 outerR = eff.boardOuterDiameter / 2;
 innerR = eff.coilInnerDiameter / 2 - cfg.edgeClearance;
@@ -67,16 +73,96 @@ for k = 1:4
         0.6 * min(eff.centerPlatformWidth, eff.centerPlatformHeight) / 2, ...
         outerR + 0.5, bridgeWidths(k), 360); %#ok<AGROW>
 end
-shape = intersect(union(polys), outerP);
-nBoundaries = numboundaries(shape);
-% 桥宽上限由最终布尔几何定义：板框必须恰好 5 个闭环（1 外边界 + 4 孔槽）。
-% 槽实际消失、合并或被分裂时，numboundaries 会偏离 5，此处明确失败；
-% 不静默截断桥宽，也不使用与最终图形脱节的先验上限。
-if nBoundaries ~= 5
+baseShape = intersect(union(polys), outerP);
+nBoundariesBase = numboundaries(baseShape);
+if nBoundariesBase ~= 5
     error('CircularFPC:GeometryInfeasible', ...
-        ['Board outline must contain exactly 5 loops (1 outer + 4 slots), got %d. ', ...
+        'Base board outline must contain exactly 5 loops, got %d.', nBoundariesBase);
+end
+
+% The circular body is sized by the coil copper envelope. Local features are
+% added after that sizing so a via, mounting notch, or electrode does not
+% enlarge the whole circumference.
+if isempty(activeLayers)
+    activeLayers = defaultActiveLayers(cfg);
+end
+directions = ones(1, numel(activeLayers));
+directions(2:2:end) = -1;
+predictedCoils = buildCoils(cfg, eff, activeLayers, directions);
+shape = baseShape;
+viaLugCenters = zeros(0, 2);
+viaLugWidth = cfg.viaPadDiameter + 2 * (cfg.edgeClearance + ...
+    cfg.boardOutlineLineWidth / 2 + cfg.geometrySafetyMargin);
+for p = 1:2:numel(activeLayers)
+    center = predictedCoils{activeLayers(p)}(end, :);
+    viaLugCenters(end + 1, :) = center; %#ok<AGROW>
+    thetaVia = atan2(center(2), center(1));
+    % Keep the capsule's axial length longer than its width. This avoids a
+    % self-overlapping sampled stadium when the via sits just inside the
+    % base-circle edge while leaving the visible outer lobe unchanged.
+    rootR = max(0, min(outerR - cfg.viaLugRootOverlap, ...
+        norm(center) - viaLugWidth - 0.05));
+    shape = union(shape, capsulePolyshape(thetaVia, rootR, norm(center), viaLugWidth, 180));
+end
+
+mountingAnglesDeg = [0, 90, 180, 270];
+mountingCount = numel(mountingAnglesDeg);
+% ------------------------------------------------------------------
+% 四个正方向安装耳朵 = 三段弧 + 等距外偏置外边界：
+%   内侧弧：直接取主体外径圆上的一段圆弧，主体定径后自动跟随（无独立半径参数）；
+%   中间弧：与内侧弧共享两端点、在耳朵中央径向轴上外凸 mountingSlotRise 的圆弧，
+%           与内侧弧共同围成一个闭合挖槽；
+%   最外侧弧：中间弧按 mountingSlotEdgeClearance 同心外偏的等距弧（半径 +clearance），
+%           形成耳朵外边界；外偏弧与主体圆之间的连接板料自然保留。
+% 三段弧仅由「槽口跨度 + 外凸高度 + 槽到板边距离」唯一确定：跨度给出端点半张角，
+% 外凸高度（以主体圆中央点为基准）给出中间弧圆心与半径。
+mountingSlotSpec = mountingSlotGeometry(outerR, cfg.mountingSlotSpan, ...
+    cfg.mountingSlotRise, cfg.mountingSlotEdgeClearance);
+mountingSlotEndpoints = zeros(2 * mountingCount, 2);
+mountingEarRootPoints = zeros(2 * mountingCount, 2);
+mountingRootAnglesDeg = zeros(mountingCount, 2);
+for k = 1:mountingCount
+    thetaMount = deg2rad(mountingAnglesDeg(k));
+    uMount = [cos(thetaMount), sin(thetaMount)];
+    tMount = [-sin(thetaMount), cos(thetaMount)];
+    localToGlobal = [uMount; tMount];
+    slotLocal = mountingSlotLoopLocal(mountingSlotSpec, ...
+        cfg.mountingSlotEndFilletRadius, 96);
+    earLocal = mountingEarLoopLocal(mountingSlotSpec, 96);
+    shape = union(shape, polyshape(earLocal * localToGlobal));
+    % 槽口两端已在 mountingSlotLoopLocal 内做相切圆角；此处不再二次圆角，
+    % 避免把主体圆弧与中间弧的解析关系再近似一次。
+    shape = subtract(shape, polyshape(slotLocal * localToGlobal));
+    mountingSlotEndpoints(2 * k - 1:2 * k, :) = ...
+        mountingSlotSpec.endpointLocal * localToGlobal;
+    mountingEarRootPoints(2 * k - 1:2 * k, :) = ...
+        mountingSlotSpec.rootPointLocal * localToGlobal;
+    mountingRootAnglesDeg(k, :) = mountingAnglesDeg(k) + ...
+        [-mountingSlotSpec.rootHalfSpanDeg, mountingSlotSpec.rootHalfSpanDeg];
+end
+
+electrodePads = buildElectrodePads(cfg, outerR);
+electrodeOffsets = (cfg.electrodeArmGap + cfg.electrodeArmWidth) / 2 * [-1, 1];
+for k = 1:2
+    offset = electrodeOffsets(k);
+    shape = union(shape, shiftedCapsulePolyshape(deg2rad(cfg.electrodeAngleDeg), ...
+        outerR - cfg.electrodeRootOverlap, outerR + cfg.electrodeArmLength, ...
+        cfg.electrodeArmWidth, offset, 180));
+    padEnvelope = polyshape(sampleCircle(electrodePads(k).xy(1), electrodePads(k).xy(2), ...
+        electrodePads(k).diameter / 2 + cfg.edgeClearance + ...
+        cfg.boardOutlineLineWidth / 2 + cfg.geometrySafetyMargin, 96));
+    shape = union(shape, padEnvelope);
+end
+nBoundaries = numboundaries(shape);
+% 最终板框包含 1 个外边界、4 个平台槽和 4 个耳朵内置挖槽闭环。
+% 任一槽实际消失、合并或被分裂时，numboundaries 会偏离 9，此处明确失败；
+% 不静默截断桥宽，也不使用与最终图形脱节的先验上限。
+if nBoundaries ~= 9
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Board outline must contain exactly 9 loops (1 outer + 4 slots + 4 ', ...
+         'mounting cutouts), got %d. ', ...
          'The final Boolean geometry has reached the bridge-width/d/platform ', ...
-         'topology limit: one or more slots disappeared, merged, or split for ', ...
+         'topology limit: one or more slots/cutouts disappeared, merged, or split for ', ...
          'd=%.6f mm. Reduce d/bridgeTargetWidth or increase coilInnerDiameter.'], ...
         nBoundaries, cfg.terminalLeadSpacing);
 end
@@ -90,21 +176,39 @@ for i = 1:numel(bnd)
     areas(i) = signedArea(bnd{i});
 end
 [~, outerIdx] = max(abs(areas)); % 面积最大的边界即外轮廓
-outerXY = bnd{outerIdx};
+outerXY = filletHoleCorners(bnd{outerIdx}, 0.3, 170, 20);
 holeIdx = setdiff(1:numel(bnd), outerIdx);
 cents = zeros(numel(holeIdx), 2);
 for j = 1:numel(holeIdx)
     cents(j, :) = mean(bnd{holeIdx(j)}(1:end - 1, :), 1);
 end
-angs = atan2d(cents(:, 2), cents(:, 1));
-[~, ord] = sort(angs); % 孔槽按方位角排序，保证 hole_1..hole_4 命名稳定
+% The four ear slots reach radially beyond the main body circle (their middle
+% arc apex sits at outerR + mountingSlotRise), while the four platform/bridge
+% slots stay entirely inside the base circle.  Classifying by the loop's
+% farthest radius is independent of slot angle and stays stable when turns or
+% connectionAngleDeg change.
+holeReach = zeros(numel(holeIdx), 1);
+for j = 1:numel(holeIdx)
+    holeReach(j) = max(hypot(bnd{holeIdx(j)}(:, 1), bnd{holeIdx(j)}(:, 2)));
+end
+isMountingCutout = holeReach > outerR + 0.5 * cfg.mountingSlotRise;
+slotIdx = holeIdx(~isMountingCutout);
+mountingIdx = holeIdx(isMountingCutout);
+if numel(slotIdx) ~= 4 || numel(mountingIdx) ~= 4
+    error('CircularFPC:GeometryInfeasible', ...
+        'Expected 4 platform slots and 4 mounting cutouts, got %d and %d.', ...
+        numel(slotIdx), numel(mountingIdx));
+end
+slotCents = cents(~isMountingCutout, :);
+mountingCents = cents(isMountingCutout, :);
+[~, slotOrd] = sort(atan2d(slotCents(:, 2), slotCents(:, 1)));
 boardLoops = struct('name', {}, 'isHole', {}, 'xy', {}, 'orientation', {});
 boardLoops(1).name = 'outer';
 boardLoops(1).isHole = false;
 boardLoops(1).xy = outerXY;
 boardLoops(1).orientation = signedArea(outerXY);
-for j = 1:numel(holeIdx)
-    h = holeIdx(ord(j));
+for j = 1:numel(slotIdx)
+    h = slotIdx(slotOrd(j));
     hxy = bnd{h};
     % 自动识别槽边界（圆环弧 × 平台边 × 桥侧）的离散硬折角，并用
     % 最大 0.3 mm 的相切圆弧轻微圆角化；中央平台基准仍是正向矩形。
@@ -113,6 +217,39 @@ for j = 1:numel(holeIdx)
     boardLoops(j + 1).isHole = true;
     boardLoops(j + 1).xy = hxy;
     boardLoops(j + 1).orientation = signedArea(hxy);
+end
+% 耳朵挖槽按 mountingAnglesDeg 的 0/90/180/270 顺序命名，使
+% mounting_cutout_%d 与 mountingAnglesDeg(k)、mountingSlotEndpoints 一一对应。
+% 分类判据是各自顶点方向与 4 个安装角的最小夹角，与布尔输出顺序无关。
+mountingSlotApexAngles = zeros(numel(mountingIdx), 1);
+for j = 1:numel(mountingIdx)
+    hxyProbe = bnd{mountingIdx(j)};
+    holeRadius = hypot(hxyProbe(:, 1), hxyProbe(:, 2));
+    [~, apexIdx] = max(holeRadius);
+    mountingSlotApexAngles(j) = atan2d(hxyProbe(apexIdx, 2), hxyProbe(apexIdx, 1));
+end
+mountingOrder = zeros(numel(mountingIdx), 1);
+for k = 1:numel(mountingAnglesDeg)
+    angleError = abs(mod(mountingSlotApexAngles - mountingAnglesDeg(k) + 180, 360) - 180);
+    [minError, bestIdx] = min(angleError);
+    if minError > 5
+        error('CircularFPC:GeometryInfeasible', ...
+            ['Mounting cutout for the %.1f deg ear is %.3f deg away from that direction; ', ...
+             'the ear cutouts can no longer be mapped to the four mounting angles.'], ...
+            mountingAnglesDeg(k), minError);
+    end
+    mountingOrder(k) = mountingIdx(bestIdx);
+    mountingSlotApexAngles(bestIdx) = NaN; % 每个角只匹配一个挖槽
+end
+for j = 1:numel(mountingOrder)
+    h = mountingOrder(j);
+    % 耳朵挖槽两端已按 mountingSlotEndFilletRadius 解析相切圆角化，
+    % 此处仅作为安全网（无内角 <= 170° 的折角时不做改动）。
+    hxy = filletHoleCorners(bnd{h}, cfg.mountingSlotEndFilletRadius, 170, 20);
+    boardLoops(j + 5).name = sprintf('mounting_cutout_%d', j);
+    boardLoops(j + 5).isHole = true;
+    boardLoops(j + 5).xy = hxy;
+    boardLoops(j + 5).orientation = signedArea(hxy);
 end
 % 实际桥宽 = 相邻孔槽之间的最窄距离（连接桥咽喉宽度）。
 % stride 必须为 1：稀疏重连的折线是弦近似，而该值是硬验证门槛
@@ -141,6 +278,8 @@ layoutRegions.viaEnvelopeWidth = viaEnvelopeWidth;
 layoutRegions.bridgeGoverningConstraint = constraintNames{governingIndex};
 layoutRegions.holeLoops = {boardLoops(2:end).xy};
 layoutRegions.outerRadius = outerR;
+layoutRegions.baseOuterRadius = outerR;
+layoutRegions.baseBoardShape = baseShape;
 layoutRegions.rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2; % 线圈最内圈中心半径
 layoutRegions.boardShape = shape;
 layoutRegions.platformShape = platP;
@@ -150,6 +289,27 @@ if norm(platformLoop(1, :) - platformLoop(end, :)) > 1e-12
     platformLoop(end + 1, :) = platformLoop(1, :);
 end
 layoutRegions.platformLoop = platformLoop;
+layoutRegions.viaLugCenters = viaLugCenters;
+layoutRegions.viaLugAnglesDeg = mod(atan2d(viaLugCenters(:, 2), viaLugCenters(:, 1)), 360);
+layoutRegions.viaLugWidth = viaLugWidth;
+layoutRegions.mountingAnglesDeg = mountingAnglesDeg;
+layoutRegions.mountingSlotSpan = mountingSlotSpec.span;
+layoutRegions.mountingSlotRise = mountingSlotSpec.rise;
+layoutRegions.mountingSlotEdgeClearance = mountingSlotSpec.edgeClearance;
+layoutRegions.mountingSlotEndFilletRadius = cfg.mountingSlotEndFilletRadius;
+layoutRegions.mountingSlotInnerArcRadius = outerR; % 内侧弧 = 主体外径圆，精确重合
+layoutRegions.mountingSlotMiddleArcRadius = mountingSlotSpec.midArcRadius;
+layoutRegions.mountingSlotMiddleArcCenterRadius = mountingSlotSpec.midCenterR;
+layoutRegions.mountingSlotOuterArcRadius = mountingSlotSpec.outerArcRadius;
+layoutRegions.mountingSlotApexRadius = outerR + mountingSlotSpec.rise;
+layoutRegions.mountingEarApexRadius = mountingSlotSpec.outerArcRadius + ...
+    mountingSlotSpec.midCenterR;
+layoutRegions.mountingSlotHalfSpanDeg = mountingSlotSpec.halfSpanDeg;
+layoutRegions.mountingRootAnglesDeg = mountingRootAnglesDeg;
+layoutRegions.mountingSlotEndpoints = mountingSlotEndpoints; % 8x2：[P-, P+] 按耳朵交替
+layoutRegions.mountingEarRootPoints = mountingEarRootPoints; % 8x2：[J-, J+] 按耳朵交替
+layoutRegions.electrodePads = electrodePads;
+layoutRegions.boardExtent = max(sqrt(sum(outerXY.^2, 2)));
 end
 
 function xy = sampleCircle(cx, cy, r, n)
@@ -176,7 +336,369 @@ arcFar = p2 + hw * [cos(aFar), sin(aFar)];
 aNear = linspace(theta - pi / 2, theta - 3 * pi / 2, nq).';
 arcNear = p1 + hw * [cos(aNear), sin(aNear)];
 xy = [p1 + hw * perp; arcFar; arcNear(1:end - 1, :)];
+xy = xy([true; vecnorm(diff(xy, 1, 1), 2, 2) > 1e-12], :);
 ps = polyshape(xy);
+end
+
+function ps = shiftedCapsulePolyshape(theta, r1, r2, width, tangentialOffset, nArc)
+base = capsulePolyshape(theta, r1, r2, width, nArc);
+[x, y] = boundary(base);
+xy = [x, y];
+t = [-sin(theta), cos(theta)];
+xy = xy + tangentialOffset * t;
+ps = polyshape(xy);
+end
+
+function spec = mountingSlotGeometry(outerR, span, rise, edgeClearance)
+% 三段弧安装耳朵的解析几何（全部由「槽口跨度 + 外凸高度 + 槽到板边距离」确定）：
+%   内侧弧：半径 = 主体外径圆半径 outerR、圆心 = 板中心。端点 P± 关于耳朵径向轴
+%           对称，半张角 A 由弦长约等于跨度确定：2*outerR*sin(A) = span。
+%   中间弧：过 P±、且在耳朵径向轴上外凸 rise 的圆弧。外凸高度以主体圆中央点为
+%           基准，即外侧顶点 Q = (outerR + rise)*u 在弧上。设圆心 C 位于轴上半径 c
+%           处、半径 R，由 |Q - C| = R 与 |P± - C| = R 联立解得
+%               c = rise * (2*outerR + rise) / (2 * (rise + outerR * (1 - cos A)))
+%               R = outerR + rise - c
+%           （恒有 0 < c < outerR + rise，故 R > 0 对任意合法参数成立）。
+%   最外侧弧：与中间弧同心、半径 R + edgeClearance 的等距弧，形成耳朵外边界。
+% 耳朵区域 = 该等距弧与主体外径圆围成的外凸月牙；耳朵与主体以 J± 处的横切相接，
+% 连接板料为正，根部折角由板框统一相切圆角规则平滑（见 mountingEarLoopLocal）。
+if ~isscalar(outerR) || ~isscalar(span) || ~isscalar(rise) || ...
+        ~isscalar(edgeClearance) || ~all(isfinite([outerR, span, rise, edgeClearance]))
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting slot parameters must be finite scalars.');
+end
+if outerR <= 0
+    error('CircularFPC:GeometryInfeasible', 'Board outer radius must be positive.');
+end
+if span <= 0
+    error('CircularFPC:GeometryInfeasible', ...
+        'mountingSlotSpan must be positive (got %.6f mm).', span);
+end
+if rise <= 0
+    error('CircularFPC:GeometryInfeasible', ...
+        ['mountingSlotRise must be positive (got %.6f mm): the notch middle arc must ', ...
+         'bulge outward from the main body circle, measured on the ear radial axis.'], rise);
+end
+maxSpan = 2 * outerR * sin(deg2rad(80)); % 半张角上限 80°，避免两端点趋近重合
+if span >= maxSpan
+    error('CircularFPC:GeometryInfeasible', ...
+        ['mountingSlotSpan %.6f mm exceeds what the main body circle can carry: with an ', ...
+         'outer diameter of %.6f mm the two slot ends merge at %.6f mm. Reduce ', ...
+         'mountingSlotSpan or enlarge the board.'], span, 2 * outerR, maxSpan);
+end
+sinA = span / (2 * outerR);
+cosA = sqrt(max(0, 1 - sinA^2));
+halfSpanDeg = asind(sinA);
+midCenterR = rise * (2 * outerR + rise) / (2 * (rise + outerR * (1 - cosA)));
+midArcRadius = outerR + rise - midCenterR;
+if ~(midArcRadius > 0) || ~isfinite(midArcRadius)
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting slot middle arc is not constructible for span %.6f mm and rise %.6f mm.', ...
+        span, rise);
+end
+if edgeClearance <= 1e-6
+    error('CircularFPC:GeometryInfeasible', ...
+        ['mountingSlotEdgeClearance %.6f mm must be positive: the ear needs a board strip ', ...
+         'between the middle arc and the outer edge.'], edgeClearance);
+end
+spec = struct();
+spec.outerRadius = outerR;
+spec.span = span;
+spec.rise = rise;
+spec.edgeClearance = edgeClearance;
+spec.halfSpanDeg = halfSpanDeg;
+spec.midCenterR = midCenterR;
+spec.midArcRadius = midArcRadius;
+spec.outerArcRadius = midArcRadius + edgeClearance;
+% 局部坐标系（u = 耳朵径向轴、t = 切向，原点在板中心）。
+spec.endpointLocal = outerR * [cosA, sinA; cosA, -sinA]; % P+ / P-
+% 耳朵外弧与主体外径圆的交点（未圆角时的回接点），仅用于报告与校验。
+[spec.rootPointLocal, spec.rootHalfSpanDeg] = earRootPoints(spec);
+end
+
+function [rootXY, halfSpanDeg] = earRootPoints(spec)
+% 最外侧弧所在圆（圆心在轴上 midCenterR、半径 outerArcRadius）与主体外径圆的
+% 两个交点。交点存在即等价于耳朵与主体有真实板料连接。
+d = spec.midCenterR;
+r1 = spec.outerRadius;
+r2 = spec.outerArcRadius;
+if d <= 0
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting ear centre radius must be positive; got %.6f mm.', d);
+end
+if r2 <= 1e-9
+    error('CircularFPC:GeometryInfeasible', 'Mounting ear outer arc radius must be positive.');
+end
+% 两圆相交判据：|r1 - r2| < d < r1 + r2
+if ~(abs(r1 - r2) < d && d < r1 + r2)
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Mounting ear does not reach the main body circle for span %.6f mm, rise %.6f mm, ', ...
+         'edge clearance %.6f mm: the outer arc circle (r=%.6f mm, centre r=%.6f mm) and the ', ...
+         'main body circle (r=%.6f mm) do not intersect, so no connecting board material ', ...
+         'exists. Increase mountingSlotRise or reduce mountingSlotEdgeClearance.'], ...
+        spec.span, spec.rise, spec.edgeClearance, r2, d, r1);
+end
+a = (d^2 + r1^2 - r2^2) / (2 * d);
+h2 = r1^2 - a^2;
+if h2 <= 0
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting ear root intersection is degenerate (h^2 = %.9g mm^2).', h2);
+end
+h = sqrt(h2);
+rootXY = [a, h; a, -h];
+% 用 atan2d 而非 atand(h/a)：当 a < 0 时交点位于板中心的另一侧，根部张角
+% 必然大于 90°，必须如实反映，否则会漏掉「耳朵过大」这类不可行配置。
+halfSpanDeg = atan2d(h, a);
+% 相邻耳朵（0/90/180/270，间隔 90°）之间必须保留板料：根部角域不能相连，
+% 否则四个耳朵会连成一整圈，板框拓扑不再是「主体 + 4 个局部耳朵」。
+if halfSpanDeg >= 45
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Mounting ear spans %.3f deg of the main body circle (limit 45 deg, ears are 90 deg ', ...
+         'apart) for span %.6f mm, rise %.6f mm, edge clearance %.6f mm: neighbouring ears ', ...
+         'would merge into a ring instead of four local ears. Reduce mountingSlotSpan, ', ...
+         'mountingSlotRise or mountingSlotEdgeClearance.'], ...
+        halfSpanDeg, spec.span, spec.rise, spec.edgeClearance);
+end
+end
+
+function xy = mountingSlotLoopLocal(spec, filletRadius, nArc)
+% 挖槽闭环（局部坐标，不重复首点）：内侧主体圆弧 P+ → P- 与中间弧 P- → P+ 共享
+% 端点围成闭合挖槽。两端按 filletRadius 生成与「主体外径圆外切 + 中间弧内切」
+% 的相切圆角，消除槽口尖角；圆角只作用于端点邻域，三段弧的主体关系不变。
+% 采样数取奇数：对称弧的顶点（角度 0）与两端点都落在采样点上，
+% 顶点半径与弦长因此是精确值而不是弦近似。
+nHalf = 2 * max(12, round(nArc / 4)) + 1;
+[tipMain, tipMid] = slotEndFilletPoints(spec, filletRadius);
+signs = [1, -1];
+upperMain = [tipMain(1, 1), tipMain(1, 2)];
+lowerMain = [tipMain(2, 1), tipMain(2, 2)];
+upperMid = [tipMid(1, 1), tipMid(1, 2)];
+lowerMid = [tipMid(2, 1), tipMid(2, 2)];
+thetaMain = atan2d(upperMain(2), upperMain(1));
+thetaMid = atan2d(upperMid(2), upperMid(1) - spec.midCenterR);
+% 1) 内侧弧：+thetaMain → -thetaMain（沿主体外径圆向板内）
+innerAngles = linspace(thetaMain, -thetaMain, nHalf).';
+innerArc = spec.outerRadius * [cosd(innerAngles), sind(innerAngles)];
+innerArc(1, :) = upperMain;
+innerArc(end, :) = lowerMain;
+% 2) 下端圆角：内侧弧 → 中间弧
+lowerFillet = filletArcBetween(spec, filletRadius, signs(2), nHalf, lowerMain, lowerMid);
+% 3) 中间弧：-thetaMid → +thetaMid（向板外鼓起）
+midAngles = linspace(-thetaMid, thetaMid, nHalf).';
+midArc = [spec.midCenterR, 0] + spec.midArcRadius * [cosd(midAngles), sind(midAngles)];
+midArc(1, :) = lowerMid;
+midArc(end, :) = upperMid;
+% 4) 上端圆角：中间弧 → 内侧弧
+upperFillet = filletArcBetween(spec, filletRadius, signs(1), nHalf, upperMid, upperMain);
+xy = [innerArc; lowerFillet; midArc; upperFillet];
+if filletRadius > 0 && size(xy, 1) < 8
+    error('CircularFPC:GeometryInfeasible', 'Mounting slot fillet sampling is degenerate.');
+end
+xy = xy([true; vecnorm(diff(xy, 1, 1), 2, 2) > 1e-12], :);
+if norm(xy(1, :) - xy(end, :)) > 1e-12
+    xy = [xy; xy(1, :)]; % 闭合（与板框其他闭环一致）
+end
+end
+
+function xy = mountingEarLoopLocal(spec, nArc)
+% 耳朵区域闭环（局部坐标，不重复首点）：最外侧等距弧（经外凸顶点的外边界）
+% 向根部两侧各延伸一段，再用一条弦闭合。延伸段与闭合弦都落在主体圆内，并集后
+% 不可见，因此可见外形仍严格是「J- → 顶点 → J+」的等距外偏弧。
+%
+% 必须向根部之外延伸：主体圆按 720 段弦离散，其弦落在真圆内侧；若耳朵弧正好
+% 止于真圆上的 J±，则该弧与主体多边形边界在 J± 处近乎相切，布尔并集会产生长度
+% ~1e-5 mm 的碎片边和一个 ~90° 伪角（几何上等价于零长度边）。延伸量按「端点径向
+% 深入主体圆的深度」给定（而不是固定角度），这样才能保证横切足够明显。
+nHalf = 2 * max(12, round(nArc / 4)) + 1; % 奇数：顶点严格落在采样点上
+mountingEarCrossDepth = 0.05; % [mm] 延伸端点径向深入主体圆的最小深度
+maxArcHalfDeg = 176; % 弧角上限：超过半圆会使弦闭合法失去意义
+[rootXY, ~] = earRootPoints(spec);
+thetaEar = abs(atan2d(rootXY(1, 2), rootXY(1, 1) - spec.midCenterR));
+% 由目标深度反解延伸角：半径(θ) = |earCentre + R_arc*(cosθ, sinθ)| 随 |θ| 增大而减小，
+% 在 J± 处恰好等于主体半径。解 cosθ = ((R-depth)^2 - d^2 - R_arc^2) / (2*d*R_arc)。
+depthCos = ((spec.outerRadius - mountingEarCrossDepth)^2 - spec.midCenterR^2 - ...
+    spec.outerArcRadius^2) / (2 * spec.midCenterR * spec.outerArcRadius);
+if depthCos >= 1
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Mounting ear cannot cross into the main body circle (span %.6f mm, rise %.6f mm, ', ...
+         'edge clearance %.6f mm): no arc position reaches %.3f mm inside the main circle. ', ...
+         'Increase mountingSlotRise or reduce mountingSlotEdgeClearance.'], ...
+        spec.span, spec.rise, spec.edgeClearance, mountingEarCrossDepth);
+end
+extendedHalfDeg = acosd(max(-1, depthCos));
+if extendedHalfDeg > maxArcHalfDeg
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Mounting ear arc would have to sweep to %.3f deg to cross the main body circle ', ...
+         'by %.3f mm, beyond the %.1f deg closure limit. Increase mountingSlotRise or ', ...
+         'reduce mountingSlotEdgeClearance.'], extendedHalfDeg, mountingEarCrossDepth, ...
+        maxArcHalfDeg);
+end
+earAngles = linspace(extendedHalfDeg, -extendedHalfDeg, nHalf).';
+outerArc = [spec.midCenterR, 0] + spec.outerArcRadius * [cosd(earAngles), sind(earAngles)];
+% 闭合弦直接连接两个延伸端点。该弦位于耳朵外弧所在的圆盘内（圆盘是凸区域），
+% 因此不会在「主体 ∪ 耳朵外弧圆盘」之外多加任何板料；并集的可见外边界仍然是
+% 耳朵外弧（J- → 顶点 → J+）与主体圆（J+ → J-）两段，与设计定义一致。
+xy = [outerArc; outerArc(1, :)];
+% 回接点必须严格位于主体圆上（正板料连接），否则明确失败而不静默退化。
+if min(abs(vecnorm(rootXY, 2, 2) - spec.outerRadius)) > 1e-9
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting ear root point does not lie on the main body circle; ear connection is invalid.');
+end
+% 两圆必须在 J± 处以足够大的夹角横切：交角过小（近乎相切）时布尔并集会产生
+% 碎片边与伪角。J± 处两圆半径方向夹角 = arccos(交点处两径向夹角的余弦)，
+% 由两圆半径与圆心距给出；两圆正交时为 90°，越小越接近相切。
+crossingCos = (spec.midCenterR^2 + spec.outerArcRadius^2 - spec.outerRadius^2) / ...
+    (2 * spec.midCenterR * spec.outerArcRadius);
+crossingAngleDeg = abs(rad2deg(acos(max(-1, min(1, crossingCos)))));
+if crossingAngleDeg < 5
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Mounting ear meets the main body circle at only %.3f deg (nearly tangent), which ', ...
+         'cannot be unioned robustly. Increase mountingSlotRise or reduce ', ...
+         'mountingSlotEdgeClearance.'], crossingAngleDeg);
+end
+% 延伸后的端点必须仍在采样弧上、且 J± 严格位于弧内部（确保横切落在采样段内）。
+if abs(thetaEar) >= 180
+    error('CircularFPC:GeometryInfeasible', ...
+        'Mounting ear root angle is degenerate for span %.6f mm and rise %.6f mm.', ...
+        spec.span, spec.rise);
+end
+end
+
+function [tipMain, tipMid] = slotEndFilletPoints(spec, filletRadius)
+% 挖槽两端圆角的切点：圆角圆与主体外径圆外切、与中间弧内切。
+% 返回 [上端; 下端]，每行分别为内侧弧切点与中间弧切点。
+if filletRadius <= 0
+    tipMain = spec.endpointLocal;
+    tipMid = spec.endpointLocal;
+    return;
+end
+if filletRadius >= spec.midArcRadius - 1e-9
+    error('CircularFPC:GeometryInfeasible', ...
+        ['mountingSlotEndFilletRadius %.6f mm is too large for the %.6f mm middle-arc ', ...
+         'radius of this slot; reduce the fillet radius or the slot rise.'], ...
+        filletRadius, spec.midArcRadius);
+end
+rho1 = spec.outerRadius + filletRadius;  % 与主体外径圆外切
+rho2 = spec.midArcRadius - filletRadius; % 与中间弧内切
+center = intersectCenters(rho1, rho2, spec.midCenterR, ...
+    spec.span, spec.rise, 'slot end fillet');
+tipMain = spec.outerRadius * (center / norm(center));
+tipMid = [spec.midCenterR, 0] + spec.midArcRadius * ...
+    ((center - [spec.midCenterR, 0]) / norm(center - [spec.midCenterR, 0]));
+% 校验切点确实落在两段弧的范围内（否则圆角无法在两弧之间实现）。
+if abs(atan2d(tipMain(2), tipMain(1))) >= spec.halfSpanDeg
+    error('CircularFPC:GeometryInfeasible', ...
+        ['mountingSlotEndFilletRadius %.6f mm does not fit: its tangent point on the main ', ...
+         'body circle leaves the slot arc. Reduce the fillet radius or mountingSlotRise.'], ...
+        filletRadius);
+end
+tipMain = [tipMain; tipMain(1), -tipMain(2)];
+tipMid = [tipMid; tipMid(1), -tipMid(2)];
+end
+
+function center = intersectCenters(rho1, rho2, centerR, span, rise, label)
+% 求解到板中心距离 rho1、到轴上点 (centerR,0) 距离 rho2 的交点（取上半平面）。
+if ~(abs(rho1 - rho2) < centerR && centerR < rho1 + rho2)
+    error('CircularFPC:GeometryInfeasible', ...
+        ['%s is not constructible for span %.6f mm, rise %.6f mm: the tangent circle ', ...
+         '(radii %.6f/%.6f mm around centres %.6f mm apart) has no solution. Adjust the ', ...
+         'mounting slot parameters and the mount fillet radius.'], ...
+        label, span, rise, rho1, rho2, centerR);
+end
+fu = (rho1^2 - rho2^2 + centerR^2) / (2 * centerR);
+ft2 = rho1^2 - fu^2;
+if ft2 <= 1e-12
+    error('CircularFPC:GeometryInfeasible', ...
+        '%s tangent construction is degenerate (t^2 = %.9g mm^2).', label, ft2);
+end
+center = [fu, sqrt(ft2)];
+end
+
+function arc = filletArcBetween(spec, filletRadius, sideSign, nArc, pStart, pEnd)
+% 挖槽端部圆角弧：圆心与 slotEndFilletPoints 同一构造（切点由该函数给出），
+% 弧自 pStart 到 pEnd。sideSign 选取上/下半平面的圆心。
+if filletRadius <= 0
+    arc = zeros(0, 2);
+    return;
+end
+rho1 = spec.outerRadius + filletRadius;  % 与主体外径圆外切
+rho2 = spec.midArcRadius - filletRadius; % 与中间弧内切
+center = intersectCenters(rho1, rho2, spec.midCenterR, spec.span, spec.rise, 'slot end fillet');
+center = [center(1), sideSign * center(2)];
+arc = sampleCircularArc(center, filletRadius, pStart, pEnd, ...
+    max(4, round(nArc / 4)), 'short');
+end
+
+function arc = sampleCircularArc(center, radius, pStart, pEnd, n, direction)
+% 采样圆上从 pStart 到 pEnd 的圆弧。direction：'short' 走劣弧，'cw'/'ccw' 指定
+% 绕向（局部坐标下）。端点精确写回，保证共享端点契约不被离散误差破坏。
+center = reshape(center, 1, 2);
+pStart = reshape(pStart, 1, 2);
+pEnd = reshape(pEnd, 1, 2);
+tStart = pStart - center;
+tEnd = pEnd - center;
+rotation = atan2(tStart(1) * tEnd(2) - tStart(2) * tEnd(1), dot(tStart, tEnd));
+switch direction
+    case 'short'
+        % 保持 |rotation| <= pi
+    case 'cw'
+        if rotation > 0
+            rotation = rotation - 2 * pi;
+        end
+    case 'ccw'
+        if rotation < 0
+            rotation = rotation + 2 * pi;
+        end
+    otherwise
+        error('CircularFPC:InvalidOperation', 'Unknown arc direction: %s', direction);
+end
+baseAngle = atan2(tStart(2), tStart(1));
+angles = baseAngle + rotation * (0:n).' / n;
+arc = center + radius * [cos(angles), sin(angles)];
+arc(1, :) = pStart;
+arc(end, :) = pEnd;
+end
+
+function pads = buildElectrodePads(cfg, outerR)
+% Two independent top-layer pads at the requested electrode direction. They
+% are deliberately separate from PAD_A/PAD_B and never enter the coil route.
+u = [cosd(cfg.electrodeAngleDeg), sind(cfg.electrodeAngleDeg)];
+t = [-u(2), u(1)];
+centerR = outerR + cfg.electrodeArmLength;
+offset = (cfg.electrodeArmGap + cfg.electrodeArmWidth) / 2;
+pads = struct('name', {}, 'xy', {}, 'diameter', {}, 'layer', {}, ...
+    'removable', {}, 'role', {}, 'placementRegion', {}, 'bridgeAngleDeg', {});
+for k = 1:2
+    pads(k).name = sprintf('ELECTRODE_%s', char('A' + k - 1));
+    pads(k).xy = centerR * u + (-1)^(k == 1) * offset * t;
+    pads(k).diameter = cfg.electrodePadDiameter;
+    pads(k).layer = 1;
+    pads(k).removable = false;
+    pads(k).role = 'INDEPENDENT_ELECTRODE';
+    pads(k).placementRegion = 'ELECTRODE_315';
+    pads(k).bridgeAngleDeg = cfg.electrodeAngleDeg;
+end
+end
+
+function active = defaultActiveLayers(cfg)
+key = cfg.boardLayerCount * 10 + cfg.coilLayerCount;
+switch key
+    case 21
+        active = 1;
+    case 22
+        active = [1 2];
+    case 41
+        active = 1;
+    case 42
+        active = [1 4];
+    case 44
+        active = 1:4;
+    case 66
+        active = 1:6;
+    otherwise
+        error('CircularFPC:UnsupportedLayerCombination', ...
+            'Cannot infer active layers for %d/%d.', cfg.boardLayerCount, cfg.coilLayerCount);
+end
 end
 
 function xy = filletHoleCorners(xy, maxR, angleLimitDeg, nArc)
@@ -281,23 +803,33 @@ end
 
 function coils = buildCoils(cfg, eff, activeLayers, directions)
 % 生成阿基米德螺旋线圈：r = rStart + coilPitch * theta/(2π)。
-% 奇数序号活动层从 connectionAngleDeg 相位起绕（CCW），偶数层相近相位反向绕（CW），
-% 俯视电流同向叠加；4/4 采用分数匝（L2 +0.25、L4 -0.25 圈跨度）使内端落在过孔轴线。
+% 奇数序号活动层从内向外 CCW，偶数层从外向内 CW，俯视电流同向叠加。
+% 4/4 与 6/6 使用相位/分数匝表把层间过孔落在指定方位。
 % 外端过孔延伸区：线圈最外圈沿径向向外延伸 eff.viaEndExtension，过孔落在延伸端，
-% 焊环避开相邻匝（不影响线距/匝数），板框自动计入延伸区。
+% 焊环避开相邻匝（不影响线距/匝数），局部板框凸耳自动包络延伸区。
 coils = cell(1, cfg.boardLayerCount);
 rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
 % 4/4 分数匝（用户设计约定）：L2 多绕 1/4 圈使内端直接落到 225° 的 V23，
 % L4 少绕 1/4 圈使内端直接落到 135° 的 VOUT——内端无任何过渡走线，
 % 全部铜箔均为同心螺旋，且四层平均物理匝数（完整 360° 圈数）恰为 turnsPerCoilLayer。
 is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
-spanExtra = [0, 0.25, 0, -0.25];
-phaseExtra = [0, 90, 90, 0];
+is66 = cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6;
+spanExtra = zeros(1, numel(activeLayers));
+phaseExtra = zeros(1, numel(activeLayers));
+if is44
+    spanExtra = [0, 0.25, 0, -0.25];
+    phaseExtra = [0, 90, 90, 0];
+elseif is66
+    % Outer transition lugs: V12=135°, V34=225°, V56=45°.
+    % Inner transitions: V23=225°, V45=45°, VOUT=135°.
+    spanExtra = [0, 0.25, 0, 0.50, 0, 0.25];
+    phaseExtra = [0, 90, 90, -90, -90, 0];
+end
 for p = 1:numel(activeLayers)
     li = activeLayers(p);
-    spanTurns = cfg.turnsPerCoilLayer + spanExtra(p) * is44;
-    phaseDeg = cfg.connectionAngleDeg + phaseExtra(p) * is44 ...
-        + 90 * floor((p - 1) / 2) * (~is44);
+    spanTurns = cfg.turnsPerCoilLayer + spanExtra(p);
+    phaseDeg = cfg.connectionAngleDeg + phaseExtra(p) ...
+        + 90 * floor((p - 1) / 2) * (~is44 && ~is66);
     span = 2 * pi * spanTurns; % 角跨度（分数匝时含 +90°）
     n = round(cfg.samplePointsPerTurn * spanTurns) + 1;
     th = linspace(0, span, n);
@@ -313,7 +845,7 @@ for p = 1:numel(activeLayers)
     if directions(p) < 0
         xy = flipud(xy); % 翻转点序，使起点在半径大的一端（接外层过渡过孔）
     end
-    % 外端延伸：用 110° 外向圆弧从线圈切线平滑转向板外，过孔落在圆弧终点。
+    % 外端延伸：用短平滑曲线从线圈切线转向板外，过孔落在径向对齐的终点。
     % 转角严格大于 90°，同时明显小于旧 180° 回头弧，形成连续的切向/泪滴式接入。
     % 奇数层外端为末点，偶数层外端为首点。
     E = eff.viaEndExtension;
@@ -332,41 +864,32 @@ end
 end
 
 function xy = smoothOutwardArc(S, a, E, n)
-% 平滑外伸接触弧：从线圈外端 S 沿切线方向 a 出发，以 110° 圆弧转向板外。
-% 圆弧终点就是过孔中心；径向外移量严格为 E。110° 满足全局“内角必须
-% 严格大于 90°”的接触要求，又避免旧 180° 方案在钻孔旁形成回头钩。
+% 平滑外伸接触弧：从线圈外端 S 沿切线方向 a 出发，平滑转向板外。
+% 终点严格落在 S 的径向轴线上，故外端过孔可以精确对齐 45/135/225°。
+% 使用短三次曲线而不是强行用一段固定圆弧：当起点切线接近圆周切线时，
+% 固定 110° 圆弧必然带来切向偏移，导致过孔中心偏离标称径向轴。
+xy = zeros(0, 2);
+if norm(S) <= 1e-12 || norm(a) <= 1e-12 || E <= 1e-12
+    return;
+end
 uLoc = S / norm(S);
 a = a / norm(a);
-n1 = [-a(2), a(1)];
-n2 = [a(2), -a(1)];
-if dot(n1, uLoc) >= dot(n2, uLoc)
-    nOut = n1;
-    turn = 1;
-else
-    nOut = n2;
-    turn = -1;
-end
-sweep = deg2rad(110);
-% 任意扫角 phi 的总位移为 R*((1-cos(phi))*nOut + sin(phi)*a)；
-% 按径向投影反求 R，使外移量恰为 E。
-unitDisplacement = (1 - cos(sweep)) * nOut + sin(sweep) * a;
-radialGain = dot(unitDisplacement, uLoc);
-if radialGain <= 1e-9
-    error('CircularFPC:GeometryInfeasible', ...
-        'Outer via contact arc cannot obtain a positive radial extension.');
-end
-R = E / radialGain;
-C = S + R * nOut;
-v0 = S - C;
-alpha = turn * linspace(0, sweep, n).';
-ca = cos(alpha);
-sa = sin(alpha);
-v = [ca * v0(1) - sa * v0(2), sa * v0(1) + ca * v0(2)];
-xy = C + v;
-xy(1, :) = S; % 起点精确 = 线圈外端
+p3 = (norm(S) + E) * uLoc;
+% 控制点长度与径向外伸绑定，保持凸耳紧凑且不越入相邻外圈。
+controlLength = min(0.75 * E, 0.75 * norm(p3 - S));
+c1 = S + controlLength * a;
+c2 = p3 - controlLength * uLoc;
+t = linspace(0, 1, max(5, n)).';
+w0 = (1 - t).^3;
+w1 = 3 * (1 - t).^2 .* t;
+w2 = 3 * (1 - t) .* t.^2;
+w3 = t.^3;
+xy = w0 * S + w1 * c1 + w2 * c2 + w3 * p3;
+xy(1, :) = S;
+xy(end, :) = p3; % 终点即外端过孔中心
 end
 
-function [coils, connectionPaths, pads, vias, seriesRoute, returnLayer] = ...
+function [coils, connectionPaths, pads, vias, seriesRoute, returnLayer, electrodePads] = ...
     buildNetwork(cfg, eff, activeLayers, directions, layoutRegions)
 % 构建完整串联网络：PAD_A → 线圈(各活动层串联) → 过孔层间转移 → PAD_B，
 % 并生成每段连接路径（connectionPaths 按物理层存放）。
@@ -377,6 +900,7 @@ for li = 1:cfg.boardLayerCount
 end
 
 [pads, vias, returnLayer, routeInfo] = buildTerminals(cfg, eff, activeLayers, coils, layoutRegions);
+electrodePads = layoutRegions.electrodePads;
 % 外端通孔的下游层也从同一孔中心离开，并以单一圆弧切向并入下一层螺旋。
 % 自动选择 90°~150° 内最接近 120° 的圆弧，保证接触角严格大于 90°，
 % 且不再用直线弦或贝塞尔微调段制造锐角/回头钩。
@@ -598,7 +1122,8 @@ function [pads, vias, returnLayer, routeInfo] = buildTerminals(cfg, eff, activeL
 % 构造全部端子（焊盘 + 过孔）：
 %   - auto 模式：在入口桥轴上自动搜索 PAD_A/PAD_B 位置、VOUT 与内端过渡过孔位置；
 %   - manual 模式：直接采用 cfg.manualPadAXY/manualPadBXY/manualSeriesViaXY。
-% 过孔命名与角色（2/1、4/1: VRET, VOUT；2/2: V12, VOUT；4/2: V14, VOUT；4/4: V12, V23, V34, VOUT）。
+% 过孔命名与角色（2/1、4/1: VRET, VOUT；2/2: V12, VOUT；4/2: V14, VOUT；
+% 4/4: V12, V23, V34, VOUT；6/6: V12, V23, V34, V45, V56, VOUT）。
 manual = strcmp(cfg.terminalPlacementMode, 'manual');
 theta = layoutRegions.theta;
 u = layoutRegions.u;
@@ -679,16 +1204,20 @@ else
             viaRoles{end + 1} = 'OUTER_TRANSITION'; %#ok<AGROW>
             viaXY(end + 1, :) = coils{activeLayers(p)}(end, :); %#ok<AGROW>
             viaRegions{end + 1} = 'OUTER_COIL_ENDPOINT'; %#ok<AGROW>
-            if strcmp(viaNames{end}, 'V34')
-                viaAngles(end + 1) = theta + 90; %#ok<AGROW> % V34 位于 theta+90 桥侧（L3/L4 相位组）
-            else
-                viaAngles(end + 1) = theta; %#ok<AGROW>
-            end
+            viaAngles(end + 1) = atan2d(viaXY(end, 2), viaXY(end, 1)); %#ok<AGROW>
         else
             viaRoles{end + 1} = 'INNER_TRANSITION'; %#ok<AGROW>
-            viaXY(end + 1, :) = rV23 * t; %#ok<AGROW> % theta+90（默认 225°）桥轴
+            innerAxis = coils{activeLayers(p)}(end, :);
+            innerAxis = innerAxis / norm(innerAxis);
+            keepoutR = cfg.viaCoilSpacing + cfg.viaPadDiameter / 2;
+            innerR = max(0.1, layoutRegions.rStart - (keepoutR + ...
+                cfg.traceWidth / 2 + 1e-3) + 0.25 * eff.coilPitch);
+            viaXY(end + 1, :) = innerR * innerAxis; %#ok<AGROW>
             viaRegions{end + 1} = 'RETURN_BRIDGE'; %#ok<AGROW>
-            viaAngles(end + 1) = theta + 90; %#ok<AGROW>
+            viaAngles(end + 1) = atan2d(viaXY(end, 2), viaXY(end, 1)); %#ok<AGROW>
+            if isnan(rV23)
+                rV23 = innerR;
+            end
         end
     end
     viaNames{end + 1} = 'VOUT'; %#ok<AGROW>
@@ -750,8 +1279,6 @@ end
 end
 
 function validateTerminals(cfg, layoutRegions, pads, vias)
-outerR = layoutRegions.outerRadius;
-boardEdgeInnerR = outerR - cfg.boardOutlineLineWidth / 2;
 holes = layoutRegions.holeLoops;
 [names, xy, radii] = terminalArrays(pads, vias);
 for i = 1:numel(names)
@@ -760,12 +1287,12 @@ for i = 1:numel(names)
     if ~isnumeric(pxy) || numel(pxy) ~= 2 || ~all(isfinite(pxy))
         error('CircularFPC:TerminalPlacementInvalid', 'Terminal %s has invalid coordinates.', names{i});
     end
-    % 这里只拒绝真正越过板框实体；具体 0.30 mm 工艺净距由
-    % validate_result 的切线测量统一判定，避免 fixed 模式在构造阶段
-    % 抢先抛出与最终验证不同的错误类型。
-    if norm(pxy) + r > boardEdgeInnerR + 1e-9
+    % Local via/electrode lugs can extend beyond the base circle, so use the
+    % final board polyshape for containment and leave tangent clearance to
+    % the segment-based result validator.
+    if ~isinterior(layoutRegions.boardShape, pxy(1), pxy(2))
         error('CircularFPC:TerminalPlacementInvalid', ...
-            'Terminal %s violates tangent-to-board clearance.', names{i});
+            'Terminal %s lies outside the final board outline.', names{i});
     end
     if minDistanceToHolesLocal(pxy, holes) - r < cfg.edgeClearance - 1e-9
         error('CircularFPC:TerminalPlacementInvalid', ...
@@ -917,41 +1444,46 @@ pts = C + R * (cos(phi) * u + sin(phi) * t);
 end
 
 function coils = applyInnerExtensions(cfg, activeLayers, coils, vias)
-% 4/4 内端延伸（用户设计约定）：L2 多绕 1/4 圈后内端落在 225°，经 180° 内弯
-% 弧延伸到 V23 中心；L3 的起点前置反向内弯弧从 V23 出发；L4 少绕 1/4 圈后
-% 内端落在 135°，经短贝塞尔延伸到 VOUT——过孔直接落在线圈端点上，
-% 无任何过渡走线（全部铜箔为同心螺旋 + 过孔处的径向微连接）。
-if ~(cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4)
+% Full multilayer variants place even-to-odd inner transitions directly on
+% their vias. The final active layer receives the same short smooth stub to
+% VOUT. This keeps the inter-layer topology explicit without changing the
+% main spiral samples used by the COMSOL export.
+is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
+is66 = cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6;
+if ~(is44 || is66)
     return;
 end
-v23 = vias(strcmp({vias.name}, 'V23'));
 vout = vias(strcmp({vias.name}, 'VOUT'));
-L2 = activeLayers(2);
-L3 = activeLayers(3);
-L4 = activeLayers(end);
-% L2 内端 → V23（180° 内弯弧，镜像外端延伸区；E 已含 clamp 保证 >0）
-S = coils{L2}(end, :);
-a = S - coils{L2}(end - 1, :);
-a = a / norm(a);
-E = norm(v23.xy - S);
-ext = smoothInwardArc(S, a, max(E, 1e-6), 61);
-coils{L2} = [coils{L2}; ext(2:end, :)];
-% L3 起点 ← V23（前置反向内弯弧）：弧以 CW 切向离开 S3，反转后到达 S3 的
-% 方向恰为 CCW 切向 a3，与螺旋起点切向对齐（直接用 a3 会反转 180°）
-S3 = coils{L3}(1, :);
-a3 = coils{L3}(2, :) - coils{L3}(1, :);
-a3 = a3 / norm(a3);
-E3 = norm(S3 - v23.xy);
-arc3 = smoothInwardArc(S3, -a3, max(E3, 1e-6), 61);
-coils{L3} = [flipud(arc3); coils{L3}(2:end, :)];
-% L4 内端 → VOUT（短贝塞尔：VOUT 带 lane 侧偏，终点切向取自然趋近方向）
-S4 = coils{L4}(end, :);
-a4 = S4 - coils{L4}(end - 1, :);
-a4 = a4 / norm(a4);
-dBack = vout.xy - S4;
+for p = 2:2:numel(activeLayers) - 1
+    lowerLayer = activeLayers(p);
+    upperLayer = activeLayers(p + 1);
+    vName = sprintf('V%d%d', lowerLayer, upperLayer);
+    v = vias(strcmp({vias.name}, vName));
+    if isempty(v)
+        error('CircularFPC:GeometryInfeasible', 'Missing inner transition via %s.', vName);
+    end
+
+    S = coils{lowerLayer}(end, :);
+    a = S - coils{lowerLayer}(end - 1, :);
+    a = a / norm(a);
+    ext = smoothInwardArc(S, a, max(norm(v.xy - S), 1e-6), 61);
+    coils{lowerLayer} = [coils{lowerLayer}; ext(2:end, :)];
+
+    SNext = coils{upperLayer}(1, :);
+    aNext = coils{upperLayer}(2, :) - coils{upperLayer}(1, :);
+    aNext = aNext / norm(aNext);
+    arcNext = smoothInwardArc(SNext, -aNext, max(norm(SNext - v.xy), 1e-6), 61);
+    coils{upperLayer} = [flipud(arcNext); coils{upperLayer}(2:end, :)];
+end
+
+lastLayer = activeLayers(end);
+SLast = coils{lastLayer}(end, :);
+aLast = SLast - coils{lastLayer}(end - 1, :);
+aLast = aLast / norm(aLast);
+dBack = vout.xy - SLast;
 dBack = dBack / norm(dBack);
-stub = sampleBezier(S4, a4, vout.xy, dBack, 0.3, 0.3, 97);
-coils{L4} = [coils{L4}; stub(2:end, :)];
+stub = sampleBezier(SLast, aLast, vout.xy, dBack, 0.3, 0.3, 97);
+coils{lastLayer} = [coils{lastLayer}; stub(2:end, :)];
 end
 
 function xy = smoothInwardArc(S, a, E, n)

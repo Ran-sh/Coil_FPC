@@ -322,7 +322,8 @@ result = circular_fpc_main(struct( ...
     'designName', 'slot_segment_probe'));
 cfg = result.config;
 geom = resultGeometry(result);
-holeIdx = find([geom.boardLoops.isHole]);
+holeIdx = find([geom.boardLoops.isHole] & ...
+    startsWith(string({geom.boardLoops.name}), 'hole_'));
 verifyFalse(testCase, isempty(holeIdx));
 
 % 选质心离端子焊盘最远的槽，避开端子净距检查的干扰

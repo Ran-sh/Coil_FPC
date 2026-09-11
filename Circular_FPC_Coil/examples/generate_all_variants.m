@@ -1,4 +1,4 @@
-% 一键生成五种层叠（2/1、2/2、4/1、4/2、4/4）的完整产物。
+% 一键生成六种层叠（2/1、2/2、4/1、4/2、4/4、6/6）的完整产物。
 %
 % 用法：
 %   run examples/generate_all_variants.m              % 输出到 <project>/outputs
@@ -13,17 +13,18 @@ addpath(projectRoot);
 if ~exist('outputRoot', 'var') || isempty(outputRoot)
     outputRoot = fullfile(projectRoot, 'outputs');
 end
-combos = [2 1; 2 2; 4 1; 4 2; 4 4];
+combos = [2 1; 2 2; 4 1; 4 2; 4 4; 6 6];
 designNames = {'Circular_FPC_2L_1C', 'Circular_FPC_2L_2C', ...
-    'Circular_FPC_4L_1C', 'Circular_FPC_4L_2C', 'Circular_FPC_4L_4C'};
-variantResults = cell(1, 5);
-for k = 1:5
+    'Circular_FPC_4L_1C', 'Circular_FPC_4L_2C', 'Circular_FPC_4L_4C', ...
+    'Circular_FPC_6L_6C'};
+variantResults = cell(1, 6);
+for k = 1:6
     variantResults{k} = circular_fpc_main(struct( ...
         'boardLayerCount', combos(k, 1), ...
         'coilLayerCount', combos(k, 2), ...
         'outputRoot', outputRoot, ...
         'designName', designNames{k}));
 end
-for k = 1:5
+for k = 1:6
     fprintf('%s -> %s\n', designNames{k}, variantResults{k}.outputPath);
 end

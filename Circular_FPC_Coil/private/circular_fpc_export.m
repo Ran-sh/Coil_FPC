@@ -8,7 +8,15 @@ function varargout = circular_fpc_export(operation, varargin)
 % so that a 2D DXF import can be selected as a domain or boundary. Terminal
 % arcs, connection leads, pads, vias, and layer-transition geometry are
 % intentionally omitted for COMSOL users to connect in their own model.
-% Drills are through-holes; non-functional pads are removed.
+% Additive COMSOL terminal files
+% (dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf) repeat that closed
+% main-coil outline unchanged and add the L1 center-region terminals: the two
+% terminal leads as closed copper strips with straight short-edge caps plus
+% the PAD_A/PAD_B disks. They still omit every via, drill, via annulus, and
+% inter-layer transition shape, and they never modify the copper_solid files.
+% Drills are through-holes; non-functional via pads are removed. The two
+% independent electrode pads are explicit L1 copper and are retained in the
+% physical DXF only.
 % Engineering coordinates are +X right,
 % +Y up; only SVG display flips Y. The file manifest
 % (reports/08_file_manifest.csv) lists every generated regular file except
@@ -42,7 +50,9 @@ end
 function writeAllFiles(cfg, result, outDir, formalPath)
 % 输出文件树：
 %   dxf/         板框 + 每物理层铜层 + 功能过孔焊环 + 贯穿钻孔图
-%   previews/    全板/连接区/每层 SVG 预览（enablePreview=true 时）
+%   preview/JLC/centerline/  嘉立创中心线 DXF 预览
+%   preview/JLC/physical/    嘉立创实际线宽/焊盘/过孔 DXF 预览
+%   preview/COMSOL/          基于 copper_solid DXF 闭合铜实体的预览
 %   reports/     坐标 CSV、层映射、摘要、匝数扫描、验证报告
 %   generation_status.txt
 dxfDir = fullfile(outDir, 'dxf');
@@ -57,15 +67,35 @@ for li = 1:cfg.boardLayerCount
     writeCopperDxf(fullfile(layerDir, sprintf('%02d_copper_L%d.dxf', li, li)), result, li);
     writePhysicalCopperDxf(fullfile(layerDir, sprintf('%02d_copper_physical_L%d.dxf', li, li)), cfg, result, li);
     writeSolidCopperDxf(fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li)), cfg, result, li);
+    writeTerminalSolidCopperDxf(fullfile(layerDir, ...
+        sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li)), cfg, result, li);
 end
 if cfg.enablePreview
-    prevDir = fullfile(outDir, 'previews');
-    mkdir(prevDir);
-    writeSvgFull(fullfile(prevDir, '01_preview_full.svg'), cfg, result);
-    writeSvgConnectionZone(fullfile(prevDir, '02_preview_connection_zone.svg'), cfg, result);
+    previewRoot = fullfile(outDir, 'preview');
+    jlcCenterlineDir = fullfile(previewRoot, 'JLC', 'centerline');
+    jlcPhysicalDir = fullfile(previewRoot, 'JLC', 'physical');
+    comsolDir = fullfile(previewRoot, 'COMSOL');
+    comsolTerminalDir = fullfile(comsolDir, 'with_terminals');
+    mkdir(jlcCenterlineDir);
+    mkdir(jlcPhysicalDir);
+    mkdir(comsolDir);
+    mkdir(comsolTerminalDir);
+    writeSvgFull(fullfile(jlcCenterlineDir, '01_preview_full.svg'), cfg, result, 'centerline');
+    writeSvgConnectionZone(fullfile(jlcCenterlineDir, '02_preview_connection_zone.svg'), cfg, result, 'centerline');
+    writeSvgFull(fullfile(jlcPhysicalDir, '01_preview_full.svg'), cfg, result, 'physical');
+    writeSvgConnectionZone(fullfile(jlcPhysicalDir, '02_preview_connection_zone.svg'), cfg, result, 'physical');
+    writeSvgComsolFull(fullfile(comsolDir, '01_comsol_dxf_full.svg'), cfg, result);
+    writeSvgComsolTerminalsFull(fullfile(comsolTerminalDir, ...
+        '01_comsol_with_terminals_full.svg'), cfg, result);
     for li = 1:numel(result.layerPaths)
-        fileName = sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, svgLayerRole(result, li));
-        writeSvgLayer(fullfile(prevDir, fileName), cfg, result, li);
+        role = svgLayerRole(result, li);
+        fileName = sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role);
+        writeSvgLayer(fullfile(jlcCenterlineDir, fileName), cfg, result, li, 'centerline');
+        writeSvgLayer(fullfile(jlcPhysicalDir, fileName), cfg, result, li, 'physical');
+        comsolName = sprintf('%02d_comsol_dxf_layer_L%d_%s.svg', 1 + li, li, role);
+        writeSvgComsolLayer(fullfile(comsolDir, comsolName), cfg, result, li);
+        comsolTerminalName = sprintf('%02d_comsol_with_terminals_layer_L%d_%s.svg', 1 + li, li, role);
+        writeSvgComsolTerminalsLayer(fullfile(comsolTerminalDir, comsolTerminalName), cfg, result, li);
     end
 end
 writeReports(cfg, result, reportsDir);
@@ -74,7 +104,8 @@ writeFileManifest(fullfile(reportsDir, '08_file_manifest.csv'), outDir);
 end
 
 function writeBoardDxf(filename, cfg, boardLoops)
-% 板框 DXF：5 个闭合、带可配置实际线宽的 LWPOLYLINE（1 外边界 + 4 孔槽）。
+% 板框 DXF：9 个闭合、带可配置实际线宽的 LWPOLYLINE（1 外边界 +
+% 4 个平台槽 + 4 个耳朵内置挖槽）。
 fid = openOutputFile(filename);
 writeDxfHeader(fid, {'BOARD'});
 for k = 1:numel(boardLoops)
@@ -154,6 +185,9 @@ layerName = sprintf('COPPER_PHYSICAL_L%d', li);
 layerNames = {layerName};
 if li == 1
     layerNames{end + 1} = 'PAD_L1';
+    if ~isempty(result.electrodePads)
+        layerNames{end + 1} = 'ELECTRODE_L1';
+    end
 end
 viaIds = find([result.vias.fromLayer] == li | [result.vias.toLayer] == li);
 if ~isempty(viaIds)
@@ -173,6 +207,9 @@ end
 if li == 1
     for p = 1:numel(result.pads)
         writeCircle(fid, result.pads(p).xy, result.pads(p).diameter / 2, 'PAD_L1');
+    end
+    for p = 1:numel(result.electrodePads)
+        writeCircle(fid, result.electrodePads(p).xy, result.electrodePads(p).diameter / 2, 'ELECTRODE_L1');
     end
 end
 for k = 1:numel(viaIds)
@@ -198,12 +235,149 @@ if ~isempty(lp.coilXY)
     paths{end + 1} = comsolMainCoilPath(cfg, result, li); %#ok<AGROW>
 end
 for k = 1:numel(paths)
-    rings = traceOutlineRings(paths{k}, cfg.traceWidth / 2);
+    rings = {explicitComsolRing(cfg, result, li)};
     for r = 1:numel(rings)
-        writeLwPolyline(fid, rings{r}, layerName, true);
+        ring = rings{r};
+        % Keep the LWPOLYLINE closed flag for CAD readers, and explicitly
+        % write the final short-cap edge for COMSOL importers.
+        writeLwPolyline(fid, ring, layerName, true);
     end
 end
 writeDxfFooter(fid);
+end
+
+function writeTerminalSolidCopperDxf(filename, cfg, result, li)
+% Additive COMSOL variant of the solid copper DXF. The closed main-coil ring
+% of copper_solid_Lli.dxf is repeated here with identical vertices and the
+% original copper_solid files stay untouched. On the entry layer the two
+% center leads are added as closed copper strips with straight short-edge
+% caps, together with the PAD_A/PAD_B disks. Vias, drills, via annuli, and
+% inter-layer transition geometry are never written on any layer.
+layerName = sprintf('COPPER_SOLID_TERMINALS_L%d', li);
+entities = comsolTerminalEntities(cfg, result, li);
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+layerNames = {layerName};
+if li == 1
+    % PAD_A/PAD_B are emitted as CIRCLE entities on their own layers. DXF
+    % readers are allowed to reject or drop entities whose layer is absent
+    % from TABLES/LAYER, so declare every layer used by the file up front.
+    layerNames = [layerNames, {result.pads.name}]; %#ok<AGROW>
+end
+writeDxfHeader(fid, layerNames);
+for k = 1:numel(entities)
+    if strcmp(entities(k).kind, 'pad')
+        writeCircle(fid, entities(k).circleCenter, entities(k).circleRadius, entities(k).name);
+    else
+        % Keep the LWPOLYLINE closed flag for CAD readers, and explicitly
+        % write the final short-cap edge for COMSOL importers.
+        writeLwPolyline(fid, entities(k).ring, layerName, true);
+    end
+end
+writeDxfFooter(fid);
+end
+
+function entities = comsolTerminalEntities(cfg, result, li)
+% Canonical copper entity list for *_copper_solid_with_terminals_Lli.dxf.
+% The DXF writer, the SVG preview, the geometry mapping report, and the
+% export readback all consume this one definition, so a change can never make
+% the artifact and its evidence disagree. Order is the DXF write order:
+% main-coil ring, then the L1 center leads, then the pad disks.
+fieldNames = {'name', 'kind', 'ring', 'circleCenter', 'circleRadius', 'startXY', 'endXY'};
+entities = struct(fieldNames{1}, {}, fieldNames{2}, {}, fieldNames{3}, {}, ...
+    fieldNames{4}, {}, fieldNames{5}, {}, fieldNames{6}, {}, fieldNames{7}, {});
+if ~isempty(result.layerPaths(li).coilXY)
+    path = comsolMainCoilPath(cfg, result, li);
+    entities(end + 1) = struct('name', sprintf('COIL_L%d', li), 'kind', 'copper_solid', ...
+        'ring', explicitComsolRing(cfg, result, li), 'circleCenter', NaN, ...
+        'circleRadius', NaN, 'startXY', path(1, :), 'endXY', path(end, :));
+end
+if li ~= 1
+    return;
+end
+leads = terminalLeadPaths(result);
+for k = 1:numel(leads)
+    path = leads{k};
+    entities(end + 1) = struct('name', terminalLeadName(k), 'kind', 'terminal_lead', ...
+        'ring', leadStripRing(path, cfg.traceWidth / 2), 'circleCenter', NaN, ...
+        'circleRadius', NaN, 'startXY', path(1, :), 'endXY', path(end, :));
+end
+for p = 1:numel(result.pads)
+    pad = result.pads(p);
+    entities(end + 1) = struct('name', pad.name, 'kind', 'pad', 'ring', zeros(0, 2), ...
+        'circleCenter', pad.xy, 'circleRadius', pad.diameter / 2, ...
+        'startXY', pad.xy, 'endXY', pad.xy);
+end
+end
+
+function leads = terminalLeadPaths(result)
+% Resolve the two center leads from the series route by name, then match the
+% stored L1 connection path by its endpoints. Route names stay the single
+% source of truth for which geometry is a terminal lead, and the returned
+% paths are oriented start-to-end so repeated exports stay byte-identical.
+names = {terminalLeadName(1), terminalLeadName(2)};
+route = result.seriesRoute;
+leads = cell(1, numel(names));
+for k = 1:numel(names)
+    idx = find(strcmp({route.name}, names{k}), 1);
+    if isempty(idx)
+        error('CircularFPC:ExportWriteFailed', ...
+            'COMSOL terminal copper requires the %s route on layer 1.', names{k});
+    end
+    [leads{k}, found] = matchConnectionPath(result.layerPaths(1).connectionPaths, ...
+        route(idx).startXY, route(idx).endXY);
+    if ~found
+        error('CircularFPC:ExportWriteFailed', ...
+            'COMSOL terminal copper cannot map %s to an L1 connection path.', names{k});
+    end
+end
+end
+
+function [xy, found] = matchConnectionPath(paths, startXY, endXY)
+xy = [];
+found = false;
+for k = 1:numel(paths)
+    p = paths{k};
+    if size(p, 1) < 2
+        continue;
+    end
+    direct = norm(p(1, :) - startXY) < 1e-4 && norm(p(end, :) - endXY) < 1e-4;
+    reverse = norm(p(1, :) - endXY) < 1e-4 && norm(p(end, :) - startXY) < 1e-4;
+    if direct || reverse
+        if reverse
+            p = flipud(p);
+        end
+        xy = p;
+        found = true;
+        return;
+    end
+end
+end
+
+function ring = leadStripRing(xy, halfWidth)
+% Closed copper strip for one terminal lead: offset the sampled centerline by
+% half the trace width and close both ends with one straight short edge
+% perpendicular to the end tangent. Straight caps (never round end arcs) keep
+% each lead a COMSOL-selectable 2D domain with an explicit first/last vertex.
+keep = [true; vecnorm(diff(xy, 1, 1), 2, 2) > 1e-12];
+xy = xy(keep, :);
+if size(xy, 1) < 2
+    error('CircularFPC:ExportWriteFailed', ...
+        'COMSOL terminal lead needs at least two distinct centerline points.');
+end
+tangent = [xy(2, :) - xy(1, :); xy(3:end, :) - xy(1:end-2, :); xy(end, :) - xy(end-1, :)];
+tangent = tangent ./ vecnorm(tangent, 2, 2);
+normal = [-tangent(:, 2), tangent(:, 1)];
+left = xy + halfWidth * normal;
+right = xy - halfWidth * normal;
+ring = [left; flipud(right); left(1, :)];
+end
+
+function a = polygonArea(xy)
+% Shoelace area of a ring whose first vertex repeats as the last one.
+x = xy(1:end-1, 1);
+y = xy(1:end-1, 2);
+a = abs(sum(x .* y([2:end, 1]) - y .* x([2:end, 1]))) / 2;
 end
 
 function xy = comsolMainCoilPath(cfg, result, li)
@@ -217,22 +391,50 @@ if isempty(xy) || isempty(activeIndex)
     return;
 end
 spanTurns = cfg.turnsPerCoilLayer;
-if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
+is66 = cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6;
+if is44
     spanExtra = [0, 0.25, 0, -0.25];
+    spanTurns = spanTurns + spanExtra(activeIndex);
+elseif is66
+    spanExtra = [0, 0.25, 0, 0.50, 0, 0.25];
     spanTurns = spanTurns + spanExtra(activeIndex);
 end
 rStart = result.effectiveDimensions.coilInnerDiameter / 2 + cfg.traceWidth / 2;
-outerSpiralRadius = rStart + result.effectiveDimensions.coilPitch * spanTurns;
-radius = hypot(xy(:, 1), xy(:, 2));
-% 螺旋半径在 [rStart, outerSpiralRadius] 内单调；内外端延伸弧只在端点
-% 邻域进入该半径带。取带内第一个到最后一个索引得到完整螺旋，两端各留
-% 至多几个微米级弧尾点，由封口处理吸收。
-mainIds = find(radius >= rStart - 1e-9 & radius <= outerSpiralRadius + 1e-9);
-if isempty(mainIds)
-    error('CircularFPC:ExportReadbackFailed', ...
-        'Cannot isolate the main COMSOL spiral on layer %d.', li);
+phaseExtra = zeros(1, numel(result.activeCoilLayers));
+if is44
+    phaseExtra = [0 90 90 0];
+elseif is66
+    phaseExtra = [0 90 90 -90 -90 0];
 end
-xy = xy(mainIds(1):mainIds(end), :);
+phase = cfg.connectionAngleDeg + phaseExtra(activeIndex) ...
+    + 90*floor((activeIndex-1)/2)*(~is44 && ~is66);
+t = linspace(0, 2*pi*spanTurns, round(cfg.samplePointsPerTurn*spanTurns)+1).';
+direction = 1 - 2*mod(activeIndex+1,2);
+angle = deg2rad(phase) + direction*t;
+radius = rStart + result.effectiveDimensions.coilPitch*t/(2*pi);
+xy = radius .* [cos(angle), sin(angle)];
+if direction < 0
+    xy = flipud(xy);
+end
+end
+
+function ring = comsolStrip(xy, halfWidth)
+% Offset the spiral, preserving four explicit port corners. Radial ports
+% coincide between mirrored layers; simplification never crosses a cap.
+tangent = [xy(2,:)-xy(1,:); xy(3:end,:)-xy(1:end-2,:); xy(end,:)-xy(end-1,:)];
+tangent = tangent ./ vecnorm(tangent,2,2);
+normal = [-tangent(:,2), tangent(:,1)];
+left = xy + halfWidth*normal;
+right = xy - halfWidth*normal;
+for k = [1 size(xy,1)]
+    radial = xy(k,:)/norm(xy(k,:));
+    radial = radial * sign(dot(radial,normal(k,:)));
+    left(k,:) = xy(k,:) + halfWidth*radial;
+    right(k,:) = xy(k,:) - halfWidth*radial;
+end
+% Retain sampled sides: each cap remains exactly one 0.2 mm edge.
+ring = [left; flipud(right)];
 end
 
 function rings = traceOutlineRings(xy, halfWidth)
@@ -363,18 +565,24 @@ if fid < 0
 end
 end
 
-function writeSvgFull(filename, cfg, result)
+function writeSvgFull(filename, cfg, result, previewKind)
+if nargin < 4
+    previewKind = 'physical';
+end
+[tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 fid = fopen(filename, 'w');
 fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
-extent = result.effectiveDimensions.boardOuterDiameter / 2 + max(cfg.edgeClearance, 0.5);
-fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.6f">\n', ...
-    -extent, -extent, 2 * extent, 2 * extent);
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="%s" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    previewKindAttr, -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy));
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+        cutoutRole = svgBoardCutoutRole(result.boardLoops(k));
+        glassRole = svgBoardGlassRole(result.boardLoops(k));
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cutoutRole);
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth, glassRole);
     else
         fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
@@ -385,12 +593,12 @@ for li = 1:numel(result.layerPaths)
     cidx = mod(li - 1, 4) + 1;
     if ~isempty(result.layerPaths(li).coilXY)
         fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-            pointsAttr(result.layerPaths(li).coilXY), colors{cidx}, cfg.traceWidth);
+            pointsAttr(result.layerPaths(li).coilXY), colors{cidx}, tracePreviewWidth);
     end
     paths = result.layerPaths(li).connectionPaths;
     for k = 1:numel(paths)
         fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-            pointsAttr(paths{k}), colors{cidx}, cfg.traceWidth);
+            pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
     end
 end
 [labelX, labelY, bg] = svgLegendLayout(-extent, -extent, extent, extent, numel(result.pads) + numel(result.vias));
@@ -412,26 +620,37 @@ for k = 1:numel(result.vias)
     idx = idx + 1;
     writeSvgTerminalText(fid, v, labelX, labelY(idx));
 end
+for k = 1:numel(result.electrodePads)
+    p = result.electrodePads(k);
+    fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
+        p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+end
 fprintf(fid, '</svg>\n');
 fclose(fid);
 end
 
-function writeSvgLayer(filename, cfg, result, li)
+function writeSvgLayer(filename, cfg, result, li, previewKind)
 % 每层单独预览：板框 + 该层铜（线圈 + 连接路径）+ L1 焊盘 + 该层过孔。
+if nargin < 5
+    previewKind = 'physical';
+end
+[tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 fid = fopen(filename, 'w');
 if fid < 0
     error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
 end
 fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
-extent = result.effectiveDimensions.boardOuterDiameter / 2 + max(cfg.edgeClearance, 0.5);
-fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.6f %.6f %.6f %.6f">\n', ...
-    -extent, -extent, 2 * extent, 2 * extent);
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="%s" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    previewKindAttr, -extent, -extent, 2 * extent, 2 * extent);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy));
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+        cutoutRole = svgBoardCutoutRole(result.boardLoops(k));
+        glassRole = svgBoardGlassRole(result.boardLoops(k));
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cutoutRole);
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth, glassRole);
     else
         fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
@@ -441,12 +660,12 @@ colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
 cidx = mod(li - 1, 4) + 1;
 if ~isempty(result.layerPaths(li).coilXY)
     fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-        pointsAttr(result.layerPaths(li).coilXY), colors{cidx}, cfg.traceWidth);
+        pointsAttr(result.layerPaths(li).coilXY), colors{cidx}, tracePreviewWidth);
 end
 paths = result.layerPaths(li).connectionPaths;
 for k = 1:numel(paths)
     fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-        pointsAttr(paths{k}), colors{cidx}, cfg.traceWidth);
+        pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
 end
 if li == 1
     for k = 1:numel(result.pads)
@@ -454,12 +673,189 @@ if li == 1
         fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
             p.xy(1), -p.xy(2), cfg.padDiameter / 2);
     end
+    for k = 1:numel(result.electrodePads)
+        p = result.electrodePads(k);
+        fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
+            p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+    end
 end
 for k = 1:numel(result.vias)
     writeSvgLayerVia(fid, cfg, result.vias(k));
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
+end
+
+function writeSvgComsolFull(filename, cfg, result)
+% COMSOL preview of the same closed copper-strip rings written to
+% copper_solid_L*.dxf. No terminals, vias, connection leads, or centerlines
+% are drawn here; the board outline is a light reference only.
+fid = fopen(filename, 'w');
+if fid < 0
+    error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
+end
+fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-dxf" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    -extent, -extent, 2 * extent, 2 * extent);
+writeSvgComsolReferenceBoard(fid, cfg, result);
+for li = 1:numel(result.layerPaths)
+    writeSvgComsolRing(fid, cfg, result, li);
+end
+fprintf(fid, '</svg>\n');
+fclose(fid);
+end
+
+function writeSvgComsolLayer(filename, cfg, result, li)
+% Per-layer COMSOL preview. Inactive physical layers intentionally contain
+% only the light board reference because their copper_solid DXF is empty.
+fid = fopen(filename, 'w');
+if fid < 0
+    error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
+end
+fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-dxf" data-dxf-layer="L%d" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    li, -extent, -extent, 2 * extent, 2 * extent);
+writeSvgComsolReferenceBoard(fid, cfg, result);
+writeSvgComsolRing(fid, cfg, result, li);
+fprintf(fid, '</svg>\n');
+fclose(fid);
+end
+
+function writeSvgComsolTerminalsFull(filename, cfg, result)
+% COMSOL preview of the copper_solid_with_terminals_L*.dxf variant: the same
+% closed copper-strip rings plus the L1 center-region PAD_A/PAD_B disks and
+% their two straight-ish leads. Vias, drills, via annuli, and inter-layer
+% transitions are omitted, so this preview shows exactly what those DXFs hold.
+fid = fopen(filename, 'w');
+if fid < 0
+    error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
+end
+fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-dxf-with-terminals" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    -extent, -extent, 2 * extent, 2 * extent);
+writeSvgComsolReferenceBoard(fid, cfg, result);
+for li = 1:numel(result.layerPaths)
+    writeSvgComsolTerminalsRing(fid, cfg, result, li);
+end
+fprintf(fid, '</svg>\n');
+fclose(fid);
+end
+
+function writeSvgComsolTerminalsLayer(filename, cfg, result, li)
+% Per-layer preview of the with-terminals variant. The L1 file carries the
+% pads and leads; every other layer keeps only its main-coil ring, matching
+% the corresponding *_copper_solid_with_terminals_L*.dxf contents.
+fid = fopen(filename, 'w');
+if fid < 0
+    error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
+end
+fprintf(fid, '<?xml version="1.0" encoding="UTF-8"?>\n');
+extent = svgExtent(cfg, result);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-dxf-with-terminals" data-dxf-layer="L%d" viewBox="%.6f %.6f %.6f %.6f">\n', ...
+    li, -extent, -extent, 2 * extent, 2 * extent);
+writeSvgComsolReferenceBoard(fid, cfg, result);
+writeSvgComsolTerminalsRing(fid, cfg, result, li);
+fprintf(fid, '</svg>\n');
+fclose(fid);
+end
+
+function writeSvgComsolTerminalsRing(fid, cfg, result, li)
+% Copper geometry of one with-terminals DXF, in SVG display coordinates.
+dxfName = sprintf('dxf/L%d/%02d_copper_solid_with_terminals_L%d.dxf', li, li, li);
+entities = comsolTerminalEntities(cfg, result, li);
+colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
+c = colors{mod(li - 1, numel(colors)) + 1};
+for k = 1:numel(entities)
+    e = entities(k);
+    if strcmp(e.kind, 'pad')
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" fill-opacity="0.75" stroke="#7a0d0d" stroke-width="0.025" data-copper-entity="%s" data-copper-kind="%s" data-dxf-layer="L%d" data-dxf-file="%s"/>\n', ...
+            e.circleCenter(1), -e.circleCenter(2), e.circleRadius, e.name, e.kind, li, dxfName);
+    else
+        fprintf(fid, '<polygon points="%s" fill="%s" fill-opacity="0.32" stroke="%s" stroke-width="0.025" data-copper-entity="%s" data-copper-kind="%s" data-dxf-layer="L%d" data-dxf-file="%s" data-dxf-closed="explicit" data-dxf-cap="straight-short-edge"/>\n', ...
+            pointsAttr(e.ring), c, c, e.name, e.kind, li, dxfName);
+    end
+end
+end
+
+function name = terminalLeadName(index)
+% Stable lead names shared by the DXF write order, the SVG preview, and the
+% geometry mapping report.
+names = {'TRACE_L1_ENTRY', 'TRACE_L1_EXIT'};
+name = names{index};
+end
+
+function writeComsolTerminalGeometryReport(filename, cfg, result)
+% Terminal geometry mapping report for the COMSOL with-terminals variant: one
+% row per emitted DXF entity, giving the route node it came from, the closed
+% copper area, and the first/last vertices that prove each entity is closed.
+% closed=1 means the body imports as a closed 2D region; capMode records how
+% it is closed (a straight short edge on a copper strip, or a disk outline).
+fid = openOutputFile(filename);
+c = onCleanup(@() fclose(fid));
+fprintf(fid, 'entity,kind,layer,routeNode,dxfFile,closed,vertexCount,areaMm2,capMode,startXMm,startYMm,endXMm,endYMm,firstXMm,firstYMm,lastXMm,lastYMm,firstLastMatch\n');
+for li = 1:numel(result.layerPaths)
+    dxfFile = sprintf('dxf/L%d/%02d_copper_solid_with_terminals_L%d.dxf', li, li, li);
+    entities = comsolTerminalEntities(cfg, result, li);
+    for k = 1:numel(entities)
+        e = entities(k);
+        isPad = strcmp(e.kind, 'pad');
+        if isPad
+            vertexCount = 0;
+            areaMm2 = pi * e.circleRadius^2;
+            capMode = 'closed_disk';
+            first = e.circleCenter;
+            last = e.circleCenter;
+        else
+            vertexCount = size(e.ring, 1);
+            areaMm2 = polygonArea(e.ring);
+            capMode = 'straight_short_edge';
+            first = e.ring(1, :);
+            last = e.ring(end, :);
+        end
+        fprintf(fid, '%s,%s,%d,%s,%s,1,%d,%.6f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d\n', ...
+            e.name, e.kind, li, e.name, dxfFile, vertexCount, areaMm2, capMode, ...
+            e.startXY(1), e.startXY(2), e.endXY(1), e.endXY(2), ...
+            first(1), first(2), last(1), last(2), ...
+            norm(first - last) <= 1e-9);
+    end
+end
+end
+
+function writeSvgComsolReferenceBoard(fid, cfg, result)
+for k = 1:numel(result.boardLoops)
+    if result.boardLoops(k).isHole
+        fprintf(fid, '<polygon points="%s" fill="#f4f7f8" fill-opacity="0.55" stroke="#9aa5aa" stroke-width="%.4f" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth, svgBoardReferenceRole(result.boardLoops(k)));
+    else
+        fprintf(fid, '<polygon points="%s" fill="none" stroke="#8c1aa6" stroke-width="%.4f" data-board-role="outline-reference"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+    end
+end
+
+end
+
+function writeSvgComsolRing(fid, cfg, result, li)
+if isempty(result.layerPaths(li).coilXY)
+    return;
+end
+ring = explicitComsolRing(cfg, result, li);
+colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
+c = colors{mod(li - 1, numel(colors)) + 1};
+dxfName = sprintf('dxf/L%d/%02d_copper_solid_L%d.dxf', li, li, li);
+fprintf(fid, '<polygon points="%s" fill="%s" fill-opacity="0.28" stroke="%s" stroke-width="0.025" data-dxf-layer="L%d" data-dxf-file="%s" data-dxf-closed="explicit"/>\n', ...
+    pointsAttr(ring), c, c, li, dxfName);
+end
+
+function ring = explicitComsolRing(cfg, result, li)
+% Keep SVG and COMSOL DXF previews geometrically equivalent.
+xy = comsolMainCoilPath(cfg, result, li);
+ring = comsolStrip(xy, cfg.traceWidth / 2);
+if size(ring, 1) >= 2 && norm(ring(1, :) - ring(end, :)) > 1e-12
+    ring(end + 1, :) = ring(1, :);
+end
 end
 
 function writeSvgLayerVia(fid, cfg, v)
@@ -473,6 +869,21 @@ fprintf(fid, ['<circle data-via-name="%s" data-via-role="drill" ', ...
     v.name, v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
 end
 
+function [traceWidth, kindAttr] = jlcPreviewStyle(cfg, previewKind)
+switch lower(char(previewKind))
+    case 'centerline'
+        % A centerline DXF has no physical width; use a thin display stroke
+        % while preserving the engineering coordinates and path topology.
+        traceWidth = 0.04;
+        kindAttr = 'jlc-centerline';
+    case 'physical'
+        traceWidth = cfg.traceWidth;
+        kindAttr = 'jlc-physical';
+    otherwise
+        error('CircularFPC:ExportWriteFailed', 'Unknown JLC preview kind: %s', previewKind);
+end
+end
+
 function role = svgLayerRole(result, li)
 if li == 1
     role = 'top';
@@ -483,7 +894,11 @@ else
 end
 end
 
-function writeSvgConnectionZone(filename, cfg, result)
+function writeSvgConnectionZone(filename, cfg, result, previewKind)
+if nargin < 4
+    previewKind = 'physical';
+end
+[tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 w = result.effectiveDimensions.centerPlatformWidth;
 h = result.effectiveDimensions.centerPlatformHeight;
 fid = fopen(filename, 'w');
@@ -515,14 +930,16 @@ yMin = floor(yMin * 1000) / 1000;
 yMax = ceil(yMax * 1000) / 1000;
 svgYMin = -yMax;
 svgYMax = -yMin;
-fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="%.3f %.3f %.3f %.3f">\n', ...
-    xMin, svgYMin, xMax - xMin, svgYMax - svgYMin);
+fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="%s" viewBox="%.3f %.3f %.3f %.3f">\n', ...
+    previewKindAttr, xMin, svgYMin, xMax - xMin, svgYMax - svgYMin);
 for k = 1:numel(result.boardLoops)
     if result.boardLoops(k).isHole
-        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="slot-cutout"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy));
-        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="slot-glass"/>\n', ...
-            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
+        cutoutRole = svgBoardCutoutRole(result.boardLoops(k));
+        glassRole = svgBoardGlassRole(result.boardLoops(k));
+        fprintf(fid, '<polygon points="%s" fill="#ffffff" fill-opacity="1" stroke="none" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cutoutRole);
+        fprintf(fid, '<polygon points="%s" fill="#8fcfdc" fill-opacity="0.32" stroke="#000000" stroke-width="%.4f" data-board-role="%s"/>\n', ...
+            pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth, glassRole);
     else
         fprintf(fid, '<polygon points="%s" fill="#ffcc1a" fill-opacity="1" stroke="#8c1aa6" stroke-width="%.4f"/>\n', ...
             pointsAttr(result.boardLoops(k).xy), cfg.boardOutlineLineWidth);
@@ -534,7 +951,7 @@ for li = 1:numel(result.layerPaths)
     for k = 1:numel(paths)
         cidx = mod(li - 1, numel(colors)) + 1;
         fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
-            pointsAttr(paths{k}), colors{cidx}, cfg.traceWidth);
+            pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
     end
 end
 [labelX, labelY, bg] = svgLegendLayout(xMin, svgYMin, xMax, svgYMax, numel(result.pads) + numel(result.vias));
@@ -564,6 +981,39 @@ function s = pointsAttr(xy)
 s = sprintf('%.4f,%.4f ', [xy(:,1), -xy(:,2)].');
 end
 
+function extent = svgExtent(cfg, result)
+if isfield(result.layoutRegions, 'boardExtent') && isfinite(result.layoutRegions.boardExtent)
+    boardExtent = result.layoutRegions.boardExtent;
+else
+    boardExtent = result.effectiveDimensions.boardOuterDiameter / 2;
+end
+extent = boardExtent + max(cfg.edgeClearance, 0.5);
+end
+
+function role = svgBoardCutoutRole(loop)
+if startsWith(loop.name, 'mounting_cutout')
+    role = 'mounting-cutout';
+else
+    role = 'slot-cutout';
+end
+end
+
+function role = svgBoardGlassRole(loop)
+if startsWith(loop.name, 'mounting_cutout')
+    role = 'mounting-glass';
+else
+    role = 'slot-glass';
+end
+end
+
+function role = svgBoardReferenceRole(loop)
+if startsWith(loop.name, 'mounting_cutout')
+    role = 'mounting-cutout-reference';
+else
+    role = 'slot-reference';
+end
+end
+
 function writeReports(cfg, result, reportsDir)
 % 报告文件：
 %   01_pad_via_coordinates.csv  焊盘/过孔坐标与端子元数据
@@ -571,7 +1021,9 @@ function writeReports(cfg, result, reportsDir)
 %   03_design_summary.txt       设计摘要（尺寸、总长、直流电阻、串联序列、端子位置）
 %   04_turn_scan.csv            匝数可行性扫描（每匝所需径向宽度是否放得下）
 %   05_validation_report.txt    验证报告（各 PASS 指标 + 失败信息）
+%   10_electrode_pad_coordinates.csv  独立电极焊盘坐标（不属于线圈网络）
 %   09_comsol_stackup.csv       COMSOL 三维建模层压表（厚度与 Z 坐标）
+%   11_comsol_terminal_geometry.csv  COMSOL 带端子变体的实体几何映射（闭合面积/首尾顶点）
 fid = fopen(fullfile(reportsDir, '01_pad_via_coordinates.csv'), 'w');
 fprintf(fid, 'name,xMm,yMm,diameterMm,drillMm,layer,fromLayer,toLayer,removable,role,placementRegion,bridgeAngleDeg\n');
 for k = 1:numel(result.pads)
@@ -584,6 +1036,18 @@ for k = 1:numel(result.vias)
     fprintf(fid, '%s,%.6f,%.6f,%.6f,%.6f,%d,%d,%d,%d,%s,%s,%.6f\n', ...
         v.name, v.xy(1), v.xy(2), v.padDiameter, v.drillDiameter, ...
         0, v.fromLayer, v.toLayer, 0, v.role, v.placementRegion, v.bridgeAngleDeg);
+end
+fclose(fid);
+fid = fopen(fullfile(reportsDir, '10_electrode_pad_coordinates.csv'), 'w');
+if fid < 0
+    error('CircularFPC:ExportWriteFailed', 'Cannot open electrode pad report.');
+end
+fprintf(fid, 'name,xMm,yMm,diameterMm,layer,role,placementRegion,bridgeAngleDeg\n');
+for k = 1:numel(result.electrodePads)
+    p = result.electrodePads(k);
+    fprintf(fid, '%s,%.6f,%.6f,%.6f,%d,%s,%s,%.6f\n', ...
+        p.name, p.xy(1), p.xy(2), p.diameter, p.layer, p.role, ...
+        p.placementRegion, p.bridgeAngleDeg);
 end
 fclose(fid);
 fid = fopen(fullfile(reportsDir, '02_layer_map.csv'), 'w');
@@ -599,11 +1063,13 @@ fprintf(fid, 'designName: %s\n', cfg.designName);
 fprintf(fid, 'boardLayerCount: %d\n', cfg.boardLayerCount);
 fprintf(fid, 'coilLayerCount: %d\n', cfg.coilLayerCount);
 fprintf(fid, 'manufacturingProfile: %s\n', result.manufacturing.profile);
+fprintf(fid, 'qualificationStatus: %s\n', result.manufacturing.qualificationStatus);
 fprintf(fid, 'fpcStackup: %s\n', result.manufacturing.stackup.name);
 fprintf(fid, 'nominalFinishedBoardThickness: %.6f mm\n', result.manufacturing.stackup.nominalFinishedThicknessMm);
 fprintf(fid, 'computedStackupThickness: %.6f mm\n', result.manufacturing.stackup.computedThicknessMm);
 fprintf(fid, 'activeCopperCenterSpacing: %.6f mm\n', result.manufacturing.stackup.activeCopperCenterSpacingMm);
 fprintf(fid, 'boardOuterDiameter: %.6f mm\n', eff.boardOuterDiameter);
+fprintf(fid, 'boardOverallExtentDiameter: %.6f mm\n', 2 * result.layoutRegions.boardExtent);
 fprintf(fid, 'boardSizingMode: %s\n', cfg.boardSizingMode);
 fprintf(fid, 'viaEndExtension: %.6f mm\n', eff.viaEndExtension);
 fprintf(fid, 'coilInnerDiameter: %.6f mm\n', eff.coilInnerDiameter);
@@ -622,9 +1088,29 @@ fprintf(fid, 'traceWidth: %.6f mm\n', cfg.traceWidth);
 fprintf(fid, 'traceSpacing: %.6f mm\n', cfg.traceSpacing);
 fprintf(fid, 'edgeClearance: %.6f mm\n', cfg.edgeClearance);
 fprintf(fid, 'boardOutlineLineWidth: %.6f mm\n', cfg.boardOutlineLineWidth);
+fprintf(fid, 'geometrySafetyMargin: %.6f mm\n', cfg.geometrySafetyMargin);
 fprintf(fid, 'viaPadDiameter: %.6f mm\n', cfg.viaPadDiameter);
 fprintf(fid, 'viaDrillDiameter: %.6f mm\n', cfg.viaDrillDiameter);
 fprintf(fid, 'viaCoilSpacing: %.6f mm\n', cfg.viaCoilSpacing);
+fprintf(fid, 'mountingSlotSpan: %.6f mm\n', cfg.mountingSlotSpan);
+fprintf(fid, 'mountingSlotRise: %.6f mm\n', cfg.mountingSlotRise);
+fprintf(fid, 'mountingSlotEdgeClearance: %.6f mm\n', cfg.mountingSlotEdgeClearance);
+fprintf(fid, 'mountingSlotEndFilletRadius: %.6f mm\n', cfg.mountingSlotEndFilletRadius);
+fprintf(fid, 'mountingSlotInnerArcRadius: %.6f mm\n', result.layoutRegions.mountingSlotInnerArcRadius);
+fprintf(fid, 'mountingSlotMiddleArcRadius: %.6f mm\n', result.layoutRegions.mountingSlotMiddleArcRadius);
+fprintf(fid, 'mountingSlotMiddleArcCenterRadius: %.6f mm\n', result.layoutRegions.mountingSlotMiddleArcCenterRadius);
+fprintf(fid, 'mountingSlotOuterArcRadius: %.6f mm\n', result.layoutRegions.mountingSlotOuterArcRadius);
+fprintf(fid, 'mountingSlotApexRadius: %.6f mm\n', result.layoutRegions.mountingSlotApexRadius);
+fprintf(fid, 'mountingEarApexRadius: %.6f mm\n', result.layoutRegions.mountingEarApexRadius);
+fprintf(fid, 'mountingSlotHalfSpanDeg: %.6f\n', result.layoutRegions.mountingSlotHalfSpanDeg);
+fprintf(fid, 'viaLugRootOverlap: %.6f mm\n', cfg.viaLugRootOverlap);
+fprintf(fid, 'mountingAnglesDeg: %s\n', mat2str(result.layoutRegions.mountingAnglesDeg));
+fprintf(fid, 'electrodeAngleDeg: %.6f\n', cfg.electrodeAngleDeg);
+fprintf(fid, 'electrodeArmLength: %.6f mm\n', cfg.electrodeArmLength);
+fprintf(fid, 'electrodeArmWidth: %.6f mm\n', cfg.electrodeArmWidth);
+fprintf(fid, 'electrodeArmGap: %.6f mm\n', cfg.electrodeArmGap);
+fprintf(fid, 'electrodePadDiameter: %.6f mm\n', cfg.electrodePadDiameter);
+fprintf(fid, 'electrodeRootOverlap: %.6f mm\n', cfg.electrodeRootOverlap);
 fprintf(fid, 'totalTraceLengthMm: %.6f\n', result.totalTraceLengthMm);
 fprintf(fid, 'estimatedDcResistanceOhm: %.9f\n', result.estimatedDcResistanceOhm);
 fprintf(fid, 'geometry-only estimate; no electrical performance claim (NG-2/INV-5).\n');
@@ -665,6 +1151,11 @@ for k = 1:numel(result.vias)
     fprintf(fid, 'terminal: %s, placementRegion=%s, bridgeAngleDeg=%.6f\n', ...
         v.name, v.placementRegion, v.bridgeAngleDeg);
 end
+for k = 1:numel(result.electrodePads)
+    p = result.electrodePads(k);
+    fprintf(fid, 'independentElectrode: %s, x=%.6f, y=%.6f, diameter=%.6f mm\n', ...
+        p.name, p.xy(1), p.xy(2), p.diameter);
+end
 % 建议性提示（如平台角部超出内接圆进入桥区走廊）随摘要落盘，便于离线复查。
 for k = 1:numel(result.validation.advisories)
     fprintf(fid, 'advisory: %s\n', result.validation.advisories{k});
@@ -674,22 +1165,20 @@ fid = fopen(fullfile(reportsDir, '04_turn_scan.csv'), 'w');
 % 与配置校验保持一致（最少 2 匝），两种模式都从 2 匝开始扫描；
 % t 即物理匝数（完整 360° 圈数），径向跨度 = 线宽 + t*节距。
 if strcmp(cfg.boardSizingMode, 'auto')
-    % auto 模式：板框随匝数增长，报告每个匝数对应的板框外径。
-    % 4/4 分数匝（L2 多绕 1/4 圈）下按各层最大外端取 max，与引擎 requiredBoardDiameter 一致。
+    % auto 模式：主体圆随主螺旋最大匝数增长；局部凸耳不放大整圈。
     fprintf(fid, 'turns,requiredRadialWidthMm,requiredBoardDiameterMm\n');
     for t = 2:cfg.turnScanMax
         req = cfg.traceWidth + t * eff.coilPitch;
         spanMax = t;
         if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
             spanMax = t + 0.25; % 4/4 的 L2 多绕 1/4 圈
+        elseif cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6
+            spanMax = t + 0.50; % 6/6 的 L4 半匝相位跳转
         end
-        baseR = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
-            eff.coilPitch * t;
-        termBase = hypot(baseR + eff.viaEndExtension, eff.viaEndExtension) + ...
-            cfg.viaPadDiameter / 2;
         termFrac = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2 + ...
             eff.coilPitch * spanMax + cfg.traceWidth / 2;
-        boardD = 2 * (max(termBase, termFrac) + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
+        boardD = 2 * (termFrac + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2 + ...
+            cfg.geometrySafetyMargin);
         fprintf(fid, '%d,%.6f,%.6f\n', t, req, boardD);
     end
 else
@@ -703,6 +1192,9 @@ else
             % 4/4 的 L2 多绕 0.25 圈：实际可容纳性按最大跨度层判定，
             % 与引擎 requiredBoardDiameter / auto 分支口径一致。
             reqFrac = cfg.traceWidth + (t + 0.25) * eff.coilPitch;
+            fitsBoard = fitsBoard && (reqFrac <= available + 1e-9);
+        elseif cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6
+            reqFrac = cfg.traceWidth + (t + 0.50) * eff.coilPitch;
             fitsBoard = fitsBoard && (reqFrac <= available + 1e-9);
         end
         fprintf(fid, '%d,%.6f,%d\n', t, req, fitsBoard);
@@ -755,6 +1247,7 @@ fprintf(fid7, 'activeCoilLayers: %s\n', mat2str(result.activeCoilLayers));
 fprintf(fid7, 'copperThickness: %.6f mm (1/3 oz nominal profile)\n', cfg.copperThickness);
 fprintf(fid7, 'manufacturingProfile: %s\n', result.manufacturing.profile);
 fprintf(fid7, 'manufacturingTier: %s\n', result.manufacturing.tier);
+fprintf(fid7, 'qualificationStatus: %s\n', result.manufacturing.qualificationStatus);
 fprintf(fid7, 'fpcStackup: %s\n', result.manufacturing.stackup.name);
 fprintf(fid7, 'finishedBoardThickness: %.6f mm nominal\n', ...
     result.manufacturing.stackup.nominalFinishedThicknessMm);
@@ -763,12 +1256,26 @@ fprintf(fid7, 'coverlay: %s, PI12.5um + adhesive15um = %.6f mm per side\n', ...
     result.manufacturing.stackup.coverlayColor, result.manufacturing.stackup.coverlayThicknessMm);
 fprintf(fid7, 'copperType: %s\n', result.manufacturing.stackup.copperType);
 fprintf(fid7, 'coordinates: +X right, +Y up; SVG display only flips Y\n');
+fprintf(fid7, ['mountingSlot: three-arc ear cutouts at 0/90/180/270 deg; inner arc is the main ' ...
+    'body circle (r=%.6f mm), middle arc bulges %.6f mm (basis: main body circle apex) at ' ...
+    'chord span %.6f mm, outer ear edge is the middle arc offset outward by %.6f mm\n'], ...
+    result.layoutRegions.mountingSlotInnerArcRadius, cfg.mountingSlotRise, ...
+    cfg.mountingSlotSpan, cfg.mountingSlotEdgeClearance);
+fprintf(fid7, 'independentElectrodes: two top-layer pads at %.6f deg; no generated routing\n', ...
+    cfg.electrodeAngleDeg);
 fprintf(fid7, 'Physical DXF is a CAM reference and does not replace Gerber.\n');
 fprintf(fid7, 'NOT_GENERATED: coverlay geometry, stiffener geometry, Gerber, panelization\n');
-fprintf(fid7, 'COMSOL: use 09_comsol_stackup.csv for the nominal layer Z coordinates; verify against the fab stackup.\n');
+if strcmp(result.manufacturing.qualificationStatus, 'UNVERIFIED_LAYER_COUNT')
+    fprintf(fid7, 'COMSOL: 09_comsol_stackup.csv contains unverified six-layer thickness inputs; Z coordinates are NaN until the fab stackup is confirmed.\n');
+else
+    fprintf(fid7, 'COMSOL: use 09_comsol_stackup.csv for the nominal layer Z coordinates; verify against the fab stackup.\n');
+end
+fprintf(fid7, 'COMSOL simulation DXFs: *_copper_solid_L*.dxf keeps only the closed main coil; *_copper_solid_with_terminals_L*.dxf adds the L1 center leads as closed copper strips with straight short-edge caps plus the PAD_A/PAD_B disks.\n');
+fprintf(fid7, 'COMSOL simulation DXFs never contain vias, drills, via annuli, or inter-layer transitions; map them with reports/11_comsol_terminal_geometry.csv.\n');
 fprintf(fid7, 'File manifest 08_file_manifest.csv excludes itself.\n');
 clear c7;
 writeComsolStackupReport(fullfile(reportsDir, '09_comsol_stackup.csv'), result.manufacturing.stackup);
+writeComsolTerminalGeometryReport(fullfile(reportsDir, '11_comsol_terminal_geometry.csv'), cfg, result);
 end
 
 function writeComsolStackupReport(filename, stack)
@@ -829,7 +1336,9 @@ elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_physical_L\d+\.dxf$', 'once'))
     role = 'copper_physical';
 elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_L\d+\.dxf$', 'once'))
     role = 'copper_solid';
-elseif ~isempty(regexp(rel, '^previews/', 'once'))
+elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_with_terminals_L\d+\.dxf$', 'once'))
+    role = 'copper_solid_with_terminals';
+elseif ~isempty(regexp(rel, '^preview/(JLC/(centerline|physical)|COMSOL)/', 'once'))
     role = 'preview';
 elseif ~isempty(regexp(rel, '^reports/', 'once'))
     role = 'report';
@@ -873,20 +1382,21 @@ end
 
 function verifyWrittenOutputs(cfg, result, tempDir)
 % 读回校验：确保写出的 DXF/SVG/CSV/TXT 可解析、内容符合契约
-% （DXF 单位 mm、5 个闭合多段线、SVG 可被 xmlread 解析、CSV 列名正确等）。
+% （DXF 单位 mm、9 个闭合多段线、SVG 可被 xmlread 解析、CSV 列名正确等）。
 boardFile = fullfile(tempDir, 'dxf', '00_board_outline.dxf');
 txt = fileread(boardFile);
 if ~checkInsUnitsMm(txt)
     error('CircularFPC:ExportReadbackFailed', 'Board DXF $INSUNITS is not 4.');
 end
-if countClosedLwpolylines(txt) ~= 5
-    error('CircularFPC:ExportReadbackFailed', 'Board DXF must contain exactly 5 closed LWPOLYLINE entities.');
+if countClosedLwpolylines(txt) ~= numel(result.boardLoops)
+    error('CircularFPC:ExportReadbackFailed', ...
+        'Board DXF must contain exactly %d closed LWPOLYLINE entities.', numel(result.boardLoops));
 end
 [~, boardWidths, boardPolyCount] = readDxfEntities(txt);
-if boardPolyCount ~= 5 || numel(boardWidths) ~= 5 || ...
+if boardPolyCount ~= numel(result.boardLoops) || numel(boardWidths) ~= numel(result.boardLoops) || ...
         any(abs(boardWidths - cfg.boardOutlineLineWidth) > 1e-9)
     error('CircularFPC:ExportReadbackFailed', ...
-        'Board DXF outline width must be %.6f mm on all five loops.', cfg.boardOutlineLineWidth);
+        'Board DXF outline width must be %.6f mm on all board loops.', cfg.boardOutlineLineWidth);
 end
 drillFile = fullfile(tempDir, 'dxf', '00_drill_map.dxf');
 if ~isfile(drillFile)
@@ -941,6 +1451,17 @@ for li = 1:cfg.boardLayerCount
         if numel(padC) ~= 2 || any(abs(sort([padC.r]) - sort([result.pads.diameter] / 2)) > 1e-9)
             error('CircularFPC:ExportReadbackFailed', 'Physical L1 pad circle mismatch: %s', physFile);
         end
+        electrodeC = pc(strcmp({pc.layer}, 'ELECTRODE_L1'));
+        if ~isempty(result.electrodePads) && ~contains(physTxt, 'ELECTRODE_L1')
+            error('CircularFPC:ExportReadbackFailed', ...
+                'Physical L1 DXF must declare ELECTRODE_L1 layer.');
+        end
+        if numel(electrodeC) ~= numel(result.electrodePads) || ...
+                (~isempty(electrodeC) && any(abs(sort([electrodeC.r]) - ...
+                sort([result.electrodePads.diameter] / 2)) > 1e-9))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'Physical L1 independent electrode pad mismatch: %s', physFile);
+        end
     end
     viaLayer = sprintf('VIA_PAD_L%d', li);
     if ~isempty(viaIds) && ~contains(physTxt, viaLayer)
@@ -951,7 +1472,8 @@ for li = 1:cfg.boardLayerCount
             (~isempty(viaC) && any(abs(sort([viaC.r]) - sort([result.vias(viaIds).padDiameter] / 2)) > 1e-9))
         error('CircularFPC:ExportReadbackFailed', 'Physical via circle mismatch: %s', physFile);
     end
-    if numel(pc) ~= (li == 1) * 2 + numel(viaIds)
+    electrodeCount = (li == 1) * numel(result.electrodePads);
+    if numel(pc) ~= (li == 1) * 2 + numel(viaIds) + electrodeCount
         error('CircularFPC:ExportReadbackFailed', 'Physical circle count mismatch: %s', physFile);
     end
     solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li));
@@ -978,15 +1500,38 @@ for li = 1:cfg.boardLayerCount
         error('CircularFPC:ExportReadbackFailed', ...
             'COMSOL solid DXF must be empty for an inactive layer: %s', solidFile);
     end
-end
-if cfg.enablePreview
-    for f = {fullfile(tempDir, 'previews', '01_preview_full.svg'), ...
-            fullfile(tempDir, 'previews', '02_preview_connection_zone.svg')}
-        if ~isfile(f{1})
-            error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f{1});
-        end
-        xmlread(f{1});
+    solidVertices = readDxfPolylineVertices(solidTxt);
+    if hasMainCoil && (size(solidVertices, 1) < 2 || ...
+            norm(solidVertices(1, :) - solidVertices(end, :)) > 1e-9)
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL solid DXF must explicitly repeat the first vertex to close the final short cap: %s', solidFile);
+    elseif ~hasMainCoil && ~isempty(solidVertices)
+        error('CircularFPC:ExportReadbackFailed', ...
+            'Inactive COMSOL solid DXF must not contain vertices: %s', solidFile);
     end
+    verifyTerminalSolidDxf(cfg, result, layerDir, li);
+end
+
+if cfg.enablePreview
+    for kind = {'centerline', 'physical'}
+        for f = {fullfile(tempDir, 'preview', 'JLC', kind{1}, '01_preview_full.svg'), ...
+                fullfile(tempDir, 'preview', 'JLC', kind{1}, '02_preview_connection_zone.svg')}
+            if ~isfile(f{1})
+                error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f{1});
+            end
+            svgTxt = fileread(f{1});
+            if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+                error('CircularFPC:ExportReadbackFailed', ...
+                    'JLC preview kind metadata mismatch: %s', f{1});
+            end
+            xmlread(f{1});
+        end
+    end
+    comsolFull = fullfile(tempDir, 'preview', 'COMSOL', '01_comsol_dxf_full.svg');
+    if ~isfile(comsolFull)
+        error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', comsolFull);
+    end
+    xmlread(comsolFull);
     for li = 1:cfg.boardLayerCount
         if li == 1
             role = 'top';
@@ -995,19 +1540,122 @@ if cfg.enablePreview
         else
             role = sprintf('inner%d', li - 1);
         end
-        f = fullfile(tempDir, 'previews', ...
-            sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role));
-        if ~isfile(f)
-            error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f);
+        for kind = {'centerline', 'physical'}
+            f = fullfile(tempDir, 'preview', 'JLC', kind{1}, ...
+                sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role));
+            if ~isfile(f)
+                error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f);
+            end
+            svgTxt = fileread(f);
+            if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+                error('CircularFPC:ExportReadbackFailed', ...
+                    'JLC preview kind metadata mismatch: %s', f);
+            end
+            xmlread(f);
         end
-        xmlread(f);
+        comsolFile = fullfile(tempDir, 'preview', 'COMSOL', ...
+            sprintf('%02d_comsol_dxf_layer_L%d_%s.svg', 1 + li, li, role));
+        if ~isfile(comsolFile)
+            error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL DXF preview: %s', comsolFile);
+        end
+        comsolTxt = fileread(comsolFile);
+        if ~contains(comsolTxt, 'data-preview-kind="comsol-dxf"') || ...
+                ~contains(comsolTxt, sprintf('data-dxf-layer="L%d"', li))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL DXF preview metadata mismatch: %s', comsolFile);
+        end
+        xmlread(comsolFile);
+    end
+    comsolFullTxt = fileread(comsolFull);
+    for li = result.activeCoilLayers
+        if ~contains(comsolFullTxt, sprintf('data-dxf-layer="L%d"', li))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL full preview missing active layer L%d.', li);
+        end
+    end
+    comsolTermFull = fullfile(tempDir, 'preview', 'COMSOL', 'with_terminals', ...
+        '01_comsol_with_terminals_full.svg');
+    if ~isfile(comsolTermFull)
+        error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', comsolTermFull);
+    end
+    comsolTermFullTxt = fileread(comsolTermFull);
+    if ~contains(comsolTermFullTxt, 'data-preview-kind="comsol-dxf-with-terminals"')
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal preview kind metadata mismatch: %s', comsolTermFull);
+    end
+    if ~contains(comsolTermFullTxt, 'data-copper-kind="terminal_lead"') || ...
+            ~contains(comsolTermFullTxt, 'data-copper-kind="pad"')
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal preview must draw the center leads and pads: %s', comsolTermFull);
+    end
+    xmlread(comsolTermFull);
+    for li = 1:cfg.boardLayerCount
+        if li == 1
+            role = 'top';
+        elseif li == cfg.boardLayerCount
+            role = 'bottom';
+        else
+            role = sprintf('inner%d', li - 1);
+        end
+        comsolTermFile = fullfile(tempDir, 'preview', 'COMSOL', 'with_terminals', ...
+            sprintf('%02d_comsol_with_terminals_layer_L%d_%s.svg', 1 + li, li, role));
+        if ~isfile(comsolTermFile)
+            error('CircularFPC:ExportReadbackFailed', ...
+                'Missing COMSOL terminal preview: %s', comsolTermFile);
+        end
+        comsolTermTxt = fileread(comsolTermFile);
+        if ~contains(comsolTermTxt, 'data-preview-kind="comsol-dxf-with-terminals"') || ...
+                ~contains(comsolTermTxt, sprintf('data-dxf-layer="L%d"', li))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL terminal preview metadata mismatch: %s', comsolTermFile);
+        end
+        expectedLeads = (li == 1) * 2;
+        expectedPads = (li == 1) * numel(result.pads);
+        if numel(regexp(comsolTermTxt, 'data-copper-kind="terminal_lead"', 'match')) ~= expectedLeads || ...
+                numel(regexp(comsolTermTxt, 'data-copper-kind="pad"', 'match')) ~= expectedPads
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL terminal preview copper entities mismatch on L%d: %s', li, comsolTermFile);
+        end
+        for p = 1:numel(result.pads) * (li == 1)
+            if ~contains(comsolTermTxt, sprintf('data-copper-entity="%s"', result.pads(p).name))
+                error('CircularFPC:ExportReadbackFailed', ...
+                    'COMSOL terminal preview missing pad %s.', result.pads(p).name);
+            end
+        end
+        % An inactive layer legitimately has no copper body, so the preview
+        % cites its DXF file only when the variant actually emits geometry.
+        if ~isempty(result.layerPaths(li).coilXY) && ...
+                ~contains(comsolTermTxt, sprintf('data-dxf-file="dxf/L%d/%02d_copper_solid_with_terminals_L%d.dxf"', li, li, li))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL terminal preview must cite its DXF file on L%d.', li);
+        end
+        xmlread(comsolTermFile);
     end
 end
-for f = {'01_pad_via_coordinates.csv', '02_layer_map.csv'}
+for f = {'01_pad_via_coordinates.csv', '02_layer_map.csv', '10_electrode_pad_coordinates.csv'}
     p = fullfile(tempDir, 'reports', f{1});
     t = readtable(p);
     if height(t) < 1
         error('CircularFPC:ExportReadbackFailed', 'Unreadable report: %s', p);
+    end
+end
+electrodeReport = readtable(fullfile(tempDir, 'reports', '10_electrode_pad_coordinates.csv'));
+expectedElectrodeColumns = {'name', 'xMm', 'yMm', 'diameterMm', 'layer', ...
+    'role', 'placementRegion', 'bridgeAngleDeg'};
+if ~isequal(electrodeReport.Properties.VariableNames, expectedElectrodeColumns) || ...
+        height(electrodeReport) ~= numel(result.electrodePads)
+    error('CircularFPC:ExportReadbackFailed', 'Independent electrode report mismatch.');
+end
+for k = 1:numel(result.electrodePads)
+    p = result.electrodePads(k);
+    row = electrodeReport(strcmp(electrodeReport.name, p.name), :);
+    if height(row) ~= 1 || abs(row.xMm - p.xy(1)) > 1e-6 || ...
+            abs(row.yMm - p.xy(2)) > 1e-6 || abs(row.diameterMm - p.diameter) > 1e-6 || ...
+            row.layer ~= p.layer || ~strcmp(char(row.role), p.role) || ...
+            ~strcmp(char(row.placementRegion), p.placementRegion) || ...
+            abs(row.bridgeAngleDeg - p.bridgeAngleDeg) > 1e-6
+        error('CircularFPC:ExportReadbackFailed', ...
+            'Independent electrode report row mismatch for %s.', p.name);
     end
 end
 verifyExportedTerminalMetadata(cfg, result, tempDir);
@@ -1074,6 +1722,7 @@ for k = 1:numel(stackLayers)
         error('CircularFPC:ExportReadbackFailed', '09 COMSOL stackup row %d mismatch.', k);
     end
 end
+verifyComsolTerminalGeometryReport(cfg, result, tempDir);
 csvManifest = fullfile(tempDir, 'reports', '08_file_manifest.csv');
 if ~isfile(csvManifest)
     error('CircularFPC:ExportReadbackFailed', 'Missing file manifest: %s', csvManifest);
@@ -1093,7 +1742,7 @@ if any(startsWith(rel8, '/')) || any(contains(rel8, '\')) || any(contains(rel8, 
     error('CircularFPC:ExportReadbackFailed', '08 manifest relativePath invalid.');
 end
 roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
-    'preview', 'report', 'generation_status'};
+    'copper_solid_with_terminals', 'preview', 'report', 'generation_status'};
 for k = 1:height(t8)
     rel = char(t8.relativePath(k));
     if ~ismember(char(t8.role(k)), roles8)
@@ -1120,6 +1769,249 @@ end
 if ~contains(statusText, sprintf('outputPath: %s', expectedOutputPath))
     error('CircularFPC:ExportReadbackFailed', ...
         'Generation status outputPath does not match the formal directory.');
+end
+end
+
+function verifyTerminalSolidDxf(cfg, result, layerDir, li)
+% Readback for dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf: exactly the main
+% coil ring (unchanged vertices), plus the two straight-capped center leads
+% and the two pad disks on L1; every closed body repeats its first vertex; no
+% VIA/DRILL marker, no via annulus layer, no group-43 width anywhere.
+solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li));
+if ~isfile(solidFile)
+    error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL terminal copper DXF: %s', solidFile);
+end
+txt = fileread(solidFile);
+checkDxfBase(txt, solidFile);
+verifyDxfEntityLayersDeclared(txt, solidFile);
+if ~contains(txt, sprintf('COPPER_SOLID_TERMINALS_L%d', li))
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF must declare COPPER_SOLID_TERMINALS_L%d: %s', li, solidFile);
+end
+
+if countClosedLwpolylines(txt) ~= numel(readDxfLwpolylines(txt))
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF must contain only closed LWPOLYLINE bodies: %s', solidFile);
+end
+entities = comsolTerminalEntities(cfg, result, li);
+polys = readDxfLwpolylines(txt);
+[dc, w43, nPoly] = readDxfEntities(txt);
+expectedPolys = sum(~strcmp({entities.kind}, 'pad'));
+expectedCircles = sum(strcmp({entities.kind}, 'pad'));
+if nPoly ~= expectedPolys || numel(polys) ~= expectedPolys
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF body count mismatch (expected %d closed rings): %s', ...
+        expectedPolys, solidFile);
+end
+if ~isempty(w43) || any([polys.hasWidth])
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF must not contain LWPOLYLINE group 43: %s', solidFile);
+end
+if numel(dc) ~= expectedCircles
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF pad circle count mismatch (expected %d): %s', ...
+        expectedCircles, solidFile);
+end
+for k = 1:numel(polys)
+    if ~polys(k).closed
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF body %d must set the closed flag: %s', k, solidFile);
+    end
+    if size(polys(k).xy, 1) < 4
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF body %d is degenerate: %s', k, solidFile);
+    end
+    if norm(polys(k).xy(1, :) - polys(k).xy(end, :)) > 1e-9
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF body %d must explicitly repeat its first vertex: %s', k, solidFile);
+    end
+    if polygonArea(polys(k).xy) <= 0
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF body %d must enclose a positive area: %s', k, solidFile);
+    end
+end
+% Pad disks: on L1 the count, center, and diameter must match result.pads
+% exactly; every other layer must carry no circle at all.
+if li == 1
+    padCircles = dc(ismember({dc.layer}, {result.pads.name}));
+    if numel(padCircles) ~= numel(result.pads)
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF pads must be written on PAD_A/PAD_B layers: %s', solidFile);
+    end
+    for k = 1:numel(result.pads)
+        pad = result.pads(k);
+        match = padCircles(strcmp({padCircles.layer}, pad.name));
+        if numel(match) ~= 1 || abs(match.cx - pad.xy(1)) > 1e-6 || ...
+                abs(match.cy - pad.xy(2)) > 1e-6 || ...
+                abs(match.r - pad.diameter / 2) > 1e-6
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL terminal DXF pad %s must match result.pads diameter and center.', pad.name);
+        end
+    end
+end
+% Every emitted body must be exactly the canonical closed copper ring, in the
+% canonical order (main coil, then the two straight-capped center leads).
+for k = 1:numel(polys)
+    e = entities(k);
+    if size(polys(k).xy, 1) ~= size(e.ring, 1) || ...
+            max(abs(polys(k).xy - e.ring), [], 'all') > 1e-5
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF body %d (%s) does not match the canonical copper ring: %s', ...
+            k, e.name, solidFile);
+    end
+end
+% The main-coil body must be geometrically identical to the one written to
+% copper_solid_Ln.dxf; the additive variant may never alter it.
+if ~isempty(result.layerPaths(li).coilXY)
+    solidTxt = fileread(fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li)));
+    solidPolys = readDxfLwpolylines(solidTxt);
+    if numel(solidPolys) ~= 1 || size(solidPolys(1).xy, 1) ~= size(polys(1).xy, 1) || ...
+            max(abs(solidPolys(1).xy - polys(1).xy), [], 'all') > 1e-12
+        error('CircularFPC:ExportReadbackFailed', ...
+            'COMSOL terminal DXF must keep the copper_solid main-coil ring unchanged: %s', solidFile);
+    end
+end
+if li ~= 1 && ~isempty(dc)
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF must stay terminal-free outside L1: %s', solidFile);
+end
+if contains(txt, 'VIA') || contains(txt, 'DRILL')
+    error('CircularFPC:ExportReadbackFailed', ...
+        'COMSOL terminal DXF must not contain VIA/DRILL geometry: %s', solidFile);
+end
+end
+
+function verifyDxfEntityLayersDeclared(txt, label)
+% Every entity layer must be present in the DXF TABLES/LAYER table. This is
+% especially important for the L1 COMSOL terminal variant, which uses the
+% separate PAD_A/PAD_B circle layers in addition to the copper body layer.
+lines = strtrim(strsplit(txt, newline));
+declared = {};
+used = {};
+inTables = false;
+inLayerTable = false;
+captureLayerName = false;
+inEntities = false;
+k = 1;
+while k + 1 <= numel(lines)
+    code = lines{k};
+    value = lines{k + 1};
+    if strcmp(code, '2') && strcmp(value, 'TABLES')
+        inTables = true;
+    elseif inTables && strcmp(code, '0') && strcmp(value, 'ENDSEC')
+        inTables = false;
+        inLayerTable = false;
+        captureLayerName = false;
+    elseif inTables && strcmp(code, '2') && strcmp(value, 'LAYER')
+        inLayerTable = true;
+    elseif inTables && inLayerTable && strcmp(code, '0') && strcmp(value, 'LAYER')
+        captureLayerName = true;
+    elseif inTables && inLayerTable && strcmp(code, '0') && strcmp(value, 'ENDTAB')
+        inLayerTable = false;
+        captureLayerName = false;
+    elseif inTables && captureLayerName && strcmp(code, '2')
+        declared{end + 1} = value; %#ok<AGROW>
+        captureLayerName = false;
+    elseif strcmp(code, '2') && strcmp(value, 'ENTITIES')
+        inEntities = true;
+    elseif inEntities && strcmp(code, '0') && strcmp(value, 'ENDSEC')
+        inEntities = false;
+    elseif inEntities && strcmp(code, '8')
+        used{end + 1} = value; %#ok<AGROW>
+    end
+    k = k + 2;
+end
+missing = setdiff(unique(used), unique(declared));
+if ~isempty(missing)
+    error('CircularFPC:ExportReadbackFailed', ...
+        '%s references undeclared DXF layer(s): %s.', label, strjoin(missing, ', '));
+end
+end
+
+function verifyComsolTerminalGeometryReport(cfg, result, tempDir)
+% Readback for reports/11_comsol_terminal_geometry.csv: the mapping report must
+% describe every emitted body of every with-terminals DXF, keep both center
+% leads on L1, and agree with the canonical entity list on closure and area.
+csvPath = fullfile(tempDir, 'reports', '11_comsol_terminal_geometry.csv');
+if ~isfile(csvPath)
+    error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL terminal geometry report: %s', csvPath);
+end
+t = readtable(csvPath);
+expCols = {'entity', 'kind', 'layer', 'routeNode', 'dxfFile', 'closed', ...
+    'vertexCount', 'areaMm2', 'capMode', 'startXMm', 'startYMm', 'endXMm', ...
+    'endYMm', 'firstXMm', 'firstYMm', 'lastXMm', 'lastYMm', 'firstLastMatch'};
+if ~isequal(t.Properties.VariableNames, expCols)
+    error('CircularFPC:ExportReadbackFailed', '11 COMSOL terminal geometry columns mismatch.');
+end
+expectedRows = 0;
+expectedLeads = 0;
+expectedPads = 0;
+for li = 1:numel(result.layerPaths)
+    expectedRows = expectedRows + numel(comsolTerminalEntities(cfg, result, li));
+    expectedLeads = expectedLeads + 2 * (li == 1);
+    expectedPads = expectedPads + numel(result.pads) * (li == 1);
+end
+if height(t) ~= expectedRows
+    error('CircularFPC:ExportReadbackFailed', ...
+        '11 COMSOL terminal geometry row count must match every emitted body.');
+end
+if sum(strcmp(t.kind, 'terminal_lead')) ~= expectedLeads || ...
+        sum(strcmp(t.kind, 'pad')) ~= expectedPads
+    error('CircularFPC:ExportReadbackFailed', ...
+        '11 COMSOL terminal geometry must list both L1 leads and both pads.');
+end
+for k = 1:height(t)
+    if t.closed(k) ~= 1
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry row %d must be a closed 2D body.', k);
+    end
+    if ~strcmp(char(t.capMode(k)), 'straight_short_edge') && ...
+            ~strcmp(char(t.capMode(k)), 'closed_disk')
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry capMode mismatch on row %d.', k);
+    end
+    if ~isfinite(t.areaMm2(k)) || t.areaMm2(k) <= 0
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry must report a positive area on row %d.', k);
+    end
+    if t.firstLastMatch(k) ~= 1
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry row %d must close on its first vertex.', k);
+    end
+    if strcmp(char(t.capMode(k)), 'straight_short_edge') && t.vertexCount(k) < 4
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry row %d copper strip is degenerate.', k);
+    end
+    absDxf = fullfile(tempDir, char(t.dxfFile(k)));
+    if ~isfile(absDxf)
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry cites a missing DXF on row %d.', k);
+    end
+end
+% PAD_A/PAD_B rows must carry the same center and radius as result.pads.
+for p = 1:numel(result.pads)
+    pad = result.pads(p);
+    row = t(strcmp(t.entity, pad.name) & strcmp(t.kind, 'pad'), :);
+    if height(row) ~= 1 || abs(row.startXMm - pad.xy(1)) > 1e-6 || ...
+            abs(row.startYMm - pad.xy(2)) > 1e-6 || ...
+            abs(row.areaMm2 - pi * (pad.diameter / 2)^2) > 1e-6
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry pad row mismatch for %s.', pad.name);
+    end
+end
+leads = terminalLeadPaths(result);
+for k = 1:numel(leads)
+    name = terminalLeadName(k);
+    row = t(strcmp(t.entity, name) & t.layer == 1 & strcmp(t.kind, 'terminal_lead'), :);
+    if height(row) ~= 1
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry must map %s on layer 1.', name);
+    end
+    if abs(row.startXMm - leads{k}(1, 1)) > 1e-6 || abs(row.startYMm - leads{k}(1, 2)) > 1e-6 || ...
+            abs(row.endXMm - leads{k}(end, 1)) > 1e-6 || abs(row.endYMm - leads{k}(end, 2)) > 1e-6
+        error('CircularFPC:ExportReadbackFailed', ...
+            '11 COMSOL terminal geometry lead endpoints mismatch for %s.', name);
+    end
 end
 end
 
@@ -1200,6 +2092,40 @@ idx = find(strcmp(lines, '$INSUNITS'), 1);
 tf = ~isempty(idx) && idx + 2 <= numel(lines) && strcmp(lines{idx + 1}, '70') && str2double(lines{idx + 2}) == 4;
 end
 
+function xy = readDxfPolylineVertices(txt)
+% Read every group-10/group-20 vertex from LWPOLYLINE entities.
+lines = strtrim(strsplit(txt, newline));
+xy = zeros(0, 2);
+k = 1;
+while k + 1 <= numel(lines)
+    if strcmp(lines{k}, '0') && strcmp(lines{k + 1}, 'LWPOLYLINE')
+        j = k + 2;
+        x = NaN;
+        y = NaN;
+        while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+            code = str2double(lines{j});
+            val = str2double(lines{j + 1});
+            if code == 10
+                if isfinite(x) && isfinite(y)
+                    xy(end + 1, :) = [x, y]; %#ok<AGROW>
+                end
+                x = val;
+                y = NaN;
+            elseif code == 20
+                y = val;
+            end
+            j = j + 2;
+        end
+        if isfinite(x) && isfinite(y)
+            xy(end + 1, :) = [x, y]; %#ok<AGROW>
+        end
+        k = j;
+    else
+        k = k + 1;
+    end
+end
+end
+
 function n = countClosedLwpolylines(txt)
 lines = strtrim(strsplit(txt, newline));
 n = 0;
@@ -1221,6 +2147,56 @@ while k + 1 <= numel(lines)
     else
         k = k + 1;
     end
+end
+end
+
+function polys = readDxfLwpolylines(txt)
+% Per-entity LWPOLYLINE readback: layer, closed flag, group-43 width presence
+% and the full vertex list. The with-terminals readback needs per-entity
+% structure (not the flattened vertex stream) to prove each emitted copper
+% body is separately closed and free of width metadata.
+lines = strtrim(strsplit(txt, newline));
+polys = struct('layer', {}, 'closed', {}, 'hasWidth', {}, 'xy', {});
+k = 1;
+while k + 1 <= numel(lines)
+    if ~strcmp(lines{k}, '0') || ~strcmp(lines{k + 1}, 'LWPOLYLINE')
+        k = k + 1;
+        continue;
+    end
+    j = k + 2;
+    layer = '';
+    closed = false;
+    hasWidth = false;
+    xy = zeros(0, 2);
+    x = NaN;
+    y = NaN;
+    while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+        code = lines{j};
+        val = lines{j + 1};
+        switch code
+            case '8'
+                layer = val;
+            case '43'
+                hasWidth = true;
+            case '70'
+                closed = str2double(val) == 1;
+            case '10'
+                if isfinite(x) && isfinite(y)
+                    xy(end + 1, :) = [x, y]; %#ok<AGROW>
+                end
+                x = str2double(val);
+                y = NaN;
+            case '20'
+                y = str2double(val);
+        end
+        j = j + 2;
+    end
+    if isfinite(x) && isfinite(y)
+        xy(end + 1, :) = [x, y];
+    end
+    polys(end + 1) = struct('layer', layer, 'closed', closed, ...
+        'hasWidth', hasWidth, 'xy', xy); %#ok<AGROW>
+    k = j;
 end
 end
 
@@ -1326,9 +2302,14 @@ for k = 1:numel(result.vias)
     end
 end
 if cfg.enablePreview
-    for f = {fullfile(tempDir, 'previews', '01_preview_full.svg'), ...
-            fullfile(tempDir, 'previews', '02_preview_connection_zone.svg')}
+    for kind = {'centerline', 'physical'}
+        for f = {fullfile(tempDir, 'preview', 'JLC', kind{1}, '01_preview_full.svg'), ...
+                fullfile(tempDir, 'preview', 'JLC', kind{1}, '02_preview_connection_zone.svg')}
         svgTxt = fileread(f{1});
+        if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+            error('CircularFPC:ExportReadbackFailed', ...
+                'JLC preview kind metadata mismatch: %s', f{1});
+        end
         for k = 1:numel(result.pads)
             p = result.pads(k);
             angleStr = sprintf('%.6f', p.bridgeAngleDeg);
@@ -1352,5 +2333,6 @@ if cfg.enablePreview
             end
         end
     end
+end
 end
 end

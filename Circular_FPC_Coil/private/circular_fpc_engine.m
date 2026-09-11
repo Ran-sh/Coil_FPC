@@ -16,13 +16,13 @@ if strcmp(cfg.boardSizingMode, 'auto')
             requiredManualTerminalBoardDiameter(cfg));
     end
 end
-activeLayers = activeLayerMap(cfg);         % 层叠组合 → 活动线圈层，如 4/2 → [1 4]
+activeLayers = activeLayerMap(cfg);         % 层叠组合 → 活动线圈层
 directions = ones(1, numel(activeLayers));  % 绕向：+1 = CCW 由内向外，-1 = CW 由外向内
 directions(2:2:end) = -1;                   % 奇数序号层 CCW、偶数层 CW（层间交替反向）
-% 4/4 通孔会穿过另外两层：若非连接层的线进入真实钻孔区域，
-% 自动增加所有外端过孔的径向引出长度，并同步扩大板框。2 层线圈、
-% 4 层板但只有 1/2 层活动线圈没有这条跨活动层的约束。
-crossLayerSizing = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
+% 全活动多层通孔会穿过另外的非连接层：若非连接层的线进入真实钻孔区域，
+% 自动增加所有外端过孔的径向引出长度。2 层线圈、4 层板但只有 1/2 层
+% 活动线圈没有这条跨活动层的约束。
+crossLayerSizing = cfg.boardLayerCount >= 4 && cfg.coilLayerCount == cfg.boardLayerCount;
 contactArcSizing = cfg.coilLayerCount > 1;
 autoOuterSizing = crossLayerSizing || contactArcSizing;
 maxOuterSizingPasses = 12;
@@ -31,9 +31,10 @@ for sizingPass = 1:maxOuterSizingPasses
         eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
     end
     circular_fpc_validation('validate_feasibility', cfg, eff);
-    [boardLoops, actualBridgeWidth, layoutRegions] = circular_fpc_geometry('board', cfg, eff);
+    [boardLoops, actualBridgeWidth, layoutRegions] = ...
+        circular_fpc_geometry('board', cfg, eff, activeLayers);
     eff.actualBridgeWidth = actualBridgeWidth;
-    [coils, connectionPaths, pads, vias, seriesRoute, returnLayer] = ...
+    [coils, connectionPaths, pads, vias, seriesRoute, returnLayer, electrodePads] = ...
         circular_fpc_geometry('network', cfg, eff, activeLayers, directions, layoutRegions);
     seriesSequence = buildSeriesSequence(seriesRoute); % 只保留关键节点的串联序列（用于报告）
     geom = struct();
@@ -44,6 +45,7 @@ for sizingPass = 1:maxOuterSizingPasses
     geom.connectionPaths = connectionPaths;
     geom.pads = pads;
     geom.vias = vias;
+    geom.electrodePads = electrodePads;
     geom.seriesRoute = seriesRoute;
     geom.seriesSequence = seriesSequence;
     geom.activeLayers = activeLayers;
@@ -70,10 +72,10 @@ for sizingPass = 1:maxOuterSizingPasses
 end
 mfRules = circular_fpc_manufacturing('resolve', cfg).rules;
 if crossLayerSizing && validation.minViaToNonConnectedCopperMm < ...
-        mfRules.minDrillToCopperMm - 1e-9
+    mfRules.minDrillToCopperMm - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
-        ['4/4 through-via drill cannot clear non-connected-layer copper ', ...
-         'within %d automatic sizing passes.'], maxOuterSizingPasses);
+        ['Multi-layer through-via drill cannot clear non-connected-layer copper ', ...
+        'within %d automatic sizing passes.'], maxOuterSizingPasses);
 end
 if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
         cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg || ...
@@ -114,10 +116,11 @@ result.boardLayerCount = cfg.boardLayerCount;
 result.coilLayerCount = cfg.coilLayerCount;
 result.activeCoilLayers = activeLayers;     % 实际承载线圈的活动层号
 result.effectiveDimensions = eff;           % 缩放后的有效尺寸 + coilPitch + actualBridgeWidth
-result.boardLoops = boardLoops;             % 板框：1 外边界 + 4 孔槽闭环
+result.boardLoops = boardLoops;             % 板框：1 外边界 + 4 平台槽 + 4 耳朵挖槽
 result.layoutRegions = layoutRegions;       % 平台矩形、桥宽和局部布局参考系
 result.layerPaths = layerPaths;             % 按物理层组织的铜层数据（见 buildLayerPaths）
-result.pads = pads;                         % PAD_A / PAD_B
+result.pads = pads;                         % PAD_A / PAD_B（线圈串联端子）
+result.electrodePads = electrodePads;       % 独立电极焊盘，不进入线圈串联网络
 result.vias = vias;                         % 串联过孔（VRET/V12/V23/V34/VOUT 等）
 result.seriesSequence = seriesSequence;     % 串联顺序名列表，如 {PAD_A, COIL_L1, VRET, RETURN_L2, VOUT, PAD_B}
 result.seriesRoute = seriesRoute;           % 完整串联路由（含坐标与层转移）
@@ -132,26 +135,21 @@ end
 
 function d = requiredBoardDiameter(cfg, eff)
 % 板框自动定尺寸（mm）：boardOuterDiameter 是板框轮廓中心线直径；
-% 外径 = 2 × (最大铜外缘半径 + 板边净距 + 板框线宽/2)。
-% 最大铜外缘取两项之大：
-%   ① 基准匝数层（L1/L3）外端 + 过孔延伸区 + 端点过孔焊盘切线；
-%   ② 分数匝层（4/4 的 L2 多绕 1/4 圈）原始外端 + 半线宽。
-% 若不取 ②，极限档小焊环下 L2 外端会越过板边净距（实测 0.286 < 0.3）。
+% 主体圆外径 = 2 ×（最大主螺旋铜外缘 + 板边净距 + 板框线宽/2）。
+% 外侧过孔、安装缺口和独立电极由 buildBoardGeometry 单独生成局部凸耳，
+% 不再把这些局部特征的半径传播到整圈主体圆。
 baseSpan = cfg.turnsPerCoilLayer; % 物理匝数 = 完整 360° 圈数，与螺旋生成一致
 spanMax = baseSpan;
 if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
     spanMax = baseSpan + 0.25; % 4/4 的 L2 多绕 1/4 圈（L4 少绕，外端不变大）
+elseif cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6
+    spanMax = baseSpan + 0.50; % 6/6 的 L4 半匝相位跳转给出最大外端跨度
 end
 rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
-coilOuterR = rStart + eff.coilPitch * baseSpan;
 coilOuterRMax = rStart + eff.coilPitch * spanMax;
-% 110° 外端接触弧除径向外移 E 外还会产生切向偏移；以 E 作为切向上界
-% 取 hypot，保守包住实际弧端/过孔中心。下游分数匝层不再另加外伸弧。
-maxViaTangentR = hypot(coilOuterR + eff.viaEndExtension, eff.viaEndExtension) + ...
-    cfg.viaPadDiameter / 2;
-maxTraceTangentR = coilOuterRMax + cfg.traceWidth / 2;
-maxCopperR = max(maxViaTangentR, maxTraceTangentR);
-d = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
+maxCopperR = coilOuterRMax + cfg.traceWidth / 2;
+d = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2 + ...
+    cfg.geometrySafetyMargin);
 end
 
 function d = requiredManualTerminalBoardDiameter(cfg)
@@ -175,7 +173,7 @@ end
 
 function active = activeLayerMap(cfg)
 % 层叠组合 → 活动线圈层映射：
-%   2/1 → L1；2/2 → L1,L2；4/1 → L1；4/2 → L1,L4；4/4 → L1,L2,L3,L4
+%   2/1 → L1；2/2 → L1,L2；4/1 → L1；4/2 → L1,L4；4/4 → L1..L4；6/6 → L1..L6
 layerKey = cfg.boardLayerCount * 10 + cfg.coilLayerCount;
 switch layerKey
     case 21
@@ -188,6 +186,8 @@ switch layerKey
         active = [1 4];
     case 44
         active = [1 2 3 4];
+    case 66
+        active = [1 2 3 4 5 6];
     otherwise
         error('CircularFPC:UnsupportedLayerCombination', 'Unsupported layer combination.');
 end

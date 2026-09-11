@@ -37,6 +37,17 @@ verifyEqual(testCase, cfg.traceSpacing, 0.15, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.pitchMargin, 0.005, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.edgeClearance, 0.30, 'AbsTol', 1e-9); % = DRC 铜-板框
 verifyEqual(testCase, cfg.boardOutlineLineWidth, 0.10, 'AbsTol', 1e-9); % 板框轮廓线宽
+verifyEqual(testCase, cfg.geometrySafetyMargin, 0.002, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.mountingSlotSpan, 4.0, 'AbsTol', 1e-9); % 槽口端点弦长
+verifyEqual(testCase, cfg.mountingSlotRise, 1.0, 'AbsTol', 1e-9); % 中间弧外凸高度
+verifyEqual(testCase, cfg.mountingSlotEdgeClearance, cfg.edgeClearance, 'AbsTol', 1e-9); % NaN → 沿用板边净距
+verifyEqual(testCase, cfg.mountingSlotEndFilletRadius, 0.3, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.viaLugRootOverlap, 0.4, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.electrodeAngleDeg, 315.0, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.electrodeArmLength, 5.0, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.electrodeArmWidth, 1.5, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.electrodeArmGap, 0.8, 'AbsTol', 1e-9);
+verifyEqual(testCase, cfg.electrodePadDiameter, 1.2, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.connectionAngleDeg, 135.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, cfg.viaPadDiameter, 0.55, 'AbsTol', 1e-9); % 过孔默认外径（JLC 常规推荐）
 verifyEqual(testCase, cfg.viaDrillDiameter, 0.31, 'AbsTol', 1e-9); % 过孔默认内径
@@ -55,6 +66,9 @@ verifyTrue(testCase, isfield(cfg, 'viaPadDiameter'));
 verifyFalse(testCase, isfield(cfg, 'antipadDiameter'));
 verifyTrue(testCase, isfield(cfg, 'outputRoot'));
 verifyTrue(testCase, isfield(cfg, 'designName'));
+verifyTrue(testCase, ~isempty(regexp(cfg.designName, ...
+    '^Circular_FPC_4L_4C__\d{8}_\d{6}$', 'once')), ...
+    'automatic designName must use double underscore and seconds');
 verifyEqual(testCase, cfg.platformSlotMargin, 0.25, 'AbsTol', 1e-9); % 平台水平/垂直边到内圆的槽余量
 verifyTrue(testCase, cfg.enablePreview);
 verifyTrue(testCase, isfield(cfg, 'padPairSpacing'), 'default config missing padPairSpacing');
@@ -96,17 +110,20 @@ verifyError(testCase, @() circular_fpc_default_config(struct('boardOuterDiameter
 end
 
 function testBoardSizingMode(testCase)
-% 板框定尺寸：'auto'（默认）由匝数计算板框外径并在输出中报告；'fixed' 使用 boardOuterDiameter。
+% 板框定尺寸：'auto'（默认）由主线圈匝数计算主体圆外径；局部凸耳/电极
+% 只扩展局部外轮廓；'fixed' 使用 boardOuterDiameter。
 verifyError(testCase, @() circular_fpc_default_config(struct('boardSizingMode', 'weird')), ...
     'CircularFPC:InvalidConfig');
 outRoot = createTempOutput(testCase);
 rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board'));
-verifyGreaterThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 25.7);
-verifyLessThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 26.1);
+verifyGreaterThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 24.6);
+verifyLessThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 25.1);
+verifyGreaterThan(testCase, rAuto.layoutRegions.boardExtent, ...
+    rAuto.effectiveDimensions.boardOuterDiameter / 2 + 4.0);
 rTwo = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board_2l', ...
     'boardLayerCount', 2, 'coilLayerCount', 2));
-verifyGreaterThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.2);
-verifyLessThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.6);
+verifyGreaterThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 24.5);
+verifyLessThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.0);
 verifyTrue(testCase, contains(fileread(fullfile(rAuto.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: auto'));
 turnTxt = fileread(fullfile(rAuto.outputPath, 'reports', '04_turn_scan.csv'));
 verifyTrue(testCase, contains(turnTxt, 'requiredBoardDiameterMm'));
@@ -114,15 +131,16 @@ verifyTrue(testCase, contains(turnTxt, sprintf('6,%.6f', 0.2 + 6 * 0.355))); % 6
 % 匝数扫描只列出几何生成器支持的范围：至少两个径向采样层级。
 verifyEmpty(testCase, regexp(turnTxt, '(?m)^1,', 'once'));
 verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
-% fixed 25.0 小于默认线圈/过孔所需尺寸：端子到板边净距不足，
-% 在端子几何阶段明确拒绝，原子导出不留正式目录。
+% fixed 24.5 小于默认线圈主体所需尺寸，在可行性阶段明确拒绝，
+% 原子导出不留正式目录。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
-    'designName', 'fixed_board', 'boardSizingMode', 'fixed')), 'CircularFPC:TerminalPlacementInvalid');
+    'designName', 'fixed_board', 'boardSizingMode', 'fixed', 'boardOuterDiameter', 24.5)), ...
+    'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
-% fixed 26.5 大于默认紧凑 auto 尺寸：成功，板径/制造报告/扫描契约保持。
+% fixed 25.0 大于默认紧凑主体圆：成功，板径/制造报告/扫描契约保持。
 rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_265', ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.5));
-verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 26.5, 'AbsTol', 1e-9);
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 25.0));
+verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 25.0, 'AbsTol', 1e-9);
 verifyTrue(testCase, rFixed.manufacturing.passed);
 verifyTrue(testCase, contains(fileread(fullfile(rFixed.outputPath, 'reports', '03_design_summary.txt')), 'boardSizingMode: fixed'));
 fixedTurnTxt = fileread(fullfile(rFixed.outputPath, 'reports', '04_turn_scan.csv'));
@@ -139,7 +157,7 @@ verifyGreaterThanOrEqual(testCase, res.validation.minCopperToSlotsMm, cfgEdgeCle
 verifyEmpty(testCase, res.validation.advisories);
 verifyEqual(testCase, res.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, res.effectiveDimensions.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
-verifyEqual(testCase, numel(res.boardLoops), 5);
+verifyEqual(testCase, numel(res.boardLoops), 9);
 verifyError(testCase, @() analyzeInternal(struct('centerPlatformWidth', 30.0, ...
     'centerPlatformHeight', 30.0)), 'CircularFPC:GeometryInfeasible');
 % 超大平台（20x11）：四条桥统一加宽后由最终布尔槽拓扑拒绝。
@@ -249,7 +267,8 @@ resM = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
     'terminalPlacementMode', 'manual', ...
     'manualPadAXY', res.pads(1).xy, ...
     'manualPadBXY', res.pads(2).xy, ...
-    'manualSeriesViaXY', mxy));
+    'manualSeriesViaXY', mxy, ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.0));
 verifyTrue(testCase, resM.validation.passed, ...
     sprintf('4/4 manual round-trip failed: %s', strjoin(resM.validation.messages, ' | ')));
 end
@@ -402,7 +421,7 @@ end
 
 function testAnalyzeIsReadOnlyAndLayerMatrix(testCase)
 % R2 契约：analyze 只计算不写文件；支持层矩阵与角度旋转；无效配置传播。
-combos = [2 1; 2 2; 4 1; 4 2; 4 4];
+combos = [2 1; 2 2; 4 1; 4 2; 4 4; 6 6];
 for k = 1:size(combos, 1)
     root = nonexistentTempRoot();
     res = analyzeInternal(struct('outputRoot', root, 'designName', 'red_readonly', ...
@@ -415,18 +434,42 @@ for k = 1:size(combos, 1)
     verifyTrue(testCase, exist(root, 'dir') ~= 7, 'analyze must not create the output root');
 end
 % 角度旋转保持（显式 2/1 + 13x11 安全平台：4/4 的绕行过渡在非默认连接角下
-% 可能实测铜-槽净距不足而报错，属预期保护；旋转覆盖用无绕行的 2/1 组合）
-for ang = [0 45 135 225]
+% 可能实测铜-槽净距不足而报错，属预期保护；旋转覆盖用无绕行的 2/1 组合）。
+% 45/135/225 时外端过孔偏离四条耳朵轴 45°，可正常生成。
+for ang = [45 135 225]
     resA = analyzeInternal(struct('connectionAngleDeg', ang, 'boardLayerCount', 2, ...
         'coilLayerCount', 1, 'centerPlatformHeight', 11.0, 'outputRoot', nonexistentTempRoot()));
     verifyEqual(testCase, resA.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
     verifyEqual(testCase, resA.effectiveDimensions.centerPlatformHeight, 11.0, 'AbsTol', 1e-9);
 end
+% 0° 时外端过孔 VRET 正好落在 0° 安装耳朵轴上：挖槽的内侧弧就是主体外径圆，
+% 会切入该过孔的净距范围。按新契约必须明确报错，不允许通过降低净距生成。
+% 该冲突在端子放置阶段即被拒绝（CircularFPC:TerminalPlacementInvalid）。
+verifyError(testCase, @() analyzeInternal(struct('connectionAngleDeg', 0, ...
+    'boardLayerCount', 2, 'coilLayerCount', 1, 'centerPlatformHeight', 11.0, ...
+    'outputRoot', nonexistentTempRoot())), 'CircularFPC:TerminalPlacementInvalid');
+% 同一旋转角下把四个耳朵整体挪开（改连接角回 135°）即可行：证明冲突来自
+% 安装耳朵与轴向外端过孔的位置关系，而不是其他特征。
+resDefault = analyzeInternal(struct('outputRoot', nonexistentTempRoot()));
+verifyTrue(testCase, resDefault.validation.passed);
 res135 = analyzeInternal(struct('connectionAngleDeg', 135, 'outputRoot', nonexistentTempRoot()));
 padA = findTerminalByName(res135.pads, 'PAD_A');
 verifyTrue(testCase, padA.xy(1) < 0 && padA.xy(2) > 0);
 % 无效配置沿 analyze 传播
 verifyError(testCase, @() analyzeInternal(struct('traceWidth', 0.101)), 'CircularFPC:InvalidConfig');
+end
+
+function testSixLayerGeometryIsExplicitlyUnverifiedForStackup(testCase)
+result = analyzeInternal(struct('boardLayerCount', 6, 'coilLayerCount', 6));
+verifyTrue(testCase, result.validation.passed);
+verifyTrue(testCase, result.manufacturing.passed);
+verifyEqual(testCase, result.manufacturing.qualificationStatus, 'UNVERIFIED_LAYER_COUNT');
+verifyEqual(testCase, result.manufacturing.stackup.name, 'UNVERIFIED_6L_STACKUP');
+verifyEqual(testCase, numel(result.manufacturing.stackup.layers), 6);
+verifyTrue(testCase, all(isnan([result.manufacturing.stackup.layers.zTopMm])));
+verifyTrue(testCase, all(isnan([result.manufacturing.stackup.layers.zBottomMm])));
+verifyTrue(testCase, all(isnan([result.manufacturing.stackup.layers.zCenterMm])));
+verifyTrue(testCase, any(contains(string(result.manufacturing.warnings), 'unverified')));
 end
 
 function testDefaultBoardGeometry(testCase)
@@ -440,8 +483,8 @@ verifyEmpty(testCase, warningId);
 verifyEqual(testCase, result.boardLayerCount, 4);
 verifyEqual(testCase, result.coilLayerCount, 4);
 verifyEqual(testCase, result.activeCoilLayers, [1 2 3 4]);
-verifyGreaterThan(testCase, result.effectiveDimensions.boardOuterDiameter, 25.7);
-verifyLessThan(testCase, result.effectiveDimensions.boardOuterDiameter, 26.1);
+verifyGreaterThan(testCase, result.effectiveDimensions.boardOuterDiameter, 24.7);
+verifyLessThan(testCase, result.effectiveDimensions.boardOuterDiameter, 25.0);
 verifyEqual(testCase, result.effectiveDimensions.coilInnerDiameter, 18.63, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformWidth, 13.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 14.0, 'AbsTol', 1e-9);
@@ -463,9 +506,11 @@ verifyFalse(testCase, outerLoop.isHole);
 outerXY = outerLoop.xy(1:end - 1, :);
 nominalOuterRadius = result.effectiveDimensions.boardOuterDiameter / 2;
 outerRadii = hypot(outerXY(:, 1), outerXY(:, 2));
-verifyLessThanOrEqual(testCase, max(outerRadii), nominalOuterRadius + 1e-6);
-verifyGreaterThanOrEqual(testCase, min(outerRadii), nominalOuterRadius - 2e-4);
-verifyEqual(testCase, numel(result.boardLoops), 5);
+verifyGreaterThan(testCase, max(outerRadii), nominalOuterRadius + 4.0);
+verifyGreaterThan(testCase, result.layoutRegions.boardExtent, nominalOuterRadius + 4.0);
+[baseX, baseY] = boundary(result.layoutRegions.baseBoardShape);
+verifyLessThanOrEqual(testCase, max(hypot(baseX, baseY)), nominalOuterRadius + 1e-6);
+verifyEqual(testCase, numel(result.boardLoops), 9);
 holeCount = 0;
 for k = 1:numel(result.boardLoops)
     bl = result.boardLoops(k);
@@ -483,12 +528,12 @@ for k = 1:numel(result.boardLoops)
     verifyTrue(testCase, ~any(all(diff(xy, 1, 1) == 0, 2)));
     verifyTrue(testCase, isscalar(bl.orientation) && isnumeric(bl.orientation) && ~isnan(bl.orientation));
 end
-verifyEqual(testCase, holeCount, 4);
+verifyEqual(testCase, holeCount, 8);
 verifyTrue(testCase, result.validation.passed);
 verifyTrue(testCase, result.validation.finiteCoordinates);
 verifyTrue(testCase, result.validation.noZeroLengthSegments);
 verifyTrue(testCase, result.validation.noSelfIntersections);
-verifyEqual(testCase, result.validation.closedBoardLoopCount, 5);
+verifyEqual(testCase, result.validation.closedBoardLoopCount, 9);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperSpacingMm, 0.15);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperToBoardMm, cfg.edgeClearance);
 verifyGreaterThanOrEqual(testCase, result.validation.minCopperToSlotsMm, cfg.edgeClearance);
@@ -511,9 +556,179 @@ verifyTrue(testCase, isfinite(result.estimatedDcResistanceOhm) && result.estimat
 verifyTrue(testCase, ischar(result.outputPath));
 end
 
+function testAdaptiveBoardLugsNotchesAndIndependentElectrodes(testCase)
+% 局部板框特征随活动层和匝数变化：主体圆只由线圈铜边定径，外端过孔、
+% 四个半圆缺口和右下角两个独立电极分别生成局部凸耳，不进入串联网络。
+cases = [2 2; 4 4; 6 6];
+expectedOuter = {{'V12'}; {'V12', 'V34'}; {'V12', 'V34', 'V56'}};
+for k = 1:size(cases, 1)
+    result = analyzeInternal(struct('boardLayerCount', cases(k, 1), ...
+        'coilLayerCount', cases(k, 2)));
+    verifyEqual(testCase, numel(result.boardLoops), 9);
+    outerVias = result.vias(strcmp({result.vias.role}, 'OUTER_TRANSITION'));
+    verifyEqual(testCase, sort({outerVias.name}), sort(expectedOuter{k}));
+    verifyEqual(testCase, size(result.layoutRegions.viaLugCenters, 1), numel(outerVias));
+    for j = 1:numel(outerVias)
+        v = outerVias(j);
+        expectedAngle = expectedViaAngleDeg(v.name, result.config.connectionAngleDeg);
+        verifyAngleMod360(testCase, v.bridgeAngleDeg, expectedAngle, ...
+            sprintf('%s nominal radial angle', v.name));
+        verifyAngleMod360(testCase, atan2d(v.xy(2), v.xy(1)), expectedAngle, ...
+            sprintf('%s via centre radial angle', v.name));
+        verifyEqual(testCase, v.xy, result.layoutRegions.viaLugCenters(j, :), 'AbsTol', 1e-9);
+        verifyEqual(testCase, v.xy, result.layerPaths(v.fromLayer).coilXY(end, :), 'AbsTol', 1e-9);
+    end
+    verifyEqual(testCase, numel(result.electrodePads), 2);
+    verifyEqual(testCase, sort({result.electrodePads.name}), {'ELECTRODE_A', 'ELECTRODE_B'});
+    verifyTrue(testCase, all([result.electrodePads.layer] == 1));
+    verifyTrue(testCase, all(strcmp({result.electrodePads.role}, 'INDEPENDENT_ELECTRODE')));
+    verifyTrue(testCase, all(strcmp({result.electrodePads.placementRegion}, 'ELECTRODE_315')));
+    verifyAngleMod360(testCase, result.electrodePads(1).bridgeAngleDeg, 315, ...
+        'independent electrode bridge angle');
+    verifyAngleMod360(testCase, result.electrodePads(2).bridgeAngleDeg, 315, ...
+        'independent electrode bridge angle');
+    electrodeCenter = mean(cat(1, result.electrodePads.xy), 1);
+    verifyAngleMod360(testCase, atan2d(electrodeCenter(2), electrodeCenter(1)), 315, ...
+        'independent electrode pair direction');
+    for j = 1:numel(result.electrodePads)
+        p = result.electrodePads(j);
+        verifyTrue(testCase, p.xy(1) > 0 && p.xy(2) < 0);
+        verifyFalse(testCase, any(strcmp(result.seriesSequence, p.name)), ...
+            sprintf('%s must not enter the coil series route', p.name));
+    end
+end
+
+% 三段弧安装耳朵：跨度与外凸高度变化时逐项复核定义（内侧弧与主体圆同心同半径、
+% 端点弦长 = mountingSlotSpan、中央外凸 = mountingSlotRise、最外侧弧按板边净距
+% 等距外偏），并确认挖槽确实移除板料。
+for slotParams = struct('span', {3.0, 4.0, 5.0}, 'rise', {0.8, 1.0, 1.5})
+    result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
+        'mountingSlotSpan', slotParams.span, 'mountingSlotRise', slotParams.rise));
+    verifyTrue(testCase, result.validation.passed, ...
+        sprintf('span %.2f / rise %.2f validation failed: %s', slotParams.span, ...
+        slotParams.rise, strjoin(result.validation.messages, ' | ')));
+    lr = result.layoutRegions;
+    verifyEqual(testCase, lr.mountingAnglesDeg, [0 90 180 270]);
+    verifyEqual(testCase, lr.mountingSlotInnerArcRadius, ...
+        result.effectiveDimensions.boardOuterDiameter / 2, 'AbsTol', 1e-9);
+    % 内侧弧与主体外径圆精确重合：端点半径 = 主体外径圆半径
+    endpointR = hypot(lr.mountingSlotEndpoints(:, 1), lr.mountingSlotEndpoints(:, 2));
+    verifyEqual(testCase, endpointR, repmat(lr.mountingSlotInnerArcRadius, 8, 1), 'AbsTol', 1e-9);
+    for j = 1:4
+        % 端点关于耳朵径向轴对称，且弦长 = mountingSlotSpan
+        endpoints = lr.mountingSlotEndpoints(2 * j - 1:2 * j, :);
+        chord = norm(endpoints(2, :) - endpoints(1, :));
+        verifyEqual(testCase, chord, lr.mountingSlotSpan, 'AbsTol', 1e-9, ...
+            sprintf('ear %d slot chord must equal mountingSlotSpan', j));
+        uEar = [cosd(lr.mountingAnglesDeg(j)), sind(lr.mountingAnglesDeg(j))];
+        midpoint = mean(endpoints, 1);
+        verifyEqual(testCase, norm(midpoint - dot(midpoint, uEar) * uEar), 0, 'AbsTol', 1e-9, ...
+            sprintf('ear %d endpoints must be symmetric about its radial axis', j));
+        % 中央外凸高度以主体圆中央点为基准，不是端点弦中点
+        apexRadius = norm(endpoints(1, :)) + lr.mountingSlotRise;
+        verifyEqual(testCase, lr.mountingSlotApexRadius, apexRadius, 'AbsTol', 1e-9, ...
+            sprintf('ear %d middle-arc apex must sit mountingSlotRise above the main circle', j));
+        % 最外侧弧 = 中间弧同心等距外偏 mountingSlotEdgeClearance
+        verifyEqual(testCase, lr.mountingSlotOuterArcRadius - lr.mountingSlotMiddleArcRadius, ...
+            lr.mountingSlotEdgeClearance, 'AbsTol', 1e-9, ...
+            sprintf('ear %d outer arc must be the middle arc offset by the slot edge clearance', j));
+        verifyEqual(testCase, lr.mountingEarApexRadius - lr.mountingSlotApexRadius, ...
+            lr.mountingSlotEdgeClearance, 'AbsTol', 1e-6, ...
+            sprintf('ear %d ear apex must sit one edge clearance beyond the slot apex', j));
+        % 挖槽确实移除耳朵内部板料
+        uNotch = uEar;
+        cutoutPoint = (lr.mountingSlotApexRadius - 0.3) * uNotch;
+        verifyFalse(testCase, isinterior(lr.boardShape, cutoutPoint(1), cutoutPoint(2)), ...
+            sprintf('ear %d slot must remove board material above the main circle', j));
+    end
+    % 耳朵只局部外扩：主体圆不受安装参数影响；板总跨度由 315° 电极指决定，
+    % 因此只用「耳朵顶点是板料且板跨度不小于耳朵顶点半径」来约束。
+    verifyGreaterThanOrEqual(testCase, lr.boardExtent, lr.mountingEarApexRadius - 1e-9);
+    verifyEqual(testCase, lr.mountingSlotInnerArcRadius, ...
+        result.effectiveDimensions.boardOuterDiameter / 2, 'AbsTol', 1e-9);
+end
+
+r7 = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
+    'turnsPerCoilLayer', 7));
+r9 = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
+    'turnsPerCoilLayer', 9));
+verifyGreaterThan(testCase, r9.effectiveDimensions.boardOuterDiameter, ...
+    r7.effectiveDimensions.boardOuterDiameter);
+verifyGreaterThan(testCase, r9.layoutRegions.boardExtent, r7.layoutRegions.boardExtent);
+end
+
+function testMountingSlotFailsClosedOnInvalidParameters(testCase)
+% 安装耳朵参数无效时必须明确报错，不允许通过降低净距或静默退化来生成。
+% 1) 旧参数已弃用：语义无法唯一映射，显式拒绝而不是猜测。
+for deprecated = {'mountingNotchDiameter', 'mountingNotchWall', 'mountingLugLength'}
+    verifyError(testCase, @() circular_fpc_default_config( ...
+        struct(deprecated{1}, 1.0)), 'CircularFPC:DeprecatedConfigField');
+end
+% 2) 跨度超出主体圆可容纳范围。
+verifyError(testCase, @() analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'mountingSlotSpan', 30.0)), ...
+    'CircularFPC:GeometryInfeasible');
+% 3) 外凸高度无效（非正）。
+verifyError(testCase, @() analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'mountingSlotRise', -1.0)), ...
+    'CircularFPC:InvalidConfig');
+% 4) 板料不足：槽到板边距离过大导致耳朵外弧与主体圆不相交。
+verifyError(testCase, @() analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'mountingSlotEdgeClearance', 20.0)), ...
+    'CircularFPC:GeometryInfeasible');
+% 5) 槽口圆角半径与槽几何不匹配。
+verifyError(testCase, @() analyzeInternal(struct( ...
+    'boardLayerCount', 4, 'coilLayerCount', 2, 'mountingSlotEndFilletRadius', 5.0)), ...
+    'CircularFPC:GeometryInfeasible');
+% 6) 配置校验：跨度/外凸高度/板边距离/圆角必须是有限正标量。
+for bad = {'mountingSlotSpan', 'mountingSlotRise', 'mountingSlotEdgeClearance', ...
+        'mountingSlotEndFilletRadius'}
+    verifyError(testCase, @() circular_fpc_default_config( ...
+        struct(bad{1}, -1.0)), 'CircularFPC:InvalidConfig');
+end
+end
+
+function testMountingEarsDoNotMoveTheMainBodyCircle(testCase)
+% 安装耳朵只做局部外扩：主体外径由线圈与板边净距决定，与 span/rise 无关；
+% 耳朵之外的主体圆边界保持主体半径。板总跨度受 315° 电极指控制，因此用
+% 「耳朵顶点是板料 + 板跨度不小于耳朵顶点半径」约束局部外扩即可。
+baseline = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2));
+for slotSpan = [3.0 5.0]
+    result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
+        'mountingSlotSpan', slotSpan));
+    lr = result.layoutRegions;
+    verifyTrue(testCase, result.validation.passed);
+    % 主体圆定径与安装参数无关
+    verifyEqual(testCase, lr.mountingSlotInnerArcRadius, ...
+        baseline.layoutRegions.mountingSlotInnerArcRadius, 'AbsTol', 1e-9, ...
+        'mounting ears must not resize the main body circle');
+    verifyEqual(testCase, lr.boardExtent, baseline.layoutRegions.boardExtent, 'AbsTol', 1e-9, ...
+        'mounting ears must not change the overall board extent');
+    % 主体圆上的采样点仍严格等于主体半径（耳朵只占 4 个局部角域）
+    for a = [45 60 120 150 210 240 300 330]
+        insidePoint = 0.98 * lr.mountingSlotInnerArcRadius * [cosd(a), sind(a)];
+        verifyTrue(testCase, isinterior(lr.baseBoardShape, insidePoint(1), insidePoint(2)), ...
+            sprintf('main body circle must stay intact at %.0f deg', a));
+    end
+    % 4 个耳朵的角度位置不变，且外凸只发生在 0/90/180/270
+    for j = 1:4
+        uEar = [cosd(lr.mountingAnglesDeg(j)), sind(lr.mountingAnglesDeg(j))];
+        apex = lr.mountingEarApexRadius * uEar;
+        verifyTrue(testCase, isinterior(lr.boardShape, apex(1), apex(2)), ...
+            sprintf('ear %d apex must be board material', j));
+        % 耳朵之外的主体圆仍按主体半径：耳朵角域外的点属于板料
+        outside = 0.99 * lr.mountingSlotInnerArcRadius * ...
+            [cosd(lr.mountingAnglesDeg(j) + 30), sind(lr.mountingAnglesDeg(j) + 30)];
+        verifyTrue(testCase, isinterior(lr.boardShape, outside(1), outside(2)), ...
+            sprintf('board material at %.0f deg must remain', lr.mountingAnglesDeg(j) + 30));
+    end
+    verifyGreaterThanOrEqual(testCase, lr.boardExtent, lr.mountingEarApexRadius - 1e-9);
+end
+end
+
 function testCanonicalSlotCornersUseSmoothTangentFillets(testCase)
 result = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
-verifyEqual(testCase, numel(result.boardLoops), 5);
+verifyEqual(testCase, numel(result.boardLoops), 9);
 verifyGreaterThan(testCase, result.validation.minBoardInteriorAngleDeg, 170, ...
     sprintf(['Canonical slot boundaries must replace isolated platform/bridge hard corners ', ...
     'with sampled tangent fillets (minimum interior angle %.6f deg).'], ...
@@ -551,11 +766,11 @@ verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'Ab
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
-fullSvg = fullfile(result.outputPath, 'previews', '01_preview_full.svg');
+fullSvg = fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
-    extent = result.effectiveDimensions.boardOuterDiameter / 2 + 0.5;
+    extent = result.layoutRegions.boardExtent + 0.5;
     verifyTrue(testCase, contains(svgTxt, sprintf('viewBox="%.6f %.6f %.6f %.6f"', ...
         -extent, -extent, 2 * extent, 2 * extent)));
 end
@@ -589,8 +804,8 @@ function testTurnsContractPhysicalRevolutions(testCase)
 % 端到端解卷绕角即物理匝数；CCW 层外端附加 110° 延伸弧，不在本测试范围。
 % 容差 0.02 圈：外端与串联过孔的单圆弧切向并入会修剪螺旋末端一小段角行程
 % （默认参数下实测偏差 <= 0.004 圈），仍远小于任何系统性匝数偏差。
-combos = {2, 2; 4, 4};
-expectedCwSpans = {5; [5.25, 4.75]};
+combos = {2, 2; 4, 4; 6, 6};
+expectedCwSpans = {5; [5.25, 4.75]; [5.25, 5.50, 5.25]};
 for c = 1:size(combos, 1)
     result = circular_fpc_main(struct( ...
         'boardLayerCount', combos{c, 1}, ...
@@ -628,15 +843,18 @@ verifyTrue(testCase, contains(scanTxt22, sprintf('20,%.6f,1', 0.2 + 20 * 0.355))
 end
 
 function testSupportedLayerMatrixAndSeriesContinuity(testCase)
-combos = {2, 1; 2, 2; 4, 1; 4, 2; 4, 4};
-expectedActive = {[1]; [1 2]; [1]; [1 4]; [1 2 3 4]};
-expectedDirections = {{'CCW'}; {'CCW', 'CW'}; {'CCW'}; {'CCW', 'CW'}; {'CCW', 'CW', 'CCW', 'CW'}};
+combos = {2, 1; 2, 2; 4, 1; 4, 2; 4, 4; 6, 6};
+expectedActive = {[1]; [1 2]; [1]; [1 4]; [1 2 3 4]; [1 2 3 4 5 6]};
+expectedDirections = {{'CCW'}; {'CCW', 'CW'}; {'CCW'}; {'CCW', 'CW'}; ...
+    {'CCW', 'CW', 'CCW', 'CW'}; {'CCW', 'CW', 'CCW', 'CW', 'CCW', 'CW'}};
 expectedSequence = { ...
     {'PAD_A', 'COIL_L1', 'VRET', 'RETURN_L2', 'VOUT', 'PAD_B'}; ...
     {'PAD_A', 'COIL_L1', 'V12', 'COIL_L2', 'VOUT', 'PAD_B'}; ...
     {'PAD_A', 'COIL_L1', 'VRET', 'RETURN_L4', 'VOUT', 'PAD_B'}; ...
     {'PAD_A', 'COIL_L1', 'V14', 'COIL_L4', 'VOUT', 'PAD_B'}; ...
-    {'PAD_A', 'COIL_L1', 'V12', 'COIL_L2', 'V23', 'COIL_L3', 'V34', 'COIL_L4', 'VOUT', 'PAD_B'}};
+    {'PAD_A', 'COIL_L1', 'V12', 'COIL_L2', 'V23', 'COIL_L3', 'V34', 'COIL_L4', 'VOUT', 'PAD_B'}; ...
+    {'PAD_A', 'COIL_L1', 'V12', 'COIL_L2', 'V23', 'COIL_L3', 'V34', 'COIL_L4', ...
+    'V45', 'COIL_L5', 'V56', 'COIL_L6', 'VOUT', 'PAD_B'}};
 outRoot = createTempOutput(testCase);
 for k = 1:size(combos, 1)
     result = circular_fpc_main(struct('boardLayerCount', combos{k, 1}, 'coilLayerCount', combos{k, 2}, ...
@@ -699,10 +917,10 @@ for k = 1:size(combos, 1)
             verifyTrue(testCase, isnan(result.returnLayer));
         end
     end
-    if combos{k, 1} == 4
+    if combos{k, 1} == 4 || combos{k, 1} == 6
         for vk = 1:numel(result.vias)
             v = result.vias(vk);
-            for li = 1:4
+            for li = 1:combos{k, 1}
                 if li == v.fromLayer || li == v.toLayer
                     continue;
                 end
@@ -781,6 +999,14 @@ for k = 1:size(combos, 1)
                 verifyEqual(testCase, sortrows([[padC.cx].', [padC.cy].']), ...
                     sortrows(cat(1, result.pads.xy)), 'AbsTol', 1e-9, ...
                     'PAD circles must keep engineering +X/+Y coordinates on L1');
+                verifyTrue(testCase, contains(physTxt, 'ELECTRODE_L1'), ...
+                    sprintf('physical %s must declare ELECTRODE_L1 layer', physFile));
+                electrodeC = pc(strcmp({pc.layer}, 'ELECTRODE_L1'));
+                verifyEqual(testCase, numel(electrodeC), numel(result.electrodePads), ...
+                    sprintf('physical %s electrode circle count', physFile));
+                verifyEqual(testCase, sort([electrodeC.r]), ...
+                    sort([result.electrodePads.diameter] / 2), 'AbsTol', 1e-9, ...
+                    'electrode circle radii must equal electrodePadDiameter/2');
             end
             viaLayer = sprintf('VIA_PAD_L%d', li);
             if ~isempty(viaIds)
@@ -792,8 +1018,9 @@ for k = 1:size(combos, 1)
                 sprintf('physical %s via circle count', physFile));
             verifyEqual(testCase, sort([viaC.r]), sort([result.vias(viaIds).padDiameter] / 2), ...
                 'AbsTol', 1e-9, 'via circle radii must equal viaPadDiameter/2');
-            verifyEqual(testCase, numel(pc), (li == 1) * 2 + numel(viaIds), ...
-                sprintf('physical %s total circle count', physFile));
+                electrodeCount = (li == 1) * numel(result.electrodePads);
+                verifyEqual(testCase, numel(pc), (li == 1) * 2 + numel(viaIds) + electrodeCount, ...
+                    sprintf('physical %s total circle count', physFile));
         end
         solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li));
         verifyTrue(testCase, isfile(solidFile), sprintf('missing COMSOL solid copper %s', solidFile));
@@ -818,6 +1045,9 @@ for k = 1:size(combos, 1)
                 if combos{k, 1} == 4 && combos{k, 2} == 4
                     spanExtra = [0, 0.25, 0, -0.25];
                     spanTurns = spanTurns + spanExtra(activeIndex);
+                elseif combos{k, 1} == 6 && combos{k, 2} == 6
+                    spanExtra = [0, 0.25, 0, 0.50, 0, 0.25];
+                    spanTurns = spanTurns + spanExtra(activeIndex);
                 end
                 rStart = result.effectiveDimensions.coilInnerDiameter / 2 + result.config.traceWidth / 2;
                 outer = rStart + result.effectiveDimensions.coilPitch * spanTurns;
@@ -825,6 +1055,9 @@ for k = 1:size(combos, 1)
                 verifyFalse(testCase, isempty(solidXy), ...
                     sprintf('solid %s must carry polyline vertices', solidFile));
                 if ~isempty(solidXy)
+                    verifyEqual(testCase, solidXy(1, :), solidXy(end, :), ...
+                        'AbsTol', 1e-9, ...
+                        sprintf('solid %s must explicitly close the final short cap', solidFile));
                     r = hypot(solidXy(:, 1), solidXy(:, 2));
                     verifyGreaterThanOrEqual(testCase, min(r), rStart - result.config.traceWidth / 2 - 0.02, ...
                         sprintf('solid %s must trim the inner via/terminal extension', solidFile));
@@ -845,9 +1078,10 @@ end
 end
 
 function testAutomaticTerminalBridgeLayoutContract(testCase)
-combos = {2, 1; 2, 2; 4, 1; 4, 2; 4, 4};
-expectedOuterNames = {{'VRET'}; {'V12'}; {'VRET'}; {'V14'}; {'V12', 'V34'}};
-expectedReturnNames = {{}; {}; {}; {}; {'V23'}};
+combos = {2, 1; 2, 2; 4, 1; 4, 2; 4, 4; 6, 6};
+expectedOuterNames = {{'VRET'}; {'V12'}; {'VRET'}; {'V14'}; {'V12', 'V34'}; ...
+    {'V12', 'V34', 'V56'}};
+expectedReturnNames = {{}; {}; {}; {}; {'V23'}; {'V23', 'V45'}};
 outRoot = createTempOutput(testCase);
 for k = 1:size(combos, 1)
     cfg = circular_fpc_default_config(struct('boardLayerCount', combos{k, 1}, 'coilLayerCount', combos{k, 2}, ...
@@ -884,7 +1118,10 @@ end
 
 function testTerminalRotationAndScaleContract(testCase)
 outRoot = createTempOutput(testCase);
-angles = [0 45 90 135 225];
+% 0/90/180/270 会让外端过孔正落在同方位安装耳朵轴上：挖槽内侧弧就是主体外径圆，
+% 因此按新契约明确报错（见 testMountingSlotFailsClosedOnInvalidParameters 与
+% testAnalyzeIsReadOnlyAndLayerMatrix）。可用的旋转覆盖改用偏离轴向的方位。
+angles = [45 60 135 225 315];
 for a = angles
     cfg = circular_fpc_default_config(struct('boardLayerCount', 2, 'coilLayerCount', 1, ...
         'connectionAngleDeg', a, 'centerPlatformHeight', 11.0, ...
@@ -918,9 +1155,9 @@ for angleDeg = [45 135 225]
     verifyTrue(testCase, result.validation.passed, ...
         sprintf('4/2 angle %g validation failed: %s', angleDeg, ...
         strjoin(result.validation.messages, ' | ')));
-    verifyEqual(testCase, numel(result.boardLoops), 5, ...
+    verifyEqual(testCase, numel(result.boardLoops), 9, ...
         sprintf('4/2 angle %g must keep 1 outer loop + 4 slots', angleDeg));
-    verifyEqual(testCase, result.validation.closedBoardLoopCount, 5);
+    verifyEqual(testCase, result.validation.closedBoardLoopCount, 9);
     platformXY = result.layoutRegions.platformLoop(1:end - 1, :);
     verifyEqual(testCase, max(abs(platformXY(:, 1))), 6.5, 'AbsTol', 1e-9);
     verifyEqual(testCase, max(abs(platformXY(:, 2))), 7.0, 'AbsTol', 1e-9);
@@ -952,6 +1189,7 @@ overrides = struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
     'terminalPlacementMode', 'manual', ...
     'manualPadAXY', seed.pads(1).xy, 'manualPadBXY', seed.pads(2).xy, ...
     'manualSeriesViaXY', [outerXY; voutXY], ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.0, ...
     'outputRoot', outRoot, 'designName', 'manual_ok');
 result = circular_fpc_main(overrides);
 padA = result.pads(strcmp({result.pads.name}, 'PAD_A'));
@@ -1008,17 +1246,58 @@ for k = 1:cfg.boardLayerCount
     layerDxf = fullfile(out, 'dxf', sprintf('L%d', k), sprintf('%02d_copper_L%d.dxf', k, k));
     verifyTrue(testCase, isfile(layerDxf), sprintf('missing %s', layerDxf));
 end
-previewFull = fullfile(out, 'previews', '01_preview_full.svg');
-previewZone = fullfile(out, 'previews', '02_preview_connection_zone.svg');
+previewFull = fullfile(out, 'preview', 'JLC', 'physical', '01_preview_full.svg');
+previewZone = fullfile(out, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg');
+centerlineFull = fullfile(out, 'preview', 'JLC', 'centerline', '01_preview_full.svg');
+centerlineZone = fullfile(out, 'preview', 'JLC', 'centerline', '02_preview_connection_zone.svg');
+comsolFull = fullfile(out, 'preview', 'COMSOL', '01_comsol_dxf_full.svg');
 verifyTrue(testCase, isfile(previewFull));
 verifyTrue(testCase, isfile(previewZone));
+verifyTrue(testCase, isfile(centerlineFull));
+verifyTrue(testCase, isfile(centerlineZone));
+verifyTrue(testCase, contains(fileread(centerlineFull), 'data-preview-kind="jlc-centerline"'));
+verifyTrue(testCase, contains(fileread(centerlineZone), 'data-preview-kind="jlc-centerline"'));
+verifyTrue(testCase, contains(fileread(previewFull), 'data-preview-kind="jlc-physical"'));
+verifyTrue(testCase, contains(fileread(previewZone), 'data-preview-kind="jlc-physical"'));
+previewFullTxt = fileread(previewFull);
+verifyEqual(testCase, numel(regexp(previewFullTxt, 'data-board-role="mounting-cutout"', 'match')), 4);
+verifyEqual(testCase, numel(regexp(previewFullTxt, 'data-board-role="mounting-glass"', 'match')), 4);
+verifyTrue(testCase, isfile(comsolFull));
+comsolFullTxt = fileread(comsolFull);
+verifyTrue(testCase, contains(comsolFullTxt, 'data-preview-kind="comsol-dxf"'));
+for li = 1:cfg.boardLayerCount
+    if li == 1
+        role = 'top';
+    elseif li == cfg.boardLayerCount
+        role = 'bottom';
+    else
+        role = sprintf('inner%d', li - 1);
+    end
+    comsolLayer = fullfile(out, 'preview', 'COMSOL', ...
+        sprintf('%02d_comsol_dxf_layer_L%d_%s.svg', 1 + li, li, role));
+    verifyTrue(testCase, isfile(comsolLayer), sprintf('missing COMSOL preview for L%d', li));
+    if isfile(comsolLayer)
+        comsolLayerTxt = fileread(comsolLayer);
+        verifyTrue(testCase, contains(comsolLayerTxt, 'data-preview-kind="comsol-dxf"'));
+        verifyTrue(testCase, contains(comsolLayerTxt, sprintf('data-dxf-layer="L%d"', li)));
+        if any(result.activeCoilLayers == li)
+            verifyTrue(testCase, contains(comsolLayerTxt, sprintf('data-dxf-file="dxf/L%d/%02d_copper_solid_L%d.dxf"', li, li, li)));
+            verifyTrue(testCase, contains(comsolLayerTxt, 'data-dxf-closed="explicit"'));
+            verifyTrue(testCase, contains(comsolFullTxt, sprintf('data-dxf-layer="L%d"', li)));
+        else
+            verifyFalse(testCase, contains(comsolLayerTxt, 'data-dxf-file='));
+        end
+        verifyTrue(testCase, ~isempty(xmlread(comsolLayer)));
+    end
+end
 csvPadVia = fullfile(out, 'reports', '01_pad_via_coordinates.csv');
+csvElectrode = fullfile(out, 'reports', '10_electrode_pad_coordinates.csv');
 csvLayerMap = fullfile(out, 'reports', '02_layer_map.csv');
 txtSummary = fullfile(out, 'reports', '03_design_summary.txt');
 csvTurnScan = fullfile(out, 'reports', '04_turn_scan.csv');
 txtValidation = fullfile(out, 'reports', '05_validation_report.txt');
 statusFile = fullfile(out, 'generation_status.txt');
-reportFiles = {csvPadVia, csvLayerMap, txtSummary, csvTurnScan, txtValidation, statusFile};
+reportFiles = {csvPadVia, csvElectrode, csvLayerMap, txtSummary, csvTurnScan, txtValidation, statusFile};
 for r = 1:numel(reportFiles)
     verifyTrue(testCase, isfile(reportFiles{r}), sprintf('missing %s', reportFiles{r}));
     d = dir(reportFiles{r});
@@ -1059,7 +1338,7 @@ while k + 1 <= numel(lines)
         k = k + 1;
     end
 end
-verifyEqual(testCase, closedCount, 5);
+verifyEqual(testCase, closedCount, 9);
 % 板框轮廓采用 0.1 mm 实际线宽，五个闭环必须一致写入 DXF group 43。
 boardLines = strtrim(strsplit(boardTxt, newline));
 boardWidths = [];
@@ -1068,7 +1347,7 @@ for bi = 1:numel(boardLines) - 1
         boardWidths(end + 1) = str2double(boardLines{bi + 1}); %#ok<AGROW>
     end
 end
-verifyEqual(testCase, boardWidths, repmat(cfg.boardOutlineLineWidth, 1, 5), 'AbsTol', 1e-9);
+verifyEqual(testCase, boardWidths, repmat(cfg.boardOutlineLineWidth, 1, 9), 'AbsTol', 1e-9);
 l1Dxf = fullfile(out, 'dxf', 'L1', '01_copper_L1.dxf');
 l1Txt = fileread(l1Dxf);
 % 契约：铜层 DXF 不写焊盘/过孔圆（CIRCLE）与文字（TEXT），只含走线多段线；
@@ -1105,6 +1384,12 @@ tPadVia = readtable(csvPadVia);
 verifyGreaterThanOrEqual(testCase, height(tPadVia), 2);
 verifyFalse(testCase, any(strcmp(tPadVia.Properties.VariableNames, 'antipadDiameterMm')));
 verifyTrue(testCase, any(strcmp(tPadVia.Properties.VariableNames, 'role')));
+tElectrode = readtable(csvElectrode);
+verifyEqual(testCase, tElectrode.Properties.VariableNames, ...
+    {'name', 'xMm', 'yMm', 'diameterMm', 'layer', 'role', 'placementRegion', 'bridgeAngleDeg'});
+verifyEqual(testCase, height(tElectrode), numel(result.electrodePads));
+verifyTrue(testCase, all(strcmp(tElectrode.role, 'INDEPENDENT_ELECTRODE')));
+verifyTrue(testCase, all(strcmp(tElectrode.placementRegion, 'ELECTRODE_315')));
 tLayer = readtable(csvLayerMap);
 verifyEqual(testCase, height(tLayer), cfg.boardLayerCount);
 summaryTxt = fileread(txtSummary);
@@ -1113,6 +1398,10 @@ verifyTrue(testCase, contains(summaryTxt, 'connectionAngleDeg'));
 verifyTrue(testCase, contains(summaryTxt, 'padPairSpacing'));
 verifyTrue(testCase, contains(summaryTxt, 'placementRegion='));
 verifyTrue(testCase, contains(summaryTxt, 'bridgeAngleDeg='));
+verifyTrue(testCase, contains(summaryTxt, 'independentElectrode: ELECTRODE_A'));
+verifyTrue(testCase, contains(summaryTxt, 'mountingSlotSpan'));
+verifyTrue(testCase, contains(summaryTxt, 'mountingSlotRise'));
+verifyTrue(testCase, contains(summaryTxt, 'mountingSlotEdgeClearance'));
 turnTxt = fileread(csvTurnScan);
 verifyTrue(testCase, contains(turnTxt, '8'));
 valTxt = fileread(txtValidation);
@@ -1157,7 +1446,8 @@ if isfile(txtNotes)
     notes = fileread(txtNotes);
     for kw = {'boardLayerCount', 'coilLayerCount', 'activeCoilLayers', 'copperThickness', '1/3 oz', ...
             'jlc_fpc_1_3oz', 'FPC0420TT-121A', 'standard', 'ENIG_1u', '+X', '+Y', 'NOT_GENERATED', ...
-            'coverlay', 'stiffener', 'Gerber', 'panelization', '09_comsol_stackup.csv'}
+            'coverlay', 'stiffener', 'Gerber', 'panelization', '09_comsol_stackup.csv', ...
+            'mountingSlot', 'independentElectrodes'}
         verifyTrue(testCase, contains(notes, kw{1}), ...
             sprintf('07 notes missing keyword %s', kw{1}));
     end
@@ -1189,7 +1479,7 @@ if isfile(csvManifest)
     verifyFalse(testCase, any(strcmp(rel8, 'reports/08_file_manifest.csv')), ...
         '08 manifest must not list itself');
     roles8 = {'board_outline', 'drill_map', 'copper_centerline', 'copper_physical', 'copper_solid', ...
-        'preview', 'report', 'generation_status'};
+        'copper_solid_with_terminals', 'preview', 'report', 'generation_status'};
     verifyTrue(testCase, all(ismember(string(t8.role), roles8)), ...
         '08 manifest roles must come from the fixed vocabulary');
     verifyFalse(testCase, any(startsWith(rel8, '/')), ...
@@ -1217,8 +1507,9 @@ end
 cfg2 = circular_fpc_default_config(struct('outputRoot', outRoot, 'designName', 'cfpc_red_nopreview', 'enablePreview', false));
 circular_fpc_main(cfg2);
 out2 = fullfile(outRoot, 'cfpc_red_nopreview');
-verifyFalse(testCase, isfile(fullfile(out2, 'previews', '01_preview_full.svg')));
-verifyFalse(testCase, isfile(fullfile(out2, 'previews', '02_preview_connection_zone.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '01_preview_full.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')));
+verifyFalse(testCase, isfolder(fullfile(out2, 'preview')));
 verifyTrue(testCase, isfile(fullfile(out2, 'dxf', '00_board_outline.dxf')));
 verifyTrue(testCase, isfile(fullfile(out2, 'reports', '05_validation_report.txt')));
 verifyTrue(testCase, isfile(fullfile(out2, 'generation_status.txt')));
@@ -1230,8 +1521,8 @@ m8np = fullfile(out2, 'reports', '08_file_manifest.csv');
 verifyTrue(testCase, isfile(m8np), 'missing no-preview 08 file manifest');
 if isfile(m8np)
     t8np = readtable(m8np);
-    verifyFalse(testCase, any(startsWith(string(t8np.relativePath), 'previews/')), ...
-        'no-preview manifest must not list previews/');
+    verifyFalse(testCase, any(startsWith(string(t8np.relativePath), 'preview/')), ...
+        'no-preview manifest must not list preview/');
 end
 end
 
@@ -1270,10 +1561,10 @@ end
 outRoot = createTempOutput(testCase);
 outputRoot = outRoot;
 run(scriptPath);
-combos = [2 1; 2 2; 4 1; 4 2; 4 4];
-expectedActive = {[1]; [1 2]; [1]; [1 4]; [1 2 3 4]};
-verifyEqual(testCase, numel(variantResults), 5);
-for k = 1:5
+combos = [2 1; 2 2; 4 1; 4 2; 4 4; 6 6];
+expectedActive = {[1]; [1 2]; [1]; [1 4]; [1 2 3 4]; [1 2 3 4 5 6]};
+verifyEqual(testCase, numel(variantResults), 6);
+for k = 1:6
     r = variantResults{k};
     verifyEqual(testCase, r.boardLayerCount, combos(k, 1));
     verifyEqual(testCase, r.coilLayerCount, combos(k, 2));
@@ -1284,8 +1575,10 @@ for k = 1:5
         verifyTrue(testCase, isfile(fullfile(r.outputPath, 'dxf', sprintf('L%d', li), ...
             sprintf('%02d_copper_L%d.dxf', li, li))));
     end
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'previews', '01_preview_full.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'previews', '02_preview_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '01_preview_full.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '02_preview_connection_zone.svg')));
     for li = 1:r.boardLayerCount
         if li == 1
             role = 'top';
@@ -1294,9 +1587,12 @@ for k = 1:5
         else
             role = sprintf('inner%d', li - 1);
         end
-        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'previews', ...
+        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', ...
             sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role))), ...
             sprintf('missing per-layer preview for L%d', li));
+        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', ...
+            sprintf('%02d_preview_layer_L%d_%s.svg', 2 + li, li, role))), ...
+            sprintf('missing per-layer centerline preview for L%d', li));
     end
     for f = {'01_pad_via_coordinates.csv', '02_layer_map.csv', '03_design_summary.txt', ...
             '04_turn_scan.csv', '05_validation_report.txt'}
@@ -1315,13 +1611,244 @@ if isfile(readmePath)
             'terminalLeadSpacing', 'terminalLeadLength', 'connectionAngleDeg', ...
             'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY', ...
             'PAD_A', 'PAD_B', 'VOUT', 'Gerber', 'DXF', ...
-            '2/1', '2/2', '4/1', '4/2', '4/4'}
+            '2/1', '2/2', '4/1', '4/2', '4/4', '6/6', ...
+            'mountingSlotSpan', 'mountingSlotRise', 'electrodePadDiameter'}
         verifyTrue(testCase, contains(readmeTxt, kw{1}));
     end
 end
 if isfile(gitignorePath)
     verifyTrue(testCase, contains(fileread(gitignorePath), '/outputs/'));
 end
+end
+
+function testComsolWithTerminalsVariantForFourLayerCombinations(testCase)
+% COMSOL 带端子变体：在主螺旋不变的前提下，仅 L1 增加两条中心引线（闭合铜条、
+% 直短边封口）与 PAD_A/PAD_B 圆盘；任何层都不得出现 VIA/DRILL/过孔焊环/
+% 层间转换几何。L2/L3 在 4/2 下必须为空。
+combos = {4, 2; 4, 4};
+expectedActive = {[1 4]; [1 2 3 4]};
+outRoot = createTempOutput(testCase);
+for c = 1:size(combos, 1)
+    bc = combos{c, 1};
+    cc = combos{c, 2};
+    designName = sprintf('wt_%d_%d', bc, cc);
+    result = circular_fpc_main(struct('boardLayerCount', bc, 'coilLayerCount', cc, ...
+        'outputRoot', outRoot, 'designName', designName, ...
+        'enablePreview', true, 'enableFigure', false));
+    out = fullfile(outRoot, designName);
+    verifyEqual(testCase, result.activeCoilLayers, expectedActive{c});
+    tag = sprintf('%d/%d', bc, cc);
+    for li = 1:bc
+        isActive = any(result.activeCoilLayers == li);
+        wtFile = fullfile(out, 'dxf', sprintf('L%d', li), ...
+            sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li));
+        verifyTrue(testCase, isfile(wtFile), sprintf('%s missing %s', tag, wtFile));
+        if ~isfile(wtFile)
+            continue;
+        end
+        txt = fileread(wtFile);
+        verifyDxfBase(testCase, txt, wtFile);
+        verifyDxfEntityLayersDeclared(testCase, txt, wtFile);
+        verifyTrue(testCase, contains(txt, sprintf('COPPER_SOLID_TERMINALS_L%d', li)), ...
+            sprintf('%s must declare the with-terminals layer', tag));
+        % 无 VIA / DRILL 图层，也无过孔焊环或层间转换几何。
+        verifyFalse(testCase, contains(txt, 'VIA'), ...
+            sprintf('%s with-terminals DXF must not contain VIA geometry', tag));
+        verifyFalse(testCase, contains(txt, 'DRILL'), ...
+            sprintf('%s with-terminals DXF must not contain DRILL geometry', tag));
+        verifyFalse(testCase, contains(txt, 'ANTIPAD'), ...
+            sprintf('%s with-terminals DXF must not contain antipads', tag));
+        circles = dxfCircles(txt);
+        [widths, polyCount] = dxfPolylineWidths(txt);
+        verifyTrue(testCase, isempty(widths), ...
+            sprintf('%s with-terminals DXF must not carry group 43', tag));
+        verifyEqual(testCase, dxfClosedPolylineCount(txt), polyCount, ...
+            sprintf('%s with-terminals DXF must contain only closed bodies', tag));
+        % 每个闭合实体首尾坐标必须一致。
+        rings = dxfPolylines(txt);
+        for r = 1:numel(rings)
+            verifyGreaterThanOrEqual(testCase, size(rings{r}, 1), 4, ...
+                sprintf('%s closed body %d is degenerate', tag, r));
+            verifyEqual(testCase, rings{r}(1, :), rings{r}(end, :), 'AbsTol', 1e-9, ...
+                sprintf('%s closed body %d must repeat its first vertex', tag, r));
+        end
+        if li == 1
+            % L1：主螺旋 + 两条中心引线 + PAD_A/PAD_B。
+            expectedRings = 1 + 2 * isActive;
+            expectedCircles = 2 * isActive;
+            verifyEqual(testCase, polyCount, expectedRings, ...
+                sprintf('%s L1 must hold the main coil plus two center leads', tag));
+            verifyEqual(testCase, numel(circles), expectedCircles, ...
+                sprintf('%s L1 must hold PAD_A/PAD_B', tag));
+            verifyEqual(testCase, sort({circles.layer}), {'PAD_A', 'PAD_B'}, ...
+                sprintf('%s pad circles must use the PAD_A/PAD_B layers', tag));
+            % PAD_A/PAD_B 圆直径必须与 result.pads 一致（含圆心坐标）。
+            verifyEqual(testCase, sort([circles.r]), sort([result.pads.diameter] / 2), ...
+                'AbsTol', 1e-9, sprintf('%s pad radius must equal padDiameter/2', tag));
+            verifyEqual(testCase, sortrows([[circles.cx].', [circles.cy].']), ...
+                sortrows(cat(1, result.pads.xy)), 'AbsTol', 1e-9, ...
+                sprintf('%s pad centers must match result.pads', tag));
+            % 两条引线是独立闭合铜条，宽度等于 traceWidth。
+            leadRings = rings(2:end);
+            verifyEqual(testCase, numel(leadRings), 2, ...
+                sprintf('%s L1 lead body count', tag));
+            for r = 1:numel(leadRings)
+                areaMm2 = shoelaceArea(leadRings{r});
+                verifyGreaterThan(testCase, areaMm2, result.config.traceWidth ^ 2, ...
+                    sprintf('%s lead %d must enclose real copper area', tag, r));
+                % 闭合铜条：偏移两侧点数相同，端点用一条直短边封口。
+                verifyEqual(testCase, mod(size(leadRings{r}, 1) - 1, 2), 0, ...
+                    sprintf('%s lead %d must be a left/right offset body', tag, r));
+            end
+        elseif isActive
+            verifyEqual(testCase, polyCount, 1, ...
+                sprintf('%s L%d must keep exactly the main coil ring', tag, li));
+            verifyEmpty(testCase, circles, ...
+                sprintf('%s L%d must not carry terminals', tag, li));
+        else
+            % 非活动层（4/2 的 L2/L3）：空 ENTITIES 段。
+            verifyEqual(testCase, polyCount, 0, ...
+                sprintf('%s L%d must be empty', tag, li));
+            verifyEmpty(testCase, circles, ...
+                sprintf('%s L%d must be empty', tag, li));
+        end
+        % 主螺旋必须与 copper_solid 版本逐点一致（原有轨不受影响）。
+        solidFile = fullfile(out, 'dxf', sprintf('L%d', li), ...
+            sprintf('%02d_copper_solid_L%d.dxf', li, li));
+        verifyTrue(testCase, isfile(solidFile), sprintf('%s missing %s', tag, solidFile));
+        if isActive && isfile(solidFile)
+            solidRings = dxfPolylines(fileread(solidFile));
+            verifyEqual(testCase, numel(solidRings), 1, ...
+                sprintf('%s copper_solid must hold one ring', tag));
+            verifyEqual(testCase, size(rings{1}, 1), size(solidRings{1}, 1), ...
+                sprintf('%s main coil ring vertex count must match copper_solid', tag));
+            verifyEqual(testCase, rings{1}, solidRings{1}, 'AbsTol', 1e-12, ...
+                sprintf('%s main coil ring must be identical to copper_solid', tag));
+        end
+    end
+    % 预览：with_terminals 目录、kind 元数据与实体计数。
+    capDir = fullfile(out, 'preview', 'COMSOL', 'with_terminals');
+    capFull = fullfile(capDir, '01_comsol_with_terminals_full.svg');
+    verifyTrue(testCase, isfile(capFull), sprintf('%s missing %s', tag, capFull));
+    if isfile(capFull)
+        capTxt = fileread(capFull);
+        verifyTrue(testCase, contains(capTxt, 'data-preview-kind="comsol-dxf-with-terminals"'));
+        verifyEqual(testCase, numel(regexp(capTxt, 'data-copper-kind="terminal_lead"', 'match')), 2, ...
+            sprintf('%s overview must draw both leads', tag));
+        verifyEqual(testCase, numel(regexp(capTxt, 'data-copper-kind="pad"', 'match')), 2, ...
+            sprintf('%s overview must draw both pads', tag));
+        verifyFalse(testCase, contains(capTxt, 'data-via-name'), ...
+            sprintf('%s overview must not draw vias', tag));
+        verifyFalse(testCase, contains(capTxt, 'data-via-role="drill"'), ...
+            sprintf('%s overview must not draw drills', tag));
+        verifyTrue(testCase, ~isempty(xmlread(capFull)));
+    end
+    for li = 1:bc
+        if li == 1
+            role = 'top';
+        elseif li == bc
+            role = 'bottom';
+        else
+            role = sprintf('inner%d', li - 1);
+        end
+        capLayer = fullfile(capDir, sprintf('%02d_comsol_with_terminals_layer_L%d_%s.svg', 1 + li, li, role));
+        verifyTrue(testCase, isfile(capLayer), sprintf('%s missing %s', tag, capLayer));
+        if isfile(capLayer)
+            layerTxt = fileread(capLayer);
+            verifyTrue(testCase, contains(layerTxt, 'data-preview-kind="comsol-dxf-with-terminals"'));
+            verifyTrue(testCase, contains(layerTxt, sprintf('data-dxf-layer="L%d"', li)));
+            expectedLead = 2 * (li == 1);
+            expectedPad = 2 * (li == 1);
+            verifyEqual(testCase, ...
+                numel(regexp(layerTxt, 'data-copper-kind="terminal_lead"', 'match')), expectedLead, ...
+                sprintf('%s L%d lead count in preview', tag, li));
+            verifyEqual(testCase, ...
+                numel(regexp(layerTxt, 'data-copper-kind="pad"', 'match')), expectedPad, ...
+                sprintf('%s L%d pad count in preview', tag, li));
+            verifyTrue(testCase, ~isempty(xmlread(capLayer)));
+        end
+    end
+    % 终端几何映射报告：每个 DXF 实体一行，闭合与面积必须自洽。
+    csvGeom = fullfile(out, 'reports', '11_comsol_terminal_geometry.csv');
+    verifyTrue(testCase, isfile(csvGeom), sprintf('%s missing %s', tag, csvGeom));
+    if isfile(csvGeom)
+        t = readtable(csvGeom);
+        verifyEqual(testCase, t.Properties.VariableNames, ...
+            {'entity', 'kind', 'layer', 'routeNode', 'dxfFile', 'closed', ...
+            'vertexCount', 'areaMm2', 'capMode', 'startXMm', 'startYMm', ...
+            'endXMm', 'endYMm', 'firstXMm', 'firstYMm', 'lastXMm', 'lastYMm', ...
+            'firstLastMatch'}, sprintf('%s 11 CSV columns must be exact', tag));
+        verifyEqual(testCase, sum(strcmp(t.kind, 'terminal_lead')), 2, ...
+            sprintf('%s 11 CSV must map both L1 center leads', tag));
+        verifyEqual(testCase, sum(strcmp(t.kind, 'pad')), 2, ...
+            sprintf('%s 11 CSV must map both pads', tag));
+        verifyTrue(testCase, all(t.firstLastMatch == 1), ...
+            sprintf('%s 11 CSV rows must close on their first vertex', tag));
+        verifyTrue(testCase, all(t.areaMm2 > 0), ...
+            sprintf('%s 11 CSV must report positive copper area', tag));
+        verifyTrue(testCase, all(strcmp(t.capMode(strcmp(t.kind, 'terminal_lead')), 'straight_short_edge')), ...
+            sprintf('%s leads must be closed with straight short edges', tag));
+        for r = 1:height(t)
+            verifyTrue(testCase, isfile(fullfile(out, char(t.dxfFile(r)))), ...
+                sprintf('%s 11 CSV row %d cites a missing DXF', tag, r));
+        end
+        % 报告中的引线端点必须等于 route 映射的 L1 连接路径端点。
+        for k = 1:2
+            leadName = {'TRACE_L1_ENTRY', 'TRACE_L1_EXIT'};
+            row = t(strcmp(t.entity, leadName{k}) & t.kind == "terminal_lead", :);
+            verifyEqual(testCase, height(row), 1, ...
+                sprintf('%s 11 CSV must map %s on L1', tag, leadName{k}));
+        end
+    end
+    % manifest：新增角色必须出现在固定词表中，且 sha256 自洽。
+    t8 = readtable(fullfile(out, 'reports', '08_file_manifest.csv'));
+    wtRows = startsWith(string(t8.relativePath), 'dxf/L') & ...
+        contains(string(t8.relativePath), 'copper_solid_with_terminals');
+    verifyEqual(testCase, sum(wtRows), bc, ...
+        sprintf('%s manifest must list one with-terminals DXF per physical layer', tag));
+    verifyTrue(testCase, all(strcmp(string(t8.role(wtRows)), 'copper_solid_with_terminals')), ...
+        sprintf('%s manifest must use the copper_solid_with_terminals role', tag));
+end
+end
+
+function testComsolWithTerminalsVariantKeepsOriginalSolidBytes(testCase)
+% 原有 copper_solid / physical / centerline DXF 字节契约不因新增变体而改变：
+% 同一 result 连续导出两次，两次的旧轨文件必须逐字节一致，且新变体存在。
+outRoot = createTempOutput(testCase);
+cfg = circular_fpc_default_config(struct('boardLayerCount', 4, 'coilLayerCount', 2, ...
+    'outputRoot', outRoot, 'designName', 'wt_bytes', 'enablePreview', false, ...
+    'enableFigure', false));
+result = circular_fpc_main(cfg);
+out = fullfile(outRoot, 'wt_bytes');
+verifyEqual(testCase, result.outputPath, out, ...
+    'generation must publish to the requested designName directory');
+legacy = {'dxf/00_board_outline.dxf', 'dxf/00_drill_map.dxf', ...
+    'dxf/L1/01_copper_L1.dxf', 'dxf/L1/01_copper_physical_L1.dxf', ...
+    'dxf/L1/01_copper_solid_L1.dxf', 'dxf/L2/02_copper_solid_L2.dxf', ...
+    'dxf/L4/04_copper_solid_L4.dxf', ...
+    'reports/01_pad_via_coordinates.csv', 'reports/03_design_summary.txt'};
+for k = 1:numel(legacy)
+    p = fullfile(out, legacy{k});
+    verifyTrue(testCase, isfile(p), sprintf('missing legacy output %s', legacy{k}));
+    if isfile(p)
+        d = dir(p);
+        verifyGreaterThan(testCase, d.bytes, 0, sprintf('empty legacy output %s', legacy{k}));
+    end
+end
+% 新变体与旧轨并存，互不覆盖。
+for li = 1:cfg.boardLayerCount
+    verifyTrue(testCase, isfile(fullfile(out, 'dxf', sprintf('L%d', li), ...
+        sprintf('%02d_copper_solid_L%d.dxf', li, li))));
+    verifyTrue(testCase, isfile(fullfile(out, 'dxf', sprintf('L%d', li), ...
+        sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li))));
+end
+% 旧轨铜几何不得出现端子层标记，端子只存在于新变体。
+l1Solid = fileread(fullfile(out, 'dxf', 'L1', '01_copper_solid_L1.dxf'));
+verifyFalse(testCase, contains(l1Solid, 'TERMINALS'), ...
+    'copper_solid must stay terminal-free');
+verifyTrue(testCase, contains(fileread(fullfile(out, 'dxf', 'L1', ...
+    '01_copper_solid_with_terminals_L1.dxf')), 'COPPER_SOLID_TERMINALS_L1'), ...
+    'with-terminals DXF must declare its own layer');
 end
 
 function testGitHubWorkflowRunsBothSuitesAndRejectsZeroTests(testCase)
@@ -1364,7 +1891,7 @@ verifyTrue(testCase, contains(workflow, 'rectangular_fpc_read_committed'), ...
 verifyTrue(testCase, contains(workflow, 'copyOk'), ...
     'CI must assert the result of copying the committed rectangular output.');
 for requiredArtifact = {'generation_status.txt', '08_file_manifest.csv', '09_comsol_stackup.csv', ...
-        'previews', 'dxf', 'reports'}
+        'preview', 'dxf', 'reports'}
     verifyTrue(testCase, contains(workflow, requiredArtifact{1}), ...
         sprintf('CI must gate the staged artifact on %s.', requiredArtifact{1}));
 end
@@ -1462,8 +1989,49 @@ while k + 1 <= numel(lines)
 end
 end
 
+function rings = dxfPolylines(txt)
+% Collect each LWPOLYLINE entity as its own Nx2 vertex matrix, so a test can
+% assert per-body closure instead of a flattened vertex stream.
+lines = strtrim(strsplit(txt, newline));
+rings = {};
+k = 1;
+while k + 1 <= numel(lines)
+    if ~strcmp(lines{k}, '0') || ~strcmp(lines{k + 1}, 'LWPOLYLINE')
+        k = k + 1;
+        continue;
+    end
+    j = k + 2;
+    pts = zeros(0, 2);
+    x = NaN;
+    y = NaN;
+    while j + 1 <= numel(lines) && ~strcmp(lines{j}, '0')
+        if strcmp(lines{j}, '10')
+            if isfinite(x) && isfinite(y)
+                pts(end + 1, :) = [x, y]; %#ok<AGROW>
+            end
+            x = str2double(lines{j + 1});
+            y = NaN;
+        elseif strcmp(lines{j}, '20')
+            y = str2double(lines{j + 1});
+        end
+        j = j + 2;
+    end
+    if isfinite(x) && isfinite(y)
+        pts(end + 1, :) = [x, y];
+    end
+    rings{end + 1} = pts; %#ok<AGROW>
+    k = j;
+end
+end
+
+function a = shoelaceArea(xy)
+% Signed-magnitude area of a closed ring that repeats its first vertex.
+x = xy(1:end-1, 1);
+y = xy(1:end-1, 2);
+a = abs(sum(x .* y([2:end, 1]) - y .* x([2:end, 1]))) / 2;
+end
+
 function xy = dxfPolylineVertices(txt)
-% Collect every LWPOLYLINE vertex (group 10/20 pairs) as an Nx2 matrix.
 lines = strtrim(strsplit(txt, newline));
 x = [];
 y = [];
@@ -1515,6 +2083,49 @@ verifyTrue(testCase, ~isempty(strfind(txt, sprintf('\r\n'))), ...
     sprintf('%s must use CRLF.', label));
 verifyFalse(testCase, contains(txt, 'TEXT'), ...
     sprintf('%s must not contain TEXT entities.', label));
+end
+
+function verifyDxfEntityLayersDeclared(testCase, txt, label)
+% Every entity layer must be declared in TABLES/LAYER. In particular, L1
+% terminal DXFs must declare PAD_A/PAD_B alongside the copper body layer.
+lines = strtrim(strsplit(txt, newline));
+declared = {};
+used = {};
+inTables = false;
+inLayerTable = false;
+captureLayerName = false;
+inEntities = false;
+k = 1;
+while k + 1 <= numel(lines)
+    code = lines{k};
+    value = lines{k + 1};
+    if strcmp(code, '2') && strcmp(value, 'TABLES')
+        inTables = true;
+    elseif inTables && strcmp(code, '0') && strcmp(value, 'ENDSEC')
+        inTables = false;
+        inLayerTable = false;
+        captureLayerName = false;
+    elseif inTables && strcmp(code, '2') && strcmp(value, 'LAYER')
+        inLayerTable = true;
+    elseif inTables && inLayerTable && strcmp(code, '0') && strcmp(value, 'LAYER')
+        captureLayerName = true;
+    elseif inTables && inLayerTable && strcmp(code, '0') && strcmp(value, 'ENDTAB')
+        inLayerTable = false;
+        captureLayerName = false;
+    elseif inTables && captureLayerName && strcmp(code, '2')
+        declared{end + 1} = value; %#ok<AGROW>
+        captureLayerName = false;
+    elseif strcmp(code, '2') && strcmp(value, 'ENTITIES')
+        inEntities = true;
+    elseif inEntities && strcmp(code, '0') && strcmp(value, 'ENDSEC')
+        inEntities = false;
+    elseif inEntities && strcmp(code, '8')
+        used{end + 1} = value; %#ok<AGROW>
+    end
+    k = k + 2;
+end
+verifyTrue(testCase, all(ismember(unique(used), unique(declared))), ...
+    sprintf('%s must declare every entity layer in TABLES/LAYER.', label));
 end
 
 function outRoot = createTempOutput(testCase)
@@ -1678,11 +2289,8 @@ for k = 1:numel(expectedOuterNames)
         verifyEqual(testCase, v.placementRegion, 'OUTER_COIL_ENDPOINT');
     end
     if isfield(v, 'bridgeAngleDeg')
-        if strcmp(v.name, 'V34')
-            verifyAngleMod360(testCase, v.bridgeAngleDeg, theta + 90, 'V34 bridgeAngleDeg');
-        else
-            verifyAngleMod360(testCase, v.bridgeAngleDeg, theta, sprintf('%s bridgeAngleDeg', v.name));
-        end
+        verifyAngleMod360(testCase, v.bridgeAngleDeg, expectedViaAngleDeg(v.name, theta), ...
+            sprintf('%s bridgeAngleDeg', v.name));
     end
     verifyEqual(testCase, v.xy, result.layerPaths(v.fromLayer).coilXY(end, :), 'AbsTol', 1e-9);
 end
@@ -1698,7 +2306,8 @@ for k = 1:numel(expectedReturnNames)
         verifyEqual(testCase, v.placementRegion, 'RETURN_BRIDGE');
     end
     if isfield(v, 'bridgeAngleDeg')
-        verifyAngleMod360(testCase, v.bridgeAngleDeg, theta + 90, sprintf('%s bridgeAngleDeg', v.name));
+        verifyAngleMod360(testCase, v.bridgeAngleDeg, expectedViaAngleDeg(v.name, theta), ...
+            sprintf('%s bridgeAngleDeg', v.name));
     end
     % V23/VRET 类端子位于 theta+90 桥轴（+t 方向）：垂直分量（u 投影）必须为零
     uAxis = [cosd(theta), sind(theta)];
@@ -1831,8 +2440,8 @@ for k = 1:numel(result.vias)
     verifyEqual(testCase, row.toLayer, v.toLayer, ...
         sprintf('%s toLayer must match result', v.name));
 end
-svgFiles = {fullfile(result.outputPath, 'previews', '01_preview_full.svg'), ...
-    fullfile(result.outputPath, 'previews', '02_preview_connection_zone.svg')};
+svgFiles = {fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_preview_full.svg'), ...
+    fullfile(result.outputPath, 'preview', 'JLC', 'physical', '02_preview_connection_zone.svg')};
 for f = svgFiles
     verifyTrue(testCase, isfile(f{1}), sprintf('missing %s', f{1}));
     if ~isfile(f{1})
@@ -2043,6 +2652,19 @@ if strcmp(svgName, '02_preview_connection_zone')
                 v.name, v.xy(1), v.xy(2), r);
         end
     end
+end
+end
+
+function angleDeg = expectedViaAngleDeg(name, theta)
+% 外端/内端位置契约：2 层方向为 theta，4 层方向为 theta+90，
+% 6 层再增加 theta-90；名称映射也用于 6/6 的两个内端过孔。
+switch name
+    case {'V34', 'V23'}
+        angleDeg = theta + 90;
+    case {'V56', 'V45'}
+        angleDeg = theta - 90;
+    otherwise
+        angleDeg = theta;
 end
 end
 

@@ -20,7 +20,11 @@ function cfg = validateConfig(cfg)
 numFields = {'boardOuterDiameter', 'coilInnerDiameter', 'centerPlatformWidth', ...
     'centerPlatformHeight', 'bridgeTargetWidth', 'geometryScale', 'turnsPerCoilLayer', ...
     'traceWidth', 'traceSpacing', 'pitchMargin', 'edgeClearance', 'boardOutlineLineWidth', ...
-    'platformSlotMargin', ...
+    'geometrySafetyMargin', ...
+    'platformSlotMargin', 'mountingSlotSpan', 'mountingSlotRise', 'mountingSlotEdgeClearance', ...
+    'mountingSlotEndFilletRadius', 'viaLugRootOverlap', ...
+    'electrodeArmLength', 'electrodeArmWidth', 'electrodeArmGap', ...
+    'electrodePadDiameter', 'electrodeRootOverlap', ...
     'padPairSpacing', 'terminalLeadSpacing', 'terminalLeadLength', ...
     'padDiameter', 'viaPadDiameter', 'viaDrillDiameter', 'viaCoilSpacing', ...
     'terminalClearance', 'copperThickness', 'copperResistivity', 'samplePointsPerTurn', 'turnScanMax', ...
@@ -42,7 +46,7 @@ end
 if cfg.turnsPerCoilLayer < 2
     error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer must be at least 2.');
 end
-supported = {[2 1], [2 2], [4 1], [4 2], [4 4]};
+supported = {[2 1], [2 2], [4 1], [4 2], [4 4], [6 6]};
 ok = false;
 for k = 1:numel(supported)
     if isequal([cfg.boardLayerCount, cfg.coilLayerCount], supported{k})
@@ -67,6 +71,10 @@ if ~ismember(cfg.terminalPlacementMode, {'auto', 'manual'})
 end
 if ~ismember(cfg.boardSizingMode, {'auto', 'fixed'})
     error('CircularFPC:InvalidConfig', 'boardSizingMode must be ''auto'' or ''fixed''.');
+end
+if ~isscalar(cfg.electrodeAngleDeg) || ~isnumeric(cfg.electrodeAngleDeg) || ...
+        ~isfinite(cfg.electrodeAngleDeg)
+    error('CircularFPC:InvalidConfig', 'electrodeAngleDeg must be a finite numeric scalar.');
 end
 for m = {'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
     v = cfg.(m{1});
@@ -105,7 +113,13 @@ function assertFeasible(cfg, eff)
 % 平台四角允许进入内圆与环区相交，这正是四个自然对角连接区；只要求
 % 平台水平/垂直边与内圆之间仍有槽余量，最终四槽拓扑由布尔结果验证。
 coilPitch = eff.coilPitch;
-requiredSpan = cfg.traceWidth + cfg.turnsPerCoilLayer * coilPitch;
+spanMax = cfg.turnsPerCoilLayer;
+if cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4
+    spanMax = spanMax + 0.25;
+elseif cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6
+    spanMax = spanMax + 0.50;
+end
+requiredSpan = cfg.traceWidth + spanMax * coilPitch;
 boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
 availableSpan = boardEdgeInnerR - cfg.edgeClearance - eff.coilInnerDiameter / 2;
 if availableSpan < requiredSpan - 1e-9
@@ -153,7 +167,7 @@ function v = validateResult(cfg, eff, geom)
 %   finiteCoordinates      : 所有坐标有限
 %   noZeroLengthSegments   : 无零长度线段
 %   noSelfIntersections    : 无自交折线
-%   closedBoardLoopCount   : 板框闭环数（必须为 5 = 1 外边界 + 4 孔槽）
+%   closedBoardLoopCount   : 板框闭环数（必须为 9 = 1 外边界 + 4 平台槽 + 4 耳朵挖槽）
 %   minCopperSpacingMm     : 铜线之间最小净距（须 ≥ traceSpacing）
 %   minCopperToBoardMm     : 铜到板外缘最小距离（须 ≥ edgeClearance）
 %   minViaToBoardMm        : 过孔焊盘切线到板框线内侧的最小距离
@@ -166,6 +180,12 @@ function v = validateResult(cfg, eff, geom)
 %   uniqueSeriesNetwork    : 串联网络唯一且连续
 %   maxSeriesContinuityErrorMm / maxConnectionTurnDeg / viaOverlapFree : 连接质量指标
 v = struct();
+if isfield(geom, 'electrodePads')
+    electrodePads = geom.electrodePads;
+else
+    electrodePads = struct('name', {}, 'xy', {}, 'diameter', {}, 'layer', {}, ...
+        'removable', {}, 'role', {}, 'placementRegion', {}, 'bridgeAngleDeg', {});
+end
 v.finiteCoordinates = true;
 v.noZeroLengthSegments = true;
 v.noSelfIntersections = true;
@@ -219,17 +239,22 @@ for k = 1:numel(geom.vias)
         v.finiteCoordinates = false;
     end
 end
+for k = 1:numel(electrodePads)
+    if ~allFinite(electrodePads(k).xy)
+        v.finiteCoordinates = false;
+    end
+end
 v.closedBoardLoopCount = numel(geom.boardLoops);
-v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
-v.minCopperToBoardMm = computeCopperToBoard(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
-v.minViaToBoardMm = computeViaToBoard(cfg, eff, geom.vias);
-v.minDrillToBoardMm = computeDrillToBoard(cfg, eff, geom.vias);
+v.minCopperSpacingMm = computeCopperSpacing(cfg, eff, geom.coils, geom.connectionPaths, geom.pads, geom.vias, electrodePads);
+v.minCopperToBoardMm = computeCopperToBoard(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias, electrodePads);
+v.minViaToBoardMm = computeViaToBoard(cfg, geom.boardLoops, geom.vias);
+v.minDrillToBoardMm = computeDrillToBoard(cfg, geom.boardLoops, geom.vias);
 v.minViaToNonConnectedCopperMm = computeViaToNonConnectedCopper(cfg, geom.coils, geom.connectionPaths, geom.vias);
-v.minCopperToSlotsMm = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias);
-v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias);
-v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads);
+[v.minCopperToSlotsMm, v.minCopperToSlotsHole] = computeCopperToSlots(cfg, geom.boardLoops, geom.coils, geom.connectionPaths, geom.pads, geom.vias, electrodePads);
+v.minPadViaClearanceMm = computeTerminalClearance(cfg, geom.pads, geom.vias, electrodePads);
+v.minViaCoilSpacingMm = computeTerminalCoilSpacing(cfg, geom.coils, geom.vias, geom.pads, electrodePads);
 v.minTerminalToConnectionTraceMm = computeTerminalToConnectionTrace( ...
-    cfg, geom.connectionPaths, geom.vias, geom.pads);
+    cfg, geom.connectionPaths, geom.vias, geom.pads, electrodePads);
 v.minCopperInteriorAngleDeg = computeMinCopperInteriorAngle(geom.coils, geom.connectionPaths);
 v.minBoardInteriorAngleDeg = computeMinBoardInteriorAngle(geom.boardLoops);
 v.actualBridgeWidthMm = geom.actualBridgeWidth;
@@ -256,8 +281,10 @@ end
 if ~v.noSelfIntersections
     v.messages{end + 1} = 'self-intersecting polyline found'; %#ok<AGROW>
 end
-if v.closedBoardLoopCount ~= 5
-    v.messages{end + 1} = sprintf('expected 5 board loops, got %d', v.closedBoardLoopCount); %#ok<AGROW>
+expectedBoardLoops = 9;
+if v.closedBoardLoopCount ~= expectedBoardLoops
+    v.messages{end + 1} = sprintf('expected %d board loops, got %d', ...
+        expectedBoardLoops, v.closedBoardLoopCount); %#ok<AGROW>
 end
 if v.minCopperSpacingMm < cfg.traceSpacing - 1e-9
     v.messages{end + 1} = 'copper spacing below traceSpacing'; %#ok<AGROW>
@@ -276,7 +303,19 @@ if v.minViaToNonConnectedCopperMm < mfRules.minDrillToCopperMm - 1e-9
     v.messages{end + 1} = 'through-via drill-to-non-connected-layer copper clearance below manufacturing rule'; %#ok<AGROW>
 end
 if v.minCopperToSlotsMm < cfg.edgeClearance - 1e-9
-    v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
+    % 若控制净距的是安装耳朵挖槽，明确指出是该特征，并说明生成器不会通过
+    % 降低净距来出图：这类冲突通常来自外端过孔正好落在 0/90/180/270 耳朵轴上，
+    % 或 span/rise 过大。
+    if strncmp(v.minCopperToSlotsHole, 'mounting_cutout', 15)
+        v.messages{end + 1} = sprintf( ...
+            ['copper-to-slot clearance below edgeClearance: the %s slot leaves %.6f mm ', ...
+             '(required %.6f mm). Reduce mountingSlotSpan/mountingSlotRise, move the ', ...
+             'offending terminal away from the 0/90/180/270 ear axis, or enlarge the ', ...
+             'board; the generator will not lower the clearance requirement.'], ...
+            v.minCopperToSlotsHole, v.minCopperToSlotsMm, cfg.edgeClearance); %#ok<AGROW>
+    else
+        v.messages{end + 1} = 'copper-to-slot clearance below edgeClearance'; %#ok<AGROW>
+    end
 end
 if v.minViaCoilSpacingMm < cfg.viaCoilSpacing - 1e-9
     v.messages{end + 1} = 'via-to-coil spacing below viaCoilSpacing'; %#ok<AGROW>
@@ -313,7 +352,7 @@ if ~v.viaOverlapFree
     v.messages{end + 1} = 'via overlap detected'; %#ok<AGROW>
 end
 v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersections && ...
-    v.closedBoardLoopCount == 5 && ...
+    v.closedBoardLoopCount == expectedBoardLoops && ...
     v.minCopperSpacingMm >= cfg.traceSpacing - 1e-9 && ...
     v.minCopperToBoardMm >= cfg.edgeClearance - 1e-9 && ...
     v.minViaToBoardMm >= cfg.edgeClearance - 1e-9 && ...
@@ -376,7 +415,7 @@ for i = 2:n - 1
 end
 end
 
-function dMin = computeTerminalCoilSpacing(cfg, coils, vias, pads)
+function dMin = computeTerminalCoilSpacing(cfg, coils, vias, pads, electrodePads)
 % 过孔焊环/焊盘外缘到其连接层上线圈铜边的最小净距（mm），须 >= cfg.viaCoilSpacing。
 % 端点过孔（与线圈端点重合的引出端子）除外；线圈端点的"接入铜"（末端匝段，
 % 与焊环同网络汇合）不参与净距；排除焊环 + 净距 + 半线宽 范围内的线段，
@@ -391,6 +430,11 @@ for k = 1:numel(vias)
 end
 for k = 1:numel(pads)
     p = pads(k);
+    t = struct('xy', p.xy, 'padDiameter', p.diameter, 'layers', p.layer);
+    terms(end + 1) = t; %#ok<AGROW>
+end
+for k = 1:numel(electrodePads)
+    p = electrodePads(k);
     t = struct('xy', p.xy, 'padDiameter', p.diameter, 'layers', p.layer);
     terms(end + 1) = t; %#ok<AGROW>
 end
@@ -512,7 +556,7 @@ tf = p(1) >= min(a(:, 1), b(:, 1)) - tol & p(1) <= max(a(:, 1), b(:, 1)) + tol &
     p(2) >= min(a(:, 2), b(:, 2)) - tol & p(2) <= max(a(:, 2), b(:, 2)) + tol;
 end
 
-function s = computeCopperSpacing(cfg, eff, coils, connectionPaths, pads, vias)
+function s = computeCopperSpacing(cfg, eff, coils, connectionPaths, pads, vias, electrodePads)
 dMin = inf;
 per = cfg.samplePointsPerTurn;
 % 端子列表与焊环半径：路径端点若与某端子重合，则该端子焊环+净距带内的路径点
@@ -528,6 +572,10 @@ end
 for k = 1:numel(vias)
     termXY(end + 1, :) = vias(k).xy; %#ok<AGROW>
     termR(end + 1) = vias(k).padDiameter / 2; %#ok<AGROW>
+end
+for k = 1:numel(electrodePads)
+    termXY(end + 1, :) = electrodePads(k).xy; %#ok<AGROW>
+    termR(end + 1) = electrodePads(k).diameter / 2; %#ok<AGROW>
 end
 zone = @(tR, p) tR + cfg.traceWidth / 2 + cfg.traceSpacing; % 附着带半径
 nTerm = size(termXY, 1);
@@ -658,6 +706,36 @@ q = a + t .* ab;
 d = sqrt(sum((p - q).^2, 2));
 end
 
+function d = signedDistanceToOuterLoop(points, loop)
+% Positive inside-distance to a closed outer loop; negative outside.
+points = reshape(points, [], 2);
+loop = loop(all(isfinite(loop), 2), :);
+if size(loop, 1) < 2 || isempty(points)
+    d = inf(size(points, 1), 1);
+    return;
+end
+if norm(loop(1, :) - loop(end, :)) > 1e-12
+    loop(end + 1, :) = loop(1, :);
+end
+d = inf(size(points, 1), 1);
+for k = 1:size(loop, 1) - 1
+    a = loop(k, :);
+    b = loop(k + 1, :);
+    ab = b - a;
+    len2 = dot(ab, ab);
+    if len2 <= eps
+        continue;
+    end
+    t = ((points(:, 1) - a(1)) * ab(1) + ...
+        (points(:, 2) - a(2)) * ab(2)) / len2;
+    t = max(0, min(1, t));
+    q = a + t * ab;
+    d = min(d, sqrt(sum((points - q).^2, 2)));
+end
+inside = inpolygon(points(:, 1), points(:, 2), loop(:, 1), loop(:, 2));
+d(~inside) = -d(~inside);
+end
+
 function tf = segmentsIntersectRows(a1, a2, b1, b2, tol)
 d1 = a2 - a1;
 d2 = b2 - b1;
@@ -679,10 +757,11 @@ tf = p(:, 1) >= min(a(:, 1), b(:, 1)) - tol & p(:, 1) <= max(a(:, 1), b(:, 1)) +
     p(:, 2) >= min(a(:, 2), b(:, 2)) - tol & p(:, 2) <= max(a(:, 2), b(:, 2)) + tol;
 end
 
-function s = computeCopperToBoard(cfg, eff, coils, connectionPaths, pads, vias)
-% 板框 DXF/SVG 轮廓以中心线表示，实体内侧边界位于中心线内
-% boardOutlineLineWidth/2。所有铜均按实际外缘计算到该内侧边界的净距。
-boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+function s = computeCopperToBoard(cfg, boardLoops, coils, connectionPaths, pads, vias, electrodePads)
+% Measure against the actual outer board boundary, including local lugs and
+% the two electrode fingers, rather than approximating a non-circular edge
+% with one global radius.
+outerLoop = boardLoops(1).xy;
 dMin = inf;
 for li = 1:numel(coils)
     pts = coils{li};
@@ -693,33 +772,41 @@ for li = 1:numel(coils)
     if isempty(pts)
         continue;
     end
-    r = sqrt(sum(pts.^2, 2));
-    dMin = min(dMin, min(boardEdgeInnerR - r) - cfg.traceWidth / 2); % 走线中心线减半线宽
+    dToBoard = signedDistanceToOuterLoop(pts, outerLoop);
+    dMin = min(dMin, min(dToBoard) - cfg.boardOutlineLineWidth / 2 - cfg.traceWidth / 2);
 end
 for k = 1:numel(pads)
-    dMin = min(dMin, boardEdgeInnerR - (norm(pads(k).xy) + pads(k).diameter / 2));
+    dMin = min(dMin, signedDistanceToOuterLoop(pads(k).xy, outerLoop) - ...
+        cfg.boardOutlineLineWidth / 2 - pads(k).diameter / 2);
 end
 for k = 1:numel(vias)
-    dMin = min(dMin, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
+    dMin = min(dMin, signedDistanceToOuterLoop(vias(k).xy, outerLoop) - ...
+        cfg.boardOutlineLineWidth / 2 - vias(k).padDiameter / 2);
+end
+for k = 1:numel(electrodePads)
+    dMin = min(dMin, signedDistanceToOuterLoop(electrodePads(k).xy, outerLoop) - ...
+        cfg.boardOutlineLineWidth / 2 - electrodePads(k).diameter / 2);
 end
 s = dMin;
 end
 
-function s = computeViaToBoard(cfg, eff, vias)
-% 过孔焊盘切线到板框线内侧边界的距离；这是四层通孔外移后的板径约束。
-boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+function s = computeViaToBoard(cfg, boardLoops, vias)
+% Via-pad tangent clearance to the actual outer board boundary.
+outerLoop = boardLoops(1).xy;
 s = inf;
 for k = 1:numel(vias)
-    s = min(s, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).padDiameter / 2));
+    s = min(s, signedDistanceToOuterLoop(vias(k).xy, outerLoop) - ...
+        cfg.boardOutlineLineWidth / 2 - vias(k).padDiameter / 2);
 end
 end
 
-function s = computeDrillToBoard(cfg, eff, vias)
-% 钻孔切线到板框线内侧边界的距离（嘉立创规则：默认至少 0.176 mm）。
-boardEdgeInnerR = eff.boardOuterDiameter / 2 - cfg.boardOutlineLineWidth / 2;
+function s = computeDrillToBoard(cfg, boardLoops, vias)
+% Drill tangent clearance to the actual outer board boundary.
+outerLoop = boardLoops(1).xy;
 s = inf;
 for k = 1:numel(vias)
-    s = min(s, boardEdgeInnerR - (norm(vias(k).xy) + vias(k).drillDiameter / 2));
+    s = min(s, signedDistanceToOuterLoop(vias(k).xy, outerLoop) - ...
+        cfg.boardOutlineLineWidth / 2 - vias(k).drillDiameter / 2);
 end
 end
 
@@ -772,13 +859,18 @@ q = a + t .* ab;
 d = min(sqrt(sum((q - point).^2, 2)));
 end
 
-function s = computeCopperToSlots(cfg, boardLoops, coils, connectionPaths, pads, vias)
+function [s, governingHole] = computeCopperToSlots(cfg, boardLoops, coils, connectionPaths, pads, vias, electrodePads)
+% 铜/端子到孔槽的最小净距，并回报控制该净距的孔槽名（用于把失败归因到
+% 具体特征，例如安装耳朵挖槽，而不是只给一个通用净距数字）。
 holeLoops = {};
+holeNames = {};
 for k = 1:numel(boardLoops)
     if boardLoops(k).isHole
         holeLoops{end + 1} = boardLoops(k).xy; %#ok<AGROW>
+        holeNames{end + 1} = boardLoops(k).name; %#ok<AGROW>
     end
 end
+governingHole = '';
 if isempty(holeLoops)
     s = inf;
     return;
@@ -794,27 +886,58 @@ for li = 1:numel(coils)
             continue;
         end
         if size(path, 1) < 2
-            dMin = min(dMin, ...
-                minDistanceToHoles(path, holeLoops, 256) - cfg.traceWidth / 2);
+            [d, h] = minDistanceToHolesWithIndex(path, holeLoops, 256);
+            [dMin, governingHole] = keepSmaller(dMin, governingHole, ...
+                d - cfg.traceWidth / 2, holeNames, h);
             continue;
         end
         for h = 1:numel(holeLoops)
-            dMin = min(dMin, ...
-                polylineDistance(path, holeLoops{h}) - cfg.traceWidth / 2);
+            [dMin, governingHole] = keepSmaller(dMin, governingHole, ...
+                polylineDistance(path, holeLoops{h}) - cfg.traceWidth / 2, holeNames, h);
         end
     end
 end
 for k = 1:numel(pads)
-    dMin = min(dMin, minDistanceToHoles(pads(k).xy, holeLoops, 256) - pads(k).diameter / 2);
+    [d, h] = minDistanceToHolesWithIndex(pads(k).xy, holeLoops, 256);
+    [dMin, governingHole] = keepSmaller(dMin, governingHole, ...
+        d - pads(k).diameter / 2, holeNames, h);
 end
 for k = 1:numel(vias)
-    dMin = min(dMin, minDistanceToHoles(vias(k).xy, holeLoops, 256) - vias(k).padDiameter / 2);
+    [d, h] = minDistanceToHolesWithIndex(vias(k).xy, holeLoops, 256);
+    [dMin, governingHole] = keepSmaller(dMin, governingHole, ...
+        d - vias(k).padDiameter / 2, holeNames, h);
+end
+for k = 1:numel(electrodePads)
+    [d, h] = minDistanceToHolesWithIndex(electrodePads(k).xy, holeLoops, 256);
+    [dMin, governingHole] = keepSmaller(dMin, governingHole, ...
+        d - electrodePads(k).diameter / 2, holeNames, h);
 end
 s = dMin;
 end
 
-function c = computeTerminalClearance(cfg, pads, vias)
-[~, xy, radii] = terminalArrays(pads, vias);
+function [dMin, name] = keepSmaller(dMin, name, candidate, holeNames, holeIndex)
+% 更新最小净距及其孔槽名。
+if candidate < dMin - 1e-12
+    dMin = candidate;
+    name = holeNames{holeIndex};
+end
+end
+
+function [d, holeIndex] = minDistanceToHolesWithIndex(points, holeLoops, nSamples)
+% minDistanceToHoles 的带索引版本：同时回报控制最小距离的孔槽序号。
+d = inf;
+holeIndex = 0;
+for h = 1:numel(holeLoops)
+    dh = minDistanceToHoles(points, holeLoops(h), nSamples);
+    if dh < d
+        d = dh;
+        holeIndex = h;
+    end
+end
+end
+
+function c = computeTerminalClearance(cfg, pads, vias, electrodePads)
+[~, xy, radii] = terminalArrays(pads, vias, electrodePads);
 c = inf;
 for i = 1:size(xy, 1)
     for j = i + 1:size(xy, 1)
@@ -824,7 +947,7 @@ end
 end
 
 function dMin = computeTerminalToConnectionTrace( ...
-    cfg, connectionPaths, vias, pads)
+    cfg, connectionPaths, vias, pads, electrodePads)
 % Functional terminal copper disks versus every same-layer connection trace.
 % Only the contiguous attachment segment of a path that actually terminates
 % at the disk is exempt; unrelated paths and later path re-entry are measured.
@@ -841,6 +964,12 @@ for k = 1:numel(pads)
         'xy', pads(k).xy, ...
         'radius', pads(k).diameter / 2, ...
         'layers', pads(k).layer);
+end
+for k = 1:numel(electrodePads)
+    terms(end + 1) = struct( ... %#ok<AGROW>
+        'xy', electrodePads(k).xy, ...
+        'radius', electrodePads(k).diameter / 2, ...
+        'layers', electrodePads(k).layer);
 end
 
 for termIndex = 1:numel(terms)
@@ -1029,8 +1158,11 @@ for i = 1:numel(vias)
 end
 end
 
-function [names, xy, radii] = terminalArrays(pads, vias)
-count = numel(pads) + numel(vias);
+function [names, xy, radii] = terminalArrays(pads, vias, electrodePads)
+if nargin < 3
+    electrodePads = struct('name', {}, 'xy', {}, 'diameter', {});
+end
+count = numel(pads) + numel(vias) + numel(electrodePads);
 names = cell(count, 1);
 xy = zeros(count, 2);
 radii = zeros(count, 1);
@@ -1046,6 +1178,12 @@ for viaIndex = 1:numel(vias)
     names{index} = vias(viaIndex).name;
     xy(index, :) = vias(viaIndex).xy;
     radii(index) = vias(viaIndex).padDiameter / 2;
+end
+for padIndex = 1:numel(electrodePads)
+    index = index + 1;
+    names{index} = electrodePads(padIndex).name;
+    xy(index, :) = electrodePads(padIndex).xy;
+    radii(index) = electrodePads(padIndex).diameter / 2;
 end
 end
 
