@@ -596,7 +596,7 @@ for li = 1:numel(coils)
             i = i(keepPair);
             j = j(keepPair);
             dMin = min(dMin, min(segmentPairDistances( ...
-                xy(i, :), xy(i + 1, :), xy(j, :), xy(j + 1, :))));
+                xy(i, :), xy(i + 1, :), xy(j, :), xy(j + 1, :), dMin)));
         end
     end
 end
@@ -681,12 +681,40 @@ for first = 1:chunkSize:size(pa, 1)
     a2 = repelem(pb(first:last, :), nQ, 1);
     b1 = repmat(qa, nP, 1);
     b2 = repmat(qb, nP, 1);
-    dMin = min(dMin, min(segmentPairDistances(a1, a2, b1, b2)));
+    dMin = min(dMin, min(segmentPairDistances(a1, a2, b1, b2, dMin)));
 end
 end
 
-function d = segmentPairDistances(a1, a2, b1, b2)
+function d = segmentPairDistances(a1, a2, b1, b2, pruneAbove)
 % Exact Euclidean distance for corresponding 2-D segment pairs.
+% pruneAbove is an optional running minimum.  The gap between the two segments'
+% axis-aligned bounding boxes is a lower bound on their distance, so any pair
+% separated by strictly more than pruneAbove cannot carry the minimum and is
+% dropped before the exact arithmetic.  A pair whose distance beats the running
+% minimum always has a bounding-box gap no larger than that distance, so it
+% always survives.  The threshold is inflated by the rounding slack below, which
+% only ever keeps additional candidates: a pruned pair can never have supplied
+% the minimum, so the surviving minimum is bit-identical to the unfiltered one.
+if nargin > 4 && isfinite(pruneAbove) && ~isempty(a1)
+    % min/max are exact, but the gap subtraction can round by ~1 ulp; that
+    % slack keeps a candidate sitting exactly on the threshold.
+    limit = pruneAbove * (1 + 1e-12);
+    dx = max(0, max(min(a1(:, 1), a2(:, 1)), min(b1(:, 1), b2(:, 1))) - ...
+        min(max(a1(:, 1), a2(:, 1)), max(b1(:, 1), b2(:, 1))));
+    dy = max(0, max(min(a1(:, 2), a2(:, 2)), min(b1(:, 2), b2(:, 2))) - ...
+        min(max(a1(:, 2), a2(:, 2)), max(b1(:, 2), b2(:, 2))));
+    keep = (dx .* dx + dy .* dy) <= limit * limit;
+    if ~any(keep)
+        d = inf;
+        return;
+    end
+    if ~all(keep)
+        a1 = a1(keep, :);
+        a2 = a2(keep, :);
+        b1 = b1(keep, :);
+        b2 = b2(keep, :);
+    end
+end
 d = min([pointSegmentDistances(a1, b1, b2), ...
     pointSegmentDistances(a2, b1, b2), ...
     pointSegmentDistances(b1, a1, a2), ...

@@ -371,6 +371,31 @@ verifyLessThan(testCase, validation.minCopperToSlotsMm, cfg.edgeClearance - 0.05
 verifyFalse(testCase, validation.passed);
 end
 
+function testDefaultClearanceMetricsArePinnedExactly(testCase)
+% 净距指标是线段-线段精确距离核的唯一可观测输出。距离核允许用包围盒下界
+% 剪枝以加速（见 segmentPairDistances 的 pruneAbove），但剪枝不得改变结果：
+% 这里把默认 4/4 的实测值按 1e-9 锁死，任何让核多算/少算的改动都会在此暴露，
+% 而不是只让某个上限/下限断言继续通过。
+result = circular_fpc_main(struct( ...
+    'analysisOnly', true, 'enableFigure', false, ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'designName', 'pinned_clearance_metrics'));
+verifyTrue(testCase, result.validation.passed);
+tol = 1e-9;
+verifyEqual(testCase, result.validation.minCopperSpacingMm, ...
+    0.15496263114492698, 'AbsTol', tol);
+verifyEqual(testCase, result.validation.minCopperToBoardMm, ...
+    0.3014902872774986, 'AbsTol', tol);
+verifyEqual(testCase, result.validation.minCopperToSlotsMm, ...
+    0.30998054553262444, 'AbsTol', tol);
+verifyEqual(testCase, result.validation.minViaCoilSpacingMm, ...
+    0.15580274311364448, 'AbsTol', tol);
+verifyEqual(testCase, result.validation.minTerminalToConnectionTraceMm, ...
+    0.17360998579486206, 'AbsTol', tol);
+verifyEqual(testCase, result.validation.minOuterViaContactSweepDeg, ...
+    114.00214740156351, 'AbsTol', tol);
+end
+
 function d = minPointToLoopDistance(point, xy)
 a = xy(1:end-1, :);
 b = xy(2:end, :);
