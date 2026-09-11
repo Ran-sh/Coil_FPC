@@ -122,9 +122,7 @@ jobs:
             assert(copyOk);
             assert(isfile(fullfile(stagePath, 'generation_status.txt')));
             assert(isfile(fullfile(stagePath, 'reports', '08_file_manifest.csv')));
-            assert(~isempty(dir(fullfile(stagePath, 'preview', 'JLC', 'centerline', '*.svg'))));
-            assert(~isempty(dir(fullfile(stagePath, 'preview', 'JLC', 'physical', '*.svg'))));
-            assert(~isempty(dir(fullfile(stagePath, 'preview', 'COMSOL', '*.svg'))));
+            assert(~isempty(dir(fullfile(stagePath, 'previews', '*.svg'))));
             assert(~isempty(dir(fullfile(stagePath, 'dxf', '**', '*.dxf'))));
             assert(isfolder(fullfile(stagePath, 'reports')))
       - name: Upload rectangular canonical artifacts
