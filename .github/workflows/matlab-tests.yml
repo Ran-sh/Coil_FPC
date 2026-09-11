@@ -84,7 +84,10 @@ jobs:
             assert(isfile(fullfile(result.outputPath, 'reports', '09_comsol_stackup.csv')));
             assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', 'centerline', '*.svg'))));
             assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', 'physical', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', 'main', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', 'with_terminals', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'zh', 'JLC', 'centerline', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'en', 'COMSOL', 'with_terminals', '*.svg'))));
             assert(~isempty(dir(fullfile(result.outputPath, 'dxf', '**', '*.dxf'))));
             assert(isfolder(fullfile(result.outputPath, 'reports')))
       - name: Upload circular canonical artifacts
