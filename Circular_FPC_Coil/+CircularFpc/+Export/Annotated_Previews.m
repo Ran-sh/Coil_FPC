@@ -281,7 +281,7 @@ leg(end + 1) = item('#9aa5aa', t.lgReference);
 for k = 1:numel(result.activeCoilLayers)
     li = result.activeCoilLayers(k);
     if withTerminals && li == 1
-        % 带端子变体里端子焊盘与 L1 铜轮廓同色，并进 L1 条目说明，避免出现两个
+        % 带引线变体里引线与 L1 铜轮廓同色，并进 L1 条目说明，避免出现两个
         % 一模一样的色块。
         leg(end + 1) = item(layerColor(li), sprintf('%s · %s', ...
             sprintf(t.lgLayer, li), t.lgTermPad));
@@ -325,7 +325,7 @@ if strcmp(lang, 'zh')
     t.lgVia = sprintf('贯通过孔 %s', viaNames);
     t.lgSilk = '端子引线标注线';
     t.lgReference = '板框与挖槽轮廓（仿真参考）';
-    t.lgTermPad = '含端子焊盘';
+    t.lgTermPad = '含端子引线';
 
     t.ovTitle = sprintf('%d 层板 / %d 活动线圈层（%d/%d）— JLC 中心线总览', ...
         cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);
@@ -375,8 +375,8 @@ if strcmp(lang, 'zh')
     t.cmLayerSub = '仅主螺旋闭合轮廓，可在 COMSOL 中选作域或边界线圈';
     t.cmEmptyTitle = 'COMSOL 仿真几何 — L%d（非活动层，无铜）';
     t.cmEmptySub = '该层不是活动线圈层，仿真 DXF 中不含铜轮廓';
-    t.ctTitle = 'COMSOL 仿真几何 — 带端子变体总览';
-    t.ctSub = '在主螺旋上追加 L1 的 PAD_A / PAD_B 圆盘与中心短边引线；仍不含过孔与钻孔';
+    t.ctTitle = 'COMSOL 仿真几何 — 带引线变体总览';
+    t.ctSub = '每层主螺旋与该层端子引线合并成一条闭合轮廓；不导出焊盘，仍不含过孔与钻孔';
     t.comsolNotes = { '闭合主螺旋轮廓，可在 COMSOL 中选作域或边界线圈，厚度取 0.012 mm。', ...
         '本图仅说明导出的仿真几何，不代表已通过 COMSOL 实际导入或求解验证。' };
     t.layerRoleName = struct('top', '顶层', 'bottom', '底层', 'inner1', '内层1', ...
@@ -392,7 +392,7 @@ else
     t.lgVia = sprintf('Through-vias %s', viaNames);
     t.lgSilk = 'Terminal leader lines';
     t.lgReference = 'Board and cut-out outlines (simulation reference)';
-    t.lgTermPad = 'includes terminal pads';
+    t.lgTermPad = 'includes terminal lead';
 
     t.ovTitle = sprintf('%d-layer board / %d active coil layers (%d/%d) - JLC centerline overview', ...
         cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);
@@ -445,9 +445,9 @@ else
     t.cmLayerSub = 'Closed main-spiral contour only; select as a domain or boundary coil in COMSOL';
     t.cmEmptyTitle = 'COMSOL simulation geometry - L%d (inactive layer, no copper)';
     t.cmEmptySub = 'This is not an active coil layer, so the simulation DXF holds no copper contour';
-    t.ctTitle = 'COMSOL simulation geometry - with-terminals variant';
-    t.ctSub = ['Adds the L1 PAD_A / PAD_B disks and center short-edge leads to the ' ...
-        'main spiral; still no vias or drills'];
+    t.ctTitle = 'COMSOL simulation geometry - with-lead variant';
+    t.ctSub = ['Each layer merges its spiral with the terminal lead drawn on it ' ...
+        'into one closed ring; no pads are exported and still no vias or drills'];
     t.comsolNotes = { 'Closed main-spiral contour; select it as a domain or boundary coil in COMSOL, thickness 0.012 mm.', ...
         'This figure documents the exported simulation geometry only; it does not claim a successful COMSOL import or solve.' };
     t.layerRoleName = struct('top', 'top', 'bottom', 'bottom', 'inner1', 'inner 1', ...
