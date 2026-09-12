@@ -230,7 +230,12 @@ end
 function testFigureViewerCreatesFigureWithLayersAndPads(testCase)
 
 priorFigs = findall(0, 'Type', 'figure');
-result = rectangular_fpc_main(struct('enablePreview', false, 'enableFigure', true));
+% outputRoot 必须显式给出：默认值是相对路径，省略时本测试会把真实产物发布到
+% 当前工作目录，整套回归每跑一次就留下一个 10 MB 级的产物目录。
+result = rectangular_fpc_main(struct( ...
+    'outputRoot', testCase.TestData.outputRoot, ...
+    'designName', 'figure_contract', ...
+    'enablePreview', false, 'enableFigure', true));
 verifyTrue(testCase, result.passed);
 
 % 新字段必须出现在 result 中，供图窗绘制使用
