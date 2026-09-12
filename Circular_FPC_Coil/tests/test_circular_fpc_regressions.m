@@ -1549,7 +1549,7 @@ end
 end
 
 function testFigurePlotContract(testCase)
-% CircularFpc.Export.FigurePlot 已移入 +CircularFpc/+Export/（内部函数，仅由 circular_fpc_main 调用，
+% CircularFpc.Export.Figure_Plot 已移入 +CircularFpc/+Export/（内部函数，仅由 circular_fpc_main 调用，
 % 对 tests/ 不可见）；此处校验 enableFigure 配置契约与无头环境跳过行为。
 outRoot = tempname;
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'plot_contract', ...
@@ -1896,7 +1896,7 @@ verifyTrue(testCase, contains(workflow, "needs.circular-test.result == 'success'
 verifyTrue(testCase, contains(workflow, "needs.rectangular-test.result == 'success'"));
 verifyFalse(testCase, contains(workflow, 'if: always()'), ...
     'Canonical generation/upload must never run after a failed prerequisite or failed generation.');
-verifyTrue(testCase, contains(workflow, 'rectangular_fpc_read_committed'), ...
+verifyTrue(testCase, contains(workflow, 'RectangularFpc.Publish.Read_Committed'), ...
     'CI must snapshot the exact rectangular committed output while holding its reader lock.');
 verifyTrue(testCase, contains(workflow, 'copyOk'), ...
     'CI must assert the result of copying the committed rectangular output.');

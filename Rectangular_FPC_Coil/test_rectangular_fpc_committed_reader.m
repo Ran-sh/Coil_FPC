@@ -4,13 +4,13 @@ tests = functiontests(localfunctions);
 end
 
 function testCommittedReaderHoldsExclusiveAccessLock(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
 
 reader = @(folder) support.verifyPublishBlockedDuringRead(testCase, folder, paths);
-marker = rectangular_fpc_read_committed(paths.output, reader);
+marker = RectangularFpc.Publish.Read_Committed(paths.output, reader);
 
 verifyEqual(testCase, marker, 'old_marker');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
@@ -19,14 +19,14 @@ clear cleanup;
 end
 
 function testReaderRejectsUncommittedFolder(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 delete(fullfile(paths.output, 'generation_status.txt'));
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for uncommitted output');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
@@ -34,14 +34,14 @@ clear cleanup;
 end
 
 function testMissingOutputDoesNotCreateParentDirectories(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 workspaceRoot = tempname;
 outputFolder = fullfile(workspaceRoot, 'missing_parent', 'missing_output');
 cleanup = onCleanup(@() support.removeFixture(workspaceRoot));
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for missing output: %s', folder);
 
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     outputFolder, reader), 'RectangularFPC:OutputNotFound');
 
 verifyFalse(testCase, isfolder(workspaceRoot));
@@ -50,7 +50,7 @@ clear cleanup;
 end
 
 function testReaderRejectsTamperedManifest(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -61,19 +61,19 @@ clear tamperCleanup;
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for tampered output');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
 function testReaderAcceptsCommittedTree(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
 
-marker = rectangular_fpc_read_committed(paths.output, @(folder) ...
+marker = RectangularFpc.Publish.Read_Committed(paths.output, @(folder) ...
     fileread(fullfile(folder, 'old_marker.txt')));
 
 verifyEqual(testCase, marker, 'marker');
@@ -82,7 +82,7 @@ clear cleanup;
 end
 
 function testReaderRejectsSelfConsistentManifestMissingRequiredArtifacts(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 % Removing a required handoff artifact and rebuilding a perfectly
 % self-consistent manifest must still be rejected. This isolates the
 % semantic commit contract from ordinary missing-file/hash failures.
@@ -104,7 +104,7 @@ for artifactIndex = 1:numel(requiredArtifacts)
     reader = @(folder) error('Test:ReaderMustNotRun', ...
         'reader callback must not run when %s is absent from a self-consistent manifest', ...
         requiredArtifacts{artifactIndex});
-    verifyError(testCase, @() rectangular_fpc_read_committed( ...
+    verifyError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
         paths.output, reader), 'RectangularFPC:OutputNotCommitted', ...
         sprintf('required artifact was not enforced: %s', ...
         requiredArtifacts{artifactIndex}));
@@ -114,7 +114,7 @@ end
 end
 
 function testReaderRejectsIncorrectManifestRole(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 % Path, size and digest remain valid; only the semantic role is wrong.
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
@@ -124,14 +124,14 @@ support.rewriteCommitManifest(paths.output, { ...
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for an incorrect manifest role');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
 clear cleanup;
 end
 
 function testReaderCallbackFailureReleasesLock(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -139,7 +139,7 @@ originalFolder = pwd;
 folderCleanup = onCleanup(@() cd(originalFolder));
 
 reader = @(folder) support.changeDirectoryAndFail(folder, paths.root);
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'Test:InjectedReaderFailure');
 
 verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
@@ -148,12 +148,12 @@ clear cleanup;
 end
 
 function testReaderAcceptsStringScalarOutputPath(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
 
-marker = rectangular_fpc_read_committed(string(paths.output), @(folder) ...
+marker = RectangularFpc.Publish.Read_Committed(string(paths.output), @(folder) ...
     fileread(fullfile(char(folder), 'old_marker.txt')));
 
 verifyEqual(testCase, marker, 'marker');
@@ -162,16 +162,16 @@ clear cleanup;
 end
 
 function testReaderAcceptsRelativeAndTrailingSeparatorPaths(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 originalFolder = pwd;
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.restoreFolderAndRemove(originalFolder, paths.root));
 [~, outputName] = fileparts(paths.output);
 cd(paths.root);
 
-relativeMarker = rectangular_fpc_read_committed(outputName, @(folder) ...
+relativeMarker = RectangularFpc.Publish.Read_Committed(outputName, @(folder) ...
     fileread(fullfile(folder, 'old_marker.txt')));
-trailingMarker = rectangular_fpc_read_committed( ...
+trailingMarker = RectangularFpc.Publish.Read_Committed( ...
     [paths.output filesep], @(folder) ...
     fileread(fullfile(folder, 'old_marker.txt')));
 
@@ -183,7 +183,7 @@ clear cleanup;
 end
 
 function testReaderRejectsUnsupportedLayerCountBeforeExpansion(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 unsupported = [0, 1, 3, 9, 1000000000];
 for layerCount = unsupported
     paths = support.makeFixture();
@@ -197,7 +197,7 @@ for layerCount = unsupported
 
     reader = @(folder) error('Test:ReaderMustNotRun', ...
         'reader callback must not run for LayerCount %d', layerCount);
-    verifyError(testCase, @() rectangular_fpc_read_committed( ...
+    verifyError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
         paths.output, reader), 'RectangularFPC:OutputNotCommitted');
     verifyFalse(testCase, isfolder([paths.output '_publish.lock']));
     clear cleanup;
@@ -205,7 +205,7 @@ end
 end
 
 function testReaderRejectsHeaderOnlyManifest(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -216,14 +216,14 @@ clear manifestCleanup;
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for header-only manifest');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 clear cleanup;
 end
 
 function testReaderRejectsTruncatedManifest(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -239,13 +239,13 @@ clear manifestCleanup;
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for truncated manifest');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 clear cleanup;
 end
 
 function testReaderRejectsDuplicateManifestRows(testCase)
-support = RectangularFpc.Publish.PublishSupport();
+support = RectangularFpc.Publish.Publish_Support();
 paths = support.makeFixture();
 cleanup = onCleanup(@() support.removeFixture(paths.root));
 support.writeCommitEvidence(paths.output);
@@ -262,7 +262,7 @@ clear manifestCleanup;
 
 reader = @(folder) error('Test:ReaderMustNotRun', ...
     'reader callback must not run for duplicated manifest rows');
-assertError(testCase, @() rectangular_fpc_read_committed( ...
+assertError(testCase, @() RectangularFpc.Publish.Read_Committed( ...
     paths.output, reader), 'RectangularFPC:OutputNotCommitted');
 clear cleanup;
 end

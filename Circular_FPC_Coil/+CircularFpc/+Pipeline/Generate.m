@@ -1,7 +1,7 @@
 function result = Generate(cfg)
 % 组装完整生成结果（R2-R4），只计算、不写任何输出文件。
 % 流程：有效尺寸 → 可行性校验 → 板框/桥 → 线圈与端子网络 → 结果验证 → 汇总。
-eff = CircularFpc.Geometry.BoardAndCoil('effective', cfg);
+eff = CircularFpc.Geometry.Board_And_Coil('effective', cfg);
 % 外端过孔延伸区：导线从线圈最外圈沿径向向外延伸 E，过孔落在延伸端，
 % 焊环与相邻匝净距 = E + 节距 - 焊环半径 - 半线宽，须 >= viaCoilSpacing。
 % 由此过孔不影响线距/匝数，代价是板框相应变大（auto 模式自动计入）。
@@ -30,12 +30,12 @@ for sizingPass = 1:maxOuterSizingPasses
     if sizingPass > 1 && strcmp(cfg.boardSizingMode, 'auto')
         eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
     end
-    CircularFpc.Quality.ResultValidation('validate_feasibility', cfg, eff);
+    CircularFpc.Quality.Result_Validation('validate_feasibility', cfg, eff);
     [boardLoops, actualBridgeWidth, layoutRegions] = ...
-        CircularFpc.Geometry.BoardAndCoil('board', cfg, eff, activeLayers);
+        CircularFpc.Geometry.Board_And_Coil('board', cfg, eff, activeLayers);
     eff.actualBridgeWidth = actualBridgeWidth;
     [coils, connectionPaths, pads, vias, seriesRoute, returnLayer, electrodePads] = ...
-        CircularFpc.Geometry.BoardAndCoil('network', cfg, eff, activeLayers, directions, layoutRegions);
+        CircularFpc.Geometry.Board_And_Coil('network', cfg, eff, activeLayers, directions, layoutRegions);
     seriesSequence = buildSeriesSequence(seriesRoute); % 只保留关键节点的串联序列（用于报告）
     geom = struct();
     geom.boardLoops = boardLoops;
@@ -49,11 +49,11 @@ for sizingPass = 1:maxOuterSizingPasses
     geom.seriesRoute = seriesRoute;
     geom.seriesSequence = seriesSequence;
     geom.activeLayers = activeLayers;
-    validation = CircularFpc.Quality.ResultValidation('validate_result', cfg, eff, geom);
+    validation = CircularFpc.Quality.Result_Validation('validate_result', cfg, eff, geom);
     if ~autoOuterSizing || sizingPass == maxOuterSizingPasses
         break;
     end
-    mfRules = CircularFpc.Quality.JlcRules('resolve', cfg).rules;
+    mfRules = CircularFpc.Quality.Jlc_Rules('resolve', cfg).rules;
     deltaDrill = 0;
     if crossLayerSizing
         deltaDrill = mfRules.minDrillToCopperMm - validation.minViaToNonConnectedCopperMm;
@@ -73,7 +73,7 @@ for sizingPass = 1:maxOuterSizingPasses
     % 应提高 minDrillToCopper/viaCoilSpacing 规则值，而不是依赖这里。
     eff.viaEndExtension = eff.viaEndExtension + requiredExtension + 1e-6;
 end
-mfRules = CircularFpc.Quality.JlcRules('resolve', cfg).rules;
+mfRules = CircularFpc.Quality.Jlc_Rules('resolve', cfg).rules;
 if crossLayerSizing && validation.minViaToNonConnectedCopperMm < ...
     mfRules.minDrillToCopperMm - 1e-9
     error('CircularFPC:GeometryInfeasible', ...
@@ -90,7 +90,7 @@ if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
 end
 % Auto 模式的基础网络只作为 terminal reroute 的输入。它仍然包含旧的
 % 端子桥路径，某些合法 d/L 组合（例如较小 d）可能只会让这套即将被
-% 替换的旧路径触发角度/净距检查；最终结果会在 CircularFpc.Geometry.TerminalRouting
+% 替换的旧路径触发角度/净距检查；最终结果会在 CircularFpc.Geometry.Terminal_Routing
 % 完成后重新做完整 validation + manufacturing 检查。manual 模式没有后置
 % 重布线，因此必须在这里严格拒绝基础几何失败。
 if strcmp(cfg.terminalPlacementMode, 'manual')
@@ -98,13 +98,13 @@ if strcmp(cfg.terminalPlacementMode, 'manual')
         error('CircularFPC:ValidationFailed', ...
             'Generated geometry failed validation: %s', strjoin(validation.messages, '; '));
     end
-    manufacturing = CircularFpc.Quality.JlcRules('check_result', cfg, validation);
+    manufacturing = CircularFpc.Quality.Jlc_Rules('check_result', cfg, validation);
     if ~manufacturing.passed
         error('CircularFPC:ValidationFailed', ...
             'Manufacturing result checks failed: %s', strjoin(manufacturing.failures, '; '));
     end
 else
-    manufacturing = CircularFpc.Quality.JlcRules('check_result', cfg, validation);
+    manufacturing = CircularFpc.Quality.Jlc_Rules('check_result', cfg, validation);
 end
 % 平台水平/垂直边槽余量已预检，四角与内圆自然形成的四个连接区由
 % 最终布尔拓扑和铜到槽 DRC 检查；保留空 advisories 字段维持报告结构。
@@ -130,8 +130,8 @@ result.seriesRoute = seriesRoute;           % 完整串联路由（含坐标与�
 result.returnLayer = returnLayer;           % 单线圈组合的回流层（2/1→2，4/1→4），多线圈为 NaN
 result.totalTraceLengthMm = totalLengthMm;  % 铜走线总长（线圈 + 连接路径）
 result.estimatedDcResistanceOhm = resOhm;   % 直流电阻几何粗估
-result.validation = validation;             % 验证结果（见 CircularFpc.Quality.ResultValidation）
-result.manufacturing = manufacturing;       % 制造档案检查报告（见 CircularFpc.Quality.JlcRules）
+result.validation = validation;             % 验证结果（见 CircularFpc.Quality.Result_Validation）
+result.manufacturing = manufacturing;       % 制造档案检查报告（见 CircularFpc.Quality.Jlc_Rules）
 result.outputPath = fullfile(cfg.outputRoot, cfg.designName);
 result.config = cfg;
 end

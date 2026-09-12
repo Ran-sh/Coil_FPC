@@ -5,15 +5,21 @@ Preserve the public geometry, electrical, manufacturing-check, and export contra
 
 ## Repository map
 
-- `Circular_FPC_Coil/`: public entrypoints `circular_fpc_default_config` and
-  `circular_fpc_main`; helpers live under `+CircularFpc/`.
-- `Rectangular_FPC_Coil/`: public entrypoints `rectangular_fpc_default_config`,
-  `rectangular_fpc_main`, and `rectangular_fpc_read_committed`; helpers live under
+- Each module root exposes exactly two entrypoints, `*_main` and
+  `*_default_config`. Everything else lives under the helper package:
+  `Circular_FPC_Coil/` uses `+CircularFpc/`, `Rectangular_FPC_Coil/` uses
   `+RectangularFpc/`.
 - Helper packages are grouped by function: `+Pipeline/` (orchestration and config
   validation), `+Geometry/` (board, coil, lead routing, vias), `+Quality/` (result
   validation, design checks, JLC rules), `+Export/` (DXF/SVG/report/preview writing,
-  plotting), and, in rectangular, `+Publish/` (atomic publication and recovery).
+  plotting), `+Publish/` (atomic publication, locking, committed reading, recovery;
+  rectangular only), and `+Compat/` (deprecated shims; rectangular only).
+- Helper filenames separate words with underscores and capitalise each word
+  (`Dxf_Svg_Reports.m`), matching the public `*_main` / `*_default_config` style.
+  MATLAB resolves a package member by filename, so the declaration must match.
+- `RectangularFpc.Publish.Read_Committed` is the only supported reader for a
+  rectangular output; reading the directory directly skips the commit-evidence
+  verification and the access lock.
 - `private/` cannot be renamed or nested under MATLAB's rules, so helpers use package
   folders instead. The package name must stay module-specific (`+CircularFpc`,
   `+RectangularFpc`): two same-named packages on one path silently shadow each other,

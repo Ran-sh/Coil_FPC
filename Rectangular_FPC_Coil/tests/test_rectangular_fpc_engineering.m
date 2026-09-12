@@ -148,14 +148,14 @@ end
 
 function testLegacyWrappersForwardWithDeprecationWarning(testCase)
 lastwarn('');
-legacyCfg = fpc_coil_default_config(struct('analysisOnly', true));
+legacyCfg = RectangularFpc.Compat.Fpc_Coil_Default_Config(struct('analysisOnly', true));
 [~, warningId] = lastwarn;
 
 verifyEqual(testCase, warningId, 'RectangularFPC:DeprecatedAPI');
 verifyTrue(testCase, legacyCfg.analysisOnly);
 
 lastwarn('');
-legacyResult = fpc_coil_main(struct( ...
+legacyResult = RectangularFpc.Compat.Fpc_Coil_Main(struct( ...
     'analysisOnly', true, ...
     'turnsPerLayer', 1, ...
     'enablePreview', false, ...
@@ -175,7 +175,7 @@ overrides = struct( ...
 newResult = rectangular_fpc_main(overrides);
 warningState = warning('off', 'RectangularFPC:DeprecatedAPI');
 cleanup = onCleanup(@() warning(warningState));
-legacyResult = fpc_coil_main(overrides);
+legacyResult = RectangularFpc.Compat.Fpc_Coil_Main(overrides);
 
 verifyEqual(testCase, legacyResult.boardXY, newResult.boardXY, 'AbsTol', 1e-12);
 verifyEqual(testCase, legacyResult.totalLengthMm, newResult.totalLengthMm, ...

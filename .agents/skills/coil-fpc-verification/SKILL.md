@@ -17,7 +17,7 @@ the repository root and read the affected module's README and public config firs
   `run_all_verification` in a fresh MATLAB process.
 - For exports, use a fresh temporary output root. Verify the returned output path, status,
   manifest, required DXF/SVG/report files, and manufacturing result together.
-- For rectangular committed outputs, use `rectangular_fpc_read_committed`; directory
+- For rectangular committed outputs, use `RectangularFpc.Publish.Read_Committed`; directory
   existence is not publication evidence.
 - For the current circular 4-layer process, read `reports/09_comsol_stackup.csv` for the
   nominal `FPC0420TT-121A` layer order and Z positions. Treat its computed 0.203 mm sum

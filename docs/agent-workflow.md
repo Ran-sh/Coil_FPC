@@ -36,7 +36,7 @@ requires it.
 - Circular and rectangular test jobs run independently.
 - Each artifact job depends only on its matching successful test job.
 - Generation validates status, reports, DXF, SVG, and manifest before upload.
-- Rectangular staging reads through `rectangular_fpc_read_committed`.
+- Rectangular staging reads through `RectangularFpc.Publish.Read_Committed`.
 - Each upload uses one exact directory named with the full commit SHA.
 - Third-party Actions stay pinned to reviewed commit SHAs, and MATLAB stays aligned with
   the documented release.

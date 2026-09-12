@@ -1,5 +1,5 @@
 function result = Generate(cfg)
-%RECTANGULAR_FPC_ENGINE Side-effect-free rectangular-coil orchestration.
+%GENERATE Side-effect-free rectangular-coil orchestration.
 % 两层至八层矩形 FPC 线圈共享分析核心。
 %
 % 输入：
@@ -22,14 +22,14 @@ try
 % 1. cfg字段完整性和参数合法性检查
 %% =========================================================
 
-cfg = RectangularFpc.Quality.ResultValidation('config', cfg);
+cfg = RectangularFpc.Quality.Result_Validation('config', cfg);
 
 %% =========================================================
 % 2. 派生参数计算
 %% =========================================================
 
-d = RectangularFpc.Geometry.BoardAndCoil('derived_parameters', cfg);
-limits = RectangularFpc.Geometry.BoardAndCoil('turn_limits', cfg);
+d = RectangularFpc.Geometry.Board_And_Coil('derived_parameters', cfg);
+limits = RectangularFpc.Geometry.Board_And_Coil('turn_limits', cfg);
 tol = cfg.geometryTolerance;
 
 if cfg.tabWidth/2 < d.requiredHalfWidth
@@ -62,9 +62,9 @@ analyticalMaxTurns = limits.analyticalMaximum;
 
 % 理论宽度只回答“放不放得下”。正式推荐值还必须逐个候选执行
 % 圆弧、角度、线距、自交、焊盘和过孔检查，因此两种上限分开保存。
-boardXY = RectangularFpc.Geometry.BoardAndCoil('board_outline', cfg);
-boardXY = RectangularFpc.Geometry.BoardAndCoil('remove_duplicates', boardXY, tol);
-boardXY = RectangularFpc.Geometry.BoardAndCoil('remove_zero_length', boardXY, tol);
+boardXY = RectangularFpc.Geometry.Board_And_Coil('board_outline', cfg);
+boardXY = RectangularFpc.Geometry.Board_And_Coil('remove_duplicates', boardXY, tol);
+boardXY = RectangularFpc.Geometry.Board_And_Coil('remove_zero_length', boardXY, tol);
 if size(boardXY,1) > 1 && norm(boardXY(end,:)-boardXY(1,:)) < tol
     boardXY(end,:) = [];
 end
@@ -79,7 +79,7 @@ if fullyValidatedMaxTurns < 1
     % their actionable public identifiers instead of becoming a generic
     % NoValidTurnCount error.
     try
-        [~, ~, ~, ~, ~] = RectangularFpc.Geometry.BoardAndCoil('build_layers', ...
+        [~, ~, ~, ~, ~] = RectangularFpc.Geometry.Board_And_Coil('build_layers', ...
             cfg, d, limits, boardXY);
     catch specificFailure
         if ismember(specificFailure.identifier, { ...
@@ -167,11 +167,11 @@ if isfinite(validatedTurnCache.turns) && ...
     escapeArcFallback = validatedTurnCache.escapeArcFallback;
 else
     [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
-        RectangularFpc.Geometry.BoardAndCoil('build_layers', cfg, d, limits, boardXY);
+        RectangularFpc.Geometry.Board_And_Coil('build_layers', cfg, d, limits, boardXY);
 end
-[~, layerPaths] = RectangularFpc.Geometry.BoardAndCoil( ...
+[~, layerPaths] = RectangularFpc.Geometry.Board_And_Coil( ...
     'normalize_layers', layerXY, layerPaths, tol);
-validation = RectangularFpc.Quality.ResultValidation('design', ...
+validation = RectangularFpc.Quality.Result_Validation('design', ...
     cfg, d, boardXY, layerPaths, vias, connectionErrors, ...
     escapeArcFallback, limits, fullyValidatedMaxTurns);
 minCopperSpacing = validation.minCopperSpacingMm;
@@ -188,7 +188,7 @@ manufacturingInput = struct( ...
     'viaNonConnectedCopperPassed', ...
     validation.viaNonConnectedCopperPassed, ...
     'topologyPassed', validation.topologyPassed);
-manufacturing = RectangularFpc.Quality.JlcRules( ...
+manufacturing = RectangularFpc.Quality.Jlc_Rules( ...
     'check_result', cfg, manufacturingInput);
 if ~validation.passed
     error('RectangularFPC:ValidationFailed', ...
@@ -236,7 +236,7 @@ pads = struct( ...
 layerLengthMm = zeros(cfg.layerCount, 1);
 for k = 1:cfg.layerCount
     layerLengthMm(k) = sum(cellfun(@(path) ...
-        RectangularFpc.Geometry.BoardAndCoil('path_length', path), layerPaths{k}));
+        RectangularFpc.Geometry.Board_And_Coil('path_length', path), layerPaths{k}));
 end
 totalLengthMm = sum(layerLengthMm);
 crossSectionM2 = (cfg.traceWidth/1000)*(cfg.copperThickness/1000);
@@ -318,7 +318,7 @@ for turns = analyticalMaxTurns:-1:1
     candidateCfg = cfg;
     candidateCfg.turnsPerLayer = turns;
     [candidatePass, failureReason, candidateGeometry] = ...
-        RectangularFpc.Quality.ResultValidation( ...
+        RectangularFpc.Quality.Result_Validation( ...
         'candidate', candidateCfg, d, boardXY, limits);
     scanCount = scanCount + 1;
     scan(scanCount) = struct( ...

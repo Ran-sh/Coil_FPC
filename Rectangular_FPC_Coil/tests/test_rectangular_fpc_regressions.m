@@ -184,12 +184,12 @@ end
 rootFiles = dir(fullfile(projectRoot, '*.m'));
 rootNames = sort({rootFiles.name});
 rootNames = rootNames(~startsWith(rootNames, 'test_'));
+% The module root exposes exactly two entries: the generator and its config.
+% Everything else -- including the committed reader and the deprecated
+% fpc_coil_* shims -- lives in the helper package.
 expectedRootNames = sort({ ...
-    'fpc_coil_default_config.m', ...
-    'fpc_coil_main.m', ...
     'rectangular_fpc_default_config.m', ...
-    'rectangular_fpc_main.m', ...
-    'rectangular_fpc_read_committed.m'});
+    'rectangular_fpc_main.m'});
 verifyEqual(testCase, rootNames, expectedRootNames);
 
 % Helper packages replace the old private/ folder: private/ cannot be renamed
@@ -200,7 +200,7 @@ verifyEqual(testCase, rootNames, expectedRootNames);
 pkgRoot = fullfile(projectRoot, '+RectangularFpc');
 verifyEqual(testCase, isfolder(pkgRoot), true, ...
     'helpers must live under +RectangularFpc/');
-groups = {'Pipeline', 'Geometry', 'Quality', 'Export', 'Publish'};
+groups = {'Pipeline', 'Geometry', 'Quality', 'Export', 'Publish', 'Compat'};
 for k = 1:numel(groups)
     g = fullfile(pkgRoot, ['+' groups{k}]);
     verifyEqual(testCase, isfolder(g), true, ...
@@ -238,14 +238,14 @@ verifyEqual(testCase, size(result.boardXY, 2), 2);
 cfg = rectangular_fpc_default_config();
 verifyEqual(testCase, result.pads(1).diameter, cfg.padDiameter);
 
-% 图窗由 +RectangularFpc/+Export/FigurePlot 实现（不作为公共 API），仅在 MATLAB
+% 图窗由 +RectangularFpc/+Export/Figure_Plot 实现（不作为公共 API），仅在 MATLAB
 % 桌面环境由 rectangular_fpc_main 自动弹出；无头 -batch 运行按设计跳过弹窗。
 newFigs = setdiff(findall(0, 'Type', 'figure'), priorFigs);
 if isempty(newFigs)
     % 无头环境：验证实现文件确实位于模块的辅助包内
     testFolder = fileparts(mfilename('fullpath'));
     verifyEqual(testCase, exist(fullfile(fileparts(testFolder), ...
-        '+RectangularFpc', '+Export', 'FigurePlot.m'), 'file'), 2);
+        '+RectangularFpc', '+Export', 'Figure_Plot.m'), 'file'), 2);
     return;
 end
 

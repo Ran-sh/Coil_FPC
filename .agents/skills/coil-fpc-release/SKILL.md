@@ -24,7 +24,7 @@ ref, module scope, supported layer counts, and requested external action before 
    validation and manufacturing checks to pass for supported layer counts.
 4. Verify the status file, required reports, DXF/SVG outputs, and SHA-256 manifest from
    the returned path. Read rectangular outputs through
-   `rectangular_fpc_read_committed`.
+   `RectangularFpc.Publish.Read_Committed`.
 5. Use `coil-fpc-verification` for the actual Layer 1, last active-layer, and overview
    visual gate. Check that documentation matches public entrypoints, timestamps, supported
    layer counts, and the engineering-DXF boundary.

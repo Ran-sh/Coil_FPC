@@ -121,5 +121,5 @@ if strcmp(cfg.designName, 'auto')
     cfg.designName = sprintf('Circular_FPC_%dL_%dC__%s', cfg.boardLayerCount, cfg.coilLayerCount, ...
         datestr(now, 'yyyymmdd_HHMMSS'));
 end
-cfg = CircularFpc.Quality.ResultValidation('validate_config', cfg);
+cfg = CircularFpc.Quality.Result_Validation('validate_config', cfg);
 end

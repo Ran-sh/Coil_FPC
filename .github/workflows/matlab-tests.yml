@@ -121,7 +121,7 @@ jobs:
             assert(result.manufacturing.passed);
             stagePath = fullfile(pwd, 'ci-upload', 'rectangular');
             mkdir(fileparts(stagePath));
-            copyOk = rectangular_fpc_read_committed(result.outputPath, @(sourcePath) copyfile(sourcePath, stagePath));
+            copyOk = RectangularFpc.Publish.Read_Committed(result.outputPath, @(sourcePath) copyfile(sourcePath, stagePath));
             assert(copyOk);
             assert(isfile(fullfile(stagePath, 'generation_status.txt')));
             assert(isfile(fullfile(stagePath, 'reports', '08_file_manifest.csv')));

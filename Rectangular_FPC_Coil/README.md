@@ -17,9 +17,14 @@ result = rectangular_fpc_main(struct( ...
 analysis = rectangular_fpc_main(struct('analysisOnly', true));
 ```
 
-公共入口：`rectangular_fpc_default_config(overrides)`、`rectangular_fpc_main(overrides)`、
-`rectangular_fpc_read_committed(outputPath, reader)`。
-旧入口 `fpc_coil_default_config`、`fpc_coil_main` 仍可用，但会发出 `RectangularFPC:DeprecatedAPI`。
+模块根目录只保留两个公开入口：`rectangular_fpc_default_config(overrides)` 与
+`rectangular_fpc_main(overrides)`。其余实现都在 `+RectangularFpc/` 包内，包成员按
+「下划线分词 + 每词首字母大写」命名（如 `+Publish/Publish_Lock.m`）。
+
+矩形产物必须通过 `RectangularFpc.Publish.Read_Committed(outputPath, reader)` 读取。
+已弃用的 `fpc_coil_default_config` / `fpc_coil_main` 移到 `+RectangularFpc/+Compat/`
+（`Fpc_Coil_Default_Config` / `Fpc_Coil_Main`），仍发出 `RectangularFPC:DeprecatedAPI`；
+旧的顶层写法 `fpc_coil_main(...)` 不再解析。
 
 ## 输出版本
 
@@ -30,7 +35,7 @@ rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/
 ```
 
 - 同一分钟仅原子替换已通过提交契约的同名旧版本，失败时恢复；占位、残缺或被篡改的目录会原样保留并拒绝覆盖。
-- 目录存在不代表发布完成；读取必须通过 `rectangular_fpc_read_committed` 校验提交证据并持有访问锁，并发占用时稍后重试。
+- 目录存在不代表发布完成；读取必须通过 `RectangularFpc.Publish.Read_Committed` 校验提交证据并持有访问锁，并发占用时稍后重试。
 - 跨分钟保留历史版本。
 - `analysisOnly=true` 不创建文件或目录。
 - 历史 `fpc_coil_output/` 不迁移、不删除。
@@ -38,7 +43,7 @@ rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/
 安全读取示例：
 
 ```matlab
-summary = rectangular_fpc_read_committed(result.outputPath, ...
+summary = RectangularFpc.Publish.Read_Committed(result.outputPath, ...
     @(p) fileread(fullfile(p, 'reports', '03_design_summary.txt')));
 ```
 

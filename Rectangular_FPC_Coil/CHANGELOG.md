@@ -36,15 +36,23 @@
 - 报告固定为 01–08：坐标、层映射、设计摘要、匝数扫描、验证、制造、加工说明、清单。
 - 新错误标识统一使用 `RectangularFPC:*`，包括无效类型、形状以及 NaN/Inf 配置输入。
 - DXF 回读拒绝未知实体；CSV、状态文件、SVG 文件集合和清单按完整语义逐项核验。
-- 分钟级目录通过访问锁、目标绑定备份、回滚和提交证据门禁进行事务式替换；受支持的读取必须使用 `rectangular_fpc_read_committed`。
+- 分钟级目录通过访问锁、目标绑定备份、回滚和提交证据门禁进行事务式替换；受支持的读取必须使用 `RectangularFpc.Publish.Read_Committed`。
 - 同分钟目标只有在提交契约完整时才允许替换；未知、残缺或被篡改目录会保留并 fail closed。
 - 原始 `analysisOnly` 在内部强制只读分析前先完成类型规范化与验证；读取不存在输出时不再创建父目录。
 - committed reader 在加锁前复用危险根路径校验；候选扫描只吸收预期布线/过孔不可行错误，未知内部异常原样抛出。
 - 修复旧 CHANGELOG 的乱码内容，保留可读的变更摘要。
+- 模块根目录收敛为两个公开入口 `rectangular_fpc_main` 与 `rectangular_fpc_default_config`；
+  committed reader 与弃用入口一并移入 `+RectangularFpc/`，根目录不再保留辅助函数。
+- 辅助包文件名统一为「下划线分词 + 每词首字母大写」（如 `Dxf_Artifacts.m`、`Publish_Lock.m`），
+  与公开入口 `rectangular_fpc_*` 风格一致；包成员按文件名解析，函数声明随之同步。
+- 各辅助文件头部的旧式全大写 H1 标识（如 `%RECTANGULAR_FPC_ENGINE`）改为与实际文件名一致。
 
 ### Compatibility
 
-- `fpc_coil_main` 与 `fpc_coil_default_config` 保留为弃用转发入口，并发出 `RectangularFPC:DeprecatedAPI`。
+- `fpc_coil_main` 与 `fpc_coil_default_config` 移至 `+RectangularFpc/+Compat/`，函数更名为
+  `Fpc_Coil_Main` / `Fpc_Coil_Default_Config`，仍发出 `RectangularFPC:DeprecatedAPI`。
+  旧的顶层写法 `fpc_coil_main(...)` 不再解析，请改用 `rectangular_fpc_main`。
+- `rectangular_fpc_read_committed(...)` 更名为 `RectangularFpc.Publish.Read_Committed(...)`。
 - 保留 `outputFolder`、`totalLengthMm`、`totalResistanceOhm` 等主要旧结果字段作为别名。
 - 保留核心矩形螺旋、电气串联拓扑、默认 4 层 × 12 匝以及 2 / 4 / 6 / 8 层能力。
 

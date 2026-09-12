@@ -12,7 +12,7 @@ cfg = circular_fpc_default_config(struct( ...
     'coilLayerCount', 4, ...
     'designName', 'preserve_archimedean_spiral'));
 base = CircularFpc.Pipeline.Generate(cfg);
-routed = CircularFpc.Geometry.TerminalRouting(cfg, base);
+routed = CircularFpc.Geometry.Terminal_Routing(cfg, base);
 
 verifyEqual(testCase, routed.layerPaths(1).coilXY, ...
     base.layerPaths(1).coilXY, 'AbsTol', 1e-12, ...
@@ -50,7 +50,7 @@ candidate = midPoint + 0.45 * normal;
 v12Index = find(strcmp({geom.vias.name}, 'V12'), 1);
 geom.vias(v12Index).xy = candidate;
 
-validation = CircularFpc.Quality.ResultValidation( ...
+validation = CircularFpc.Quality.Result_Validation( ...
     'validate_result', result.config, result.effectiveDimensions, geom);
 verifyTrue(testCase, isfield(validation, ...
     'minTerminalToConnectionTraceMm'));
@@ -67,7 +67,7 @@ cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 mover = @(source, destination) failPublishMove( ...
     source, destination, paths);
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output, mover), ...
     'CircularFPC:AtomicPublishFailed');
 verifyFalse(testCase, isfolder(paths.staging));
@@ -80,7 +80,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 mkdir(paths.lock);
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyFalse(testCase, isfolder(paths.staging));
 verifyTrue(testCase, isfolder(paths.lock));
@@ -91,7 +91,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', 2147483647, '');
 
-CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
+CircularFpc.Export.Publish_Atomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -103,7 +103,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', matlabProcessID, '');
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -115,7 +115,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, 'definitely-not-this-host', 2147483647, '');
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -128,7 +128,7 @@ cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', NaN, ...
     'created=2000-01-01T00:00:00.000Z');
 
-CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
+CircularFpc.Export.Publish_Atomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -140,7 +140,7 @@ paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 writePublishLockOwnerFile(paths.lock, '', NaN, '');
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 verifyTrue(testCase, isfolder(paths.lock));
 verifyFalse(testCase, isfolder(paths.staging));
@@ -185,7 +185,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 mover = @(source, destination) replaceOwnerDuringSwap( ...
     source, destination, paths.lock);
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output, mover), 'CircularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(paths.lock));
@@ -204,7 +204,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', 2147483647, '');
 
-CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
+CircularFpc.Export.Publish_Atomically(paths.staging, paths.output);
 
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -219,7 +219,7 @@ writePublishLockOwnerFile(paths.lock, '', NaN, 'created=2000-01-01T00:00:00.000Z
 claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', matlabProcessID, '');
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:ConcurrentPublish');
 
 % 忙碌认领属于其他写入者：其 claim 目录必须原样保留，主锁不被破坏
@@ -242,7 +242,7 @@ claimDir = fullfile(paths.lock, 'reclaim.claim');
 writePublishLockOwnerFile(claimDir, '', 2147483647, '');
 mover = @(source, destination) stealTombstoneRace(source, destination, claimDir);
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output, mover), 'CircularFPC:ConcurrentPublish');
 
 verifyTrue(testCase, isfolder(claimDir));
@@ -294,7 +294,7 @@ function testAtomicPublishPreservesExistingFormalOutput(testCase)
 paths = makePublishFixture(true);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 
-verifyError(testCase, @() CircularFpc.Export.PublishAtomically( ...
+verifyError(testCase, @() CircularFpc.Export.Publish_Atomically( ...
     paths.staging, paths.output), 'CircularFPC:OutputExists');
 verifyTrue(testCase, isfile(fullfile(paths.output, 'old_marker.txt')));
 verifyFalse(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
@@ -306,7 +306,7 @@ function testAtomicPublishSuccessCommitsWholeTree(testCase)
 paths = makePublishFixture(false);
 cleanup = onCleanup(@() removeTree(paths.root)); %#ok<NASGU>
 
-CircularFpc.Export.PublishAtomically(paths.staging, paths.output);
+CircularFpc.Export.Publish_Atomically(paths.staging, paths.output);
 verifyTrue(testCase, isfile(fullfile(paths.output, 'new_marker.txt')));
 verifyFalse(testCase, isfolder(paths.staging));
 verifyFalse(testCase, isfolder(paths.lock));
@@ -365,7 +365,7 @@ for endpointIndex = 1:2
 end
 
 geom.connectionPaths{1} = [geom.connectionPaths{1}, {[p1; p2]}];
-validation = CircularFpc.Quality.ResultValidation('validate_result', result.config, ...
+validation = CircularFpc.Quality.Result_Validation('validate_result', result.config, ...
     result.effectiveDimensions, geom);
 verifyLessThan(testCase, validation.minCopperToSlotsMm, cfg.edgeClearance - 0.05);
 verifyFalse(testCase, validation.passed);
@@ -425,7 +425,7 @@ end
 
 geom = resultGeometry(result);
 geom.coils{2} = flipud(geom.coils{2});
-flipped = CircularFpc.Quality.ResultValidation('validate_result', result.config, ...
+flipped = CircularFpc.Quality.Result_Validation('validate_result', result.config, ...
     result.effectiveDimensions, geom);
 verifyFalse(testCase, flipped.windingSuperpositionConsistent, ...
     'A reversed layer must be rejected, otherwise the check proves nothing.');
@@ -434,7 +434,7 @@ verifyTrue(testCase, any(contains(flipped.messages, 'circulation')));
 end
 
 function testEarZoomHelperDefaultsToFourByFourAndStaysConsistent(testCase)
-% ear_zoom_figure 是文档承诺的辅助核对工具，必须与同一批产物描述同一构型。
+% CircularFpc.Export.Ear_Zoom_Figure 是文档承诺的辅助核对工具，必须与同一批产物描述同一构型。
 % 其默认曾硬编码为 4/2，与公开生成器默认（4/4）及 README 的 4/4 语境不一致，
 % 会让放大图标题/主圆直径与 canonical 产物对不上。这里锁定 4/4 默认，
 % 并确认显式覆盖仍被尊重、且输出文件写在正式产物目录之外。
@@ -443,7 +443,7 @@ mkdir(tmp);
 c = onCleanup(@() rmdir(tmp, 's'));
 pngPath = fullfile(tmp, 'ear44.png');
 svgPath = fullfile(tmp, 'ear44.svg');
-ear_zoom_figure(pngPath, svgPath);
+CircularFpc.Export.Ear_Zoom_Figure(pngPath, svgPath);
 verifyTrue(testCase, isfile(pngPath));
 verifyTrue(testCase, isfile(svgPath));
 verifyGreaterThan(testCase, dir(pngPath).bytes, 0);
@@ -456,7 +456,7 @@ verifyEqual(testCase, defaultCfg.coilLayerCount, 4);
 % 显式覆盖为 4/2 时仍应生成，且不改变公开默认。
 png42 = fullfile(tmp, 'ear42.png');
 svg42 = fullfile(tmp, 'ear42.svg');
-ear_zoom_figure(png42, svg42, struct('boardLayerCount', 4, 'coilLayerCount', 2));
+CircularFpc.Export.Ear_Zoom_Figure(png42, svg42, struct('boardLayerCount', 4, 'coilLayerCount', 2));
 verifyTrue(testCase, isfile(png42));
 verifyTrue(testCase, isfile(svg42));
 verifyEqual(testCase, defaultCfg.coilLayerCount, 4, ...
@@ -536,7 +536,7 @@ end
 
 function testAttachedPreviewTextStaysInsideItsFrame(testCase)
 % 标注文字不得越出帧宽，正文之间不得重叠。这是在导出时由
-% CircularFpc.Export.AnnotatedPreviews('audit') 强制的；此处用独立实现复核，避免
+% CircularFpc.Export.Annotated_Previews('audit') 强制的；此处用独立实现复核，避免
 % "同一个函数自己检查自己"。
 outRoot = tempname;
 mkdir(outRoot);

@@ -168,12 +168,12 @@ addpath('tests');
 run_all_verification();
 ```
 
-安装耳朵的三段弧可用 `ear_zoom_figure` 出局部放大图核对（标注内侧弧、中间弧、
+安装耳朵的三段弧可用 `CircularFpc.Export.Ear_Zoom_Figure` 出局部放大图核对（标注内侧弧、中间弧、
 最外侧弧、`mountingSlotSpan`、`mountingSlotRise`、`mountingSlotEdgeClearance`，
 并标出共享端点 P± 与根部交点 J±）：
 
 ```matlab
-ear_zoom_figure('ear_zoom.png', 'ear_zoom.svg');
+CircularFpc.Export.Ear_Zoom_Figure('ear_zoom.png', 'ear_zoom.svg');
 ```
 
 DXF 是工程几何，不是完整生产文件；制造前请复核叠层、材料和电气参数。
