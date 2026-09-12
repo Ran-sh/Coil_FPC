@@ -495,18 +495,20 @@ for lang = {'zh', 'en'}
 end
 
 % 统一命名与固定图号：01 总览、02 连接区，逐层恒为 1x_layer_Lx_<role>。
-verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '01_overview.svg')));
-verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '02_connection_zone.svg')));
-verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '11_layer_L1_top.svg')));
-verifyTrue(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '14_layer_L4_bottom.svg')));
-verifyFalse(testCase, isfile(fullfile(pv, 'JLC', 'centerline', '01_preview_full.svg')), ...
+for tier = {'1_path_only', '2_trace_only', '3_trace_pad_via'}
+    verifyTrue(testCase, isfile(fullfile(pv, 'JLC', tier{1}, '01_overview.svg')));
+    verifyTrue(testCase, isfile(fullfile(pv, 'JLC', tier{1}, '02_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(pv, 'JLC', tier{1}, '11_layer_L1_top.svg')));
+    verifyTrue(testCase, isfile(fullfile(pv, 'JLC', tier{1}, '14_layer_L4_bottom.svg')));
+end
+verifyFalse(testCase, isfile(fullfile(pv, 'JLC', '1_path_only', '01_preview_full.svg')), ...
     'the legacy preview_ naming must be gone');
-verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', 'main', '01_overview.svg')));
-verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', 'with_terminals', '01_overview.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', '1_coil_only', '01_overview.svg')));
+verifyTrue(testCase, isfile(fullfile(pv, 'COMSOL', '2_coil_with_lead', '01_overview.svg')));
 
 % zh/en 必须真的分别是中文与英文，且语言元数据不得互换。
-zhTxt = fileread(fullfile(pv, 'zh', 'JLC', 'centerline', '01_overview.svg'));
-enTxt = fileread(fullfile(pv, 'en', 'JLC', 'centerline', '01_overview.svg'));
+zhTxt = fileread(fullfile(pv, 'zh', 'JLC', '3_trace_pad_via', '01_overview.svg'));
+enTxt = fileread(fullfile(pv, 'en', 'JLC', '3_trace_pad_via', '01_overview.svg'));
 verifyTrue(testCase, contains(zhTxt, 'data-annotated-lang="zh"'));
 verifyTrue(testCase, contains(enTxt, 'data-annotated-lang="en"'));
 verifyTrue(testCase, contains(zhTxt, '图例'));
@@ -530,8 +532,8 @@ verifyFalse(testCase, any(roles == "preview_base"), ...
     'the redundant base/ copy set is gone');
 listed = string(man.relativePath);
 verifyTrue(testCase, all(ismember( ...
-    ["preview/zh/JLC/centerline/14_layer_L4_bottom.svg", ...
-     "preview/en/COMSOL/with_terminals/01_overview.svg"], listed)));
+    ["preview/zh/JLC/3_trace_pad_via/14_layer_L4_bottom.svg", ...
+     "preview/en/COMSOL/2_coil_with_lead/01_overview.svg"], listed)));
 end
 
 function testAttachedPreviewTextStaysInsideItsFrame(testCase)

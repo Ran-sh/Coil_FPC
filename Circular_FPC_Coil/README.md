@@ -32,29 +32,42 @@ result = circular_fpc_main(struct( ...
 0.012 mm。`*_copper_physical_L*.dxf` 仍保留原有嘉立创/CAM 参考用途，不受仿真
 文件优化影响。
 
-## COMSOL 带端子变体
+## COMSOL 带引线变体
 
-除主螺旋版本外，每层另输出一份 `*_copper_solid_with_terminals_L*.dxf`。它是在
-`*_copper_solid_L*.dxf` 基础上**追加**的仿真变体：主螺旋闭合轮廓逐点不变，L1 额外
-加入中心区域的 PAD_A、PAD_B 圆盘和两条中心短边引线；引线写成闭合铜条（线宽
-等于 `traceWidth`），两端各用一条垂直于走线的**直短边**封口，不使用圆头端弧。
-所有层都不输出过孔、钻孔、过孔焊环或层间转换几何：变体的 `ENTITIES` 段只有闭合
-轮廓（和 L1 的两个焊盘圆），因此不存在 VIA/DRILL 图元，也没有 LWPOLYLINE group 43。
-其它层与其它区域保持原样：4/2 的 L2/L3 仍为空，L4 仍是原主螺旋。
+除主螺旋版本外，每层另输出一份 `*_copper_solid_with_terminals_L*.dxf`。**每个活动
+线圈层恰好一条闭合轮廓**：本层主螺旋与该层的端子引线合并成一个连通体。合并是这份
+文件对 COMSOL 2D 有用的前提——一个闭合环选中就是一个域；不合并时线圈与引线各是
+独立实体、只能靠过孔在层间相连，而 2D 选域表达不了这种连接。
 
-选择建议：需要在线圈上直接加激励而自己在模型里画端子时用 `*_copper_solid_L*.dxf`；
-希望端子（焊盘位置与引线走向）随 DXF 一起导入时用带端子版本。两者都只是几何，
-不是 Gerber，也不替代制造文件。
+引线归到哪一层由电气拓扑决定，不是写死的：
+
+- 入口引线（PAD_A 侧）跟着它接触的那个线圈端走；
+- 回流引线（PAD_B 侧）跟着路线中最后一个层间过孔的**起点层**走（电流从该层返回）。
+
+4/2 下即 L1 = 主螺旋 + PAD_A 引线，L4 = 主螺旋 + VOUT 回流段 + PAD_B 引线。
+回流引线若留在 L1，L1 会被切成两块只在过孔处相连的孤岛。合并后每层的铜都是一条
+连通体，两层在 V14 与 VOUT 两处首尾相接。
+
+**不导出 PAD_A/PAD_B 焊盘圆盘**：本变体只承载导体，端点如何终止交给求解器。引线写成
+闭合铜条（线宽等于 `traceWidth`），末端用垂直于走线的直短边封口，不用圆头端弧。
+所有层都不输出过孔、钻孔、过孔焊环或层间转换几何，也没有 LWPOLYLINE group 43。
+4/2 的 L2/L3 仍为空。`*_copper_solid_L*.dxf` 保持原字节不变（合并后的轮廓不再与它
+顶点相同，这是合并的必然代价）。
+
+选择建议：需要在线圈上直接加激励、自己在模型里画端子时用 `*_copper_solid_L*.dxf`；
+希望线圈与引线连成一体、每层一个域时用带引线版本。两者都只是几何，不是 Gerber，
+也不替代制造文件。
 
 配套产物：
 
-- `preview/COMSOL/with_terminals/`：带端子变体的全板与每层 SVG 预览；
-- `reports/10_*` 之外的 `reports/11_comsol_terminal_geometry.csv`：每个 DXF 实体的
-  几何映射（实体名、类型、层、来源 route 节点、闭合标志、顶点数、面积、封口方式、
-  首尾坐标），用于核对引线闭合与焊盘尺寸；
+- `preview/COMSOL/2_coil_with_lead/`：带引线变体的全板与每层 SVG 预览；
+- `reports/11_comsol_terminal_geometry.csv`：每个活动层一行的几何映射（实体名、
+  类型、层、来源 route 节点、闭合标志、顶点数、面积、封口方式、首尾坐标），
+  用于核对合并轮廓闭合且面积大于纯螺旋；
 - `reports/08_file_manifest.csv` 中该文件角色为 `copper_solid_with_terminals`；
-- 导出后立即做原子回读校验：实体数量、闭合标志、首尾坐标一致、引线宽度、焊盘
-  直径与 `result.pads` 一致、无 VIA/DRILL、无 group 43。
+- 导出后立即做原子回读校验：每层恰好一条闭合轮廓、顶点与规范轮廓逐点一致、
+  面积严格大于对应的 `copper_solid` 环（否则说明端子铜没并进去）、任何层都不得
+  出现 CIRCLE、无 VIA/DRILL、无 group 43。
 
 `turnsPerCoilLayer` 是每层物理匝数（完整 360° 圈数），默认 7，最少 2；4/4 模式下
 L2 多绕 0.25 圈、L4 少绕 0.25 圈，6/6 模式下 L2/L4/L6 分别多绕
@@ -128,17 +141,19 @@ Circular_FPC_<板层>L_<线圈层>C__yyyyMMdd_HHmmss/
 
 ```text
 preview/
-├── JLC/centerline/   01_overview.svg  02_connection_zone.svg  11..1N_layer_Lx_<role>.svg
-├── JLC/physical/     同上（按实际线宽/焊盘/过孔绘制）
-├── COMSOL/main/      由 *_copper_solid_L*.dxf 闭合铜实体生成
-├── COMSOL/with_terminals/  由 *_copper_solid_with_terminals_L*.dxf 生成，含 L1 焊盘与中心引线
-├── zh/               上述四组的**完整镜像**，同名文件、中文标注
+├── JLC/1_path_only/     01_overview.svg  02_connection_zone.svg  11..1N_layer_Lx_<role>.svg
+│                        只画走线路径（细线，不按线宽），无焊盘无过孔
+├── JLC/2_trace_only/    同上，按实际线宽画铜线，仍无焊盘无过孔
+├── JLC/3_trace_pad_via/ 同上，再加焊盘、独立电极与过孔（CAM 参考）
+├── COMSOL/1_coil_only/      由 *_copper_solid_L*.dxf 闭合铜实体生成
+├── COMSOL/2_coil_with_lead/ 由 *_copper_solid_with_terminals_L*.dxf 生成，每层一条合并轮廓
+├── zh/               上述五组的**完整镜像**，同名文件、中文标注
 └── en/               同上，英文标注
 ```
 
 `zh/` 与 `en/` 是 `JLC/`、`COMSOL/` 的完整镜像：同一相对路径、同一文件名，只有
-标注语言不同，因此规则只有"同名不同语言"一条，不需要记哪些图有标注版。两组结构
-一致，各含上述两个 JLC 子目录与两个 COMSOL 子目录。
+标注语言不同，因此规则只有"同名不同语言"一条，不需要记哪些图有标注版。数字前缀
+固定排序，JLC 三档是"路径 → 线宽 → 线宽+焊盘+过孔"递进，看名字就知道该翻哪张。
 
 4 层工艺另输出 COMSOL 层压参考表 `reports/09_comsol_stackup.csv`；6/6 暂无已验证的
 六层制造叠层，因此该表保留铜层厚度输入但 Z 坐标标为 `NaN`，摘要和制造检查会标记

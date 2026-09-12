@@ -82,12 +82,12 @@ jobs:
             assert(isfile(fullfile(result.outputPath, 'generation_status.txt')));
             assert(isfile(fullfile(result.outputPath, 'reports', '08_file_manifest.csv')));
             assert(isfile(fullfile(result.outputPath, 'reports', '09_comsol_stackup.csv')));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', 'centerline', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', 'physical', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', 'main', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', 'with_terminals', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'zh', 'JLC', 'centerline', '*.svg'))));
-            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'en', 'COMSOL', 'with_terminals', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', '1_path_only', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'JLC', '3_trace_pad_via', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', '1_coil_only', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'COMSOL', '2_coil_with_lead', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'zh', 'JLC', '2_trace_only', '*.svg'))));
+            assert(~isempty(dir(fullfile(result.outputPath, 'preview', 'en', 'COMSOL', '2_coil_with_lead', '*.svg'))));
             assert(~isempty(dir(fullfile(result.outputPath, 'dxf', '**', '*.dxf'))));
             assert(isfolder(fullfile(result.outputPath, 'reports')))
       - name: Upload circular canonical artifacts

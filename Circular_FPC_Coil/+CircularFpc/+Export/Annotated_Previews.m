@@ -78,10 +78,13 @@ function plan = figurePlan(rel, t, result)
 plan = struct('rel', rel, 'title', '', 'subtitle', '', 'legend', struct('color', {}, 'label', {}), ...
     'notes', {{}});
 isComsol = startsWith(rel, 'COMSOL/');
-isTerminals = contains(rel, 'with_terminals/');
+isTerminals = contains(rel, '2_coil_with_lead/');
 isOverview = endsWith(rel, '01_overview.svg');
 isZone = endsWith(rel, '02_connection_zone.svg');
-isPhysical = contains(rel, '/physical/');
+isPadVia = contains(rel, '3_trace_pad_via/');
+isTraceOnly = contains(rel, '2_trace_only/');
+% 只有最高档画焊盘、独立电极与过孔，图例据此裁剪。
+drawsTerminals = isPadVia;
 li = layerFromName(rel);
 active = result.activeCoilLayers;
 
@@ -108,25 +111,31 @@ if isComsol
     end
     plan.notes = t.comsolNotes;
 elseif isOverview
-    if isPhysical
+    if isPadVia
         plan.title = t.physTitle;
         plan.subtitle = t.physSub;
         plan.notes = t.physNotes;
+    elseif isTraceOnly
+        plan.title = t.traceTitle;
+        plan.subtitle = t.traceSub;
+        plan.notes = t.traceNotes;
     else
         plan.title = t.ovTitle;
         plan.subtitle = t.ovSub;
         plan.notes = t.ovNotes;
     end
-    plan.legend = jlcLegend(t, result);
+    plan.legend = jlcLegend(t, result, drawsTerminals);
 elseif isZone
     plan.title = t.zoneTitle;
-    if isPhysical
+    if isPadVia
         plan.subtitle = t.zoneSubPhysical;
+    elseif isTraceOnly
+        plan.subtitle = t.zoneSubTrace;
     else
         plan.subtitle = t.zoneSubCenterline;
     end
     plan.notes = t.zoneNotes;
-    plan.legend = zoneLegend(t, result);
+    plan.legend = zoneLegend(t, result, drawsTerminals);
 else
     role = roleFromName(rel);
     if isfield(t.layerRoleName, role)
@@ -134,7 +143,7 @@ else
     else
         roleLabel = role;
     end
-    plan.legend = layerLegend(t, result, li);
+    plan.legend = layerLegend(t, result, li, drawsTerminals);
     plan.notes = t.layerNotes;
     if ~ismember(li, active) || isempty(result.layerPaths(li).coilXY)
         % 非活动层没有铜箔，也就没有匝数或环绕角可测；如实说明，不能印一个
@@ -190,7 +199,9 @@ end
 s = struct('turns', turns, 'circ', circ);
 end
 
-function leg = jlcLegend(t, result)
+function leg = jlcLegend(t, result, drawsTerminals)
+% drawsTerminals 为假时（path_only / trace_only）画面里没有焊盘、独立电极、
+% 过孔，也没有端子引线标注线，图例一律不列，否则会印出画面里不存在的色块。
 leg = struct('color', {}, 'label', {});
 leg(end + 1) = item('#ffcc1a', t.lgBoard);
 leg(end + 1) = item('#8c1aa6', t.lgEdge);
@@ -199,16 +210,18 @@ for k = 1:numel(result.activeCoilLayers)
     li = result.activeCoilLayers(k);
     leg(end + 1) = item(layerColor(li), sprintf(t.lgLayer, li));
 end
-if ~isempty(result.electrodePads)
-    leg(end + 1) = item('#ff7f0e', t.lgElec);
+if drawsTerminals
+    if ~isempty(result.electrodePads)
+        leg(end + 1) = item('#ff7f0e', t.lgElec);
+    end
+    if ~isempty(result.vias)
+        leg(end + 1) = item('#474747', t.lgVia);
+    end
+    leg(end + 1) = item('#666666', t.lgSilk);
 end
-if ~isempty(result.vias)
-    leg(end + 1) = item('#474747', t.lgVia);
-end
-leg(end + 1) = item('#666666', t.lgSilk);
 end
 
-function leg = layerLegend(t, result, li)
+function leg = layerLegend(t, result, li, drawsTerminals)
 % 逐层预览只有 L1 画焊盘与独立电极（见 Dxf_Svg_Reports 的 writeSvgLayer），其余层
 % 不画；图例跟着实际图元走，避免"图例有、画面无"的假说明。
 leg = struct('color', {}, 'label', {});
@@ -220,7 +233,7 @@ if ismember(li, result.activeCoilLayers) && ~isempty(result.layerPaths(li).coilX
 else
     leg(end + 1) = item('#8fcfdc', t.lgInactive);
 end
-if li == 1
+if drawsTerminals && li == 1
     if ~isempty(result.pads)
         leg(end + 1) = item('#e61919', t.lgPad);
     end
@@ -228,12 +241,12 @@ if li == 1
         leg(end + 1) = item('#ff7f0e', t.lgElec);
     end
 end
-if ~isempty(result.vias)
+if drawsTerminals && ~isempty(result.vias)
     leg(end + 1) = item('#474747', t.lgVia);
 end
 end
 
-function leg = zoneLegend(t, result)
+function leg = zoneLegend(t, result, drawsTerminals)
 % 端子连接区是局部放大图。它只画**真的有连接走线**的层（writeSvgConnectionZone
 % 遍历 connectionPaths），也不画 315° 独立电极，因此图例只列实际会出现的走线
 % 颜色、焊盘与过孔，避免"图例有、画面无"。
@@ -245,11 +258,13 @@ for li = 1:numel(result.layerPaths)
         leg(end + 1) = item(layerColor(li), sprintf(t.lgLayer, li)); %#ok<AGROW>
     end
 end
-if ~isempty(result.pads)
-    leg(end + 1) = item('#e61919', t.lgPad);
-end
-if ~isempty(result.vias)
-    leg(end + 1) = item('#474747', t.lgVia);
+if drawsTerminals
+    if ~isempty(result.pads)
+        leg(end + 1) = item('#e61919', t.lgPad);
+    end
+    if ~isempty(result.vias)
+        leg(end + 1) = item('#474747', t.lgVia);
+    end
 end
 end
 
@@ -329,6 +344,7 @@ if strcmp(lang, 'zh')
     t.zoneTitle = '端子连接区局部';
     t.zoneSubCenterline = '中心线轨：入口单相切圆弧与 VOUT 直出引线，不改动螺旋采样点';
     t.zoneSubPhysical = '物理铜轨：按实际线宽绘制端子引线与焊盘';
+    t.zoneSubTrace = '实际线宽：只看走线路径与线宽，不叠加焊盘与过孔';
     t.zoneNotes = { sprintf('串联网络：%s', seq), ...
         '端子走线使用由原始螺旋端点切线确定的单一相切圆弧，不通过第二圆弧或微折线补端点。' };
 
@@ -338,6 +354,13 @@ if strcmp(lang, 'zh')
     t.layerSub = '实测 %.4f 匝 · 有向环绕角 %+.1f°%s';
     t.layerNotes = { sprintf('活动线圈层：%s', layerList), ...
         '有向环绕角由生成的线圈折线实测；各活动层同向即磁场叠加而非相消。' };
+
+    t.traceTitle = sprintf('%d 层板 / %d 活动线圈层（%d/%d）— JLC 实际线宽总览', ...
+        cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);
+    t.traceSub = '按实际线宽绘制铜线，不画焊盘与过孔，便于单独核对走线形状';
+    t.traceNotes = { sprintf('串联网络：%s', seq), ...
+        '本图只画走线本身；焊盘、独立电极与过孔见 3_trace_pad_via。', ...
+        'DXF 是工程几何，不是 Gerber；投产前请复核叠层、材料与电气参数。' };
 
     t.physTitle = sprintf('%d 层板 / %d 活动线圈层（%d/%d）— JLC 物理铜总览', ...
         cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);
@@ -390,6 +413,7 @@ else
     t.zoneTitle = 'Terminal connection zone';
     t.zoneSubCenterline = 'Centerline track: single tangent entry arc and the straight VOUT lead; spiral samples unchanged';
     t.zoneSubPhysical = 'Physical track: terminal leads and pads drawn at real width';
+    t.zoneSubTrace = 'Real trace width: routing and width only, with no pads or vias overlaid';
     t.zoneNotes = { sprintf('Series network: %s', seq), ...
         'Terminal routing uses one tangent arc fixed by the raw spiral endpoint; no second arc or micro-jog.' };
 
@@ -400,6 +424,13 @@ else
     t.layerNotes = { sprintf('Active coil layers: %s', layerList), ...
         ['The signed circulation is measured from the generated polyline; one shared ' ...
          'sign across active layers means the fields add rather than cancel.'] };
+
+    t.traceTitle = sprintf('%d-layer board / %d active coil layers (%d/%d) - JLC trace-width overview', ...
+        cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);
+    t.traceSub = 'Copper drawn at real trace width without pads or vias, so the routing shape reads on its own';
+    t.traceNotes = { sprintf('Series network: %s', seq), ...
+        'This view shows the routing only; pads, electrode pads and vias live in 3_trace_pad_via.', ...
+        'DXF is engineering geometry, not Gerber; confirm stackup, material and electrical parameters before production.' };
 
     t.physTitle = sprintf('%d-layer board / %d active coil layers (%d/%d) - JLC physical copper overview', ...
         cfg.boardLayerCount, cfg.coilLayerCount, cfg.boardLayerCount, cfg.coilLayerCount);

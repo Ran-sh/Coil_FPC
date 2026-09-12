@@ -50,8 +50,9 @@ end
 function writeAllFiles(cfg, result, outDir, formalPath)
 % 输出文件树：
 %   dxf/         板框 + 每物理层铜层 + 功能过孔焊环 + 贯穿钻孔图
-%   preview/JLC/centerline/  嘉立创中心线 DXF 预览
-%   preview/JLC/physical/    嘉立创实际线宽/焊盘/过孔 DXF 预览
+%   preview/JLC/1_path_only/     走线路径（细线）
+%   preview/JLC/2_trace_only/    实际线宽（无焊盘无过孔）
+%   preview/JLC/3_trace_pad_via/ 实际线宽 + 焊盘 + 过孔
 %   preview/COMSOL/          基于 copper_solid DXF 闭合铜实体的预览
 %   reports/     坐标 CSV、层映射、摘要、匝数扫描、验证报告
 %   generation_status.txt
@@ -72,32 +73,43 @@ for li = 1:cfg.boardLayerCount
 end
 if cfg.enablePreview
     previewRoot = fullfile(outDir, 'preview');
-    jlcCenterlineDir = fullfile(previewRoot, 'JLC', 'centerline');
-    jlcPhysicalDir = fullfile(previewRoot, 'JLC', 'physical');
-    comsolDir = fullfile(previewRoot, 'COMSOL', 'main');
-    comsolTerminalDir = fullfile(previewRoot, 'COMSOL', 'with_terminals');
-    mkdir(jlcCenterlineDir);
-    mkdir(jlcPhysicalDir);
+    % 目录名说明"这张图画了什么"，数字前缀固定排序：
+    %   JLC/1_path_only     按走线路径画细线（不按线宽），无焊盘无过孔
+    %   JLC/2_trace_only    按实际线宽画铜线，无焊盘无过孔
+    %   JLC/3_trace_pad_via 实际线宽 + 焊盘 + 独立电极 + 过孔
+    %   COMSOL/1_coil_only      闭合铜实体，只含主螺旋
+    %   COMSOL/2_coil_with_lead 闭合铜实体 + 端子引线（每层一条连续轮廓，无焊盘）
+    jlcPathDir = fullfile(previewRoot, 'JLC', '1_path_only');
+    jlcTraceDir = fullfile(previewRoot, 'JLC', '2_trace_only');
+    jlcPadViaDir = fullfile(previewRoot, 'JLC', '3_trace_pad_via');
+    comsolDir = fullfile(previewRoot, 'COMSOL', '1_coil_only');
+    comsolLeadDir = fullfile(previewRoot, 'COMSOL', '2_coil_with_lead');
+    mkdir(jlcPathDir);
+    mkdir(jlcTraceDir);
+    mkdir(jlcPadViaDir);
     mkdir(comsolDir);
-    mkdir(comsolTerminalDir);
+    mkdir(comsolLeadDir);
     % 统一命名：01 总览、02 连接区，逐层统一为 "1x_layer_Lx_<role>"，其中 x 就是
     % 物理层号。编号恒表示同一件事（L3 在任何层数下都是 13），不再按出现顺序重排，
     % 因此文件名可以安全写进文档与脚本。
     overviewName = '01_overview.svg';
     zoneName = '02_connection_zone.svg';
-    writeSvgFull(fullfile(jlcCenterlineDir, overviewName), cfg, result, 'centerline');
-    writeSvgConnectionZone(fullfile(jlcCenterlineDir, zoneName), cfg, result, 'centerline');
-    writeSvgFull(fullfile(jlcPhysicalDir, overviewName), cfg, result, 'physical');
-    writeSvgConnectionZone(fullfile(jlcPhysicalDir, zoneName), cfg, result, 'physical');
+    [~, jlcKinds, ~] = jlcPreviewKinds();
+    jlcDirs = {jlcPathDir, jlcTraceDir, jlcPadViaDir};
+    for k = 1:numel(jlcKinds)
+        writeSvgFull(fullfile(jlcDirs{k}, overviewName), cfg, result, jlcKinds{k});
+        writeSvgConnectionZone(fullfile(jlcDirs{k}, zoneName), cfg, result, jlcKinds{k});
+    end
     writeSvgComsolFull(fullfile(comsolDir, overviewName), cfg, result);
-    writeSvgComsolTerminalsFull(fullfile(comsolTerminalDir, overviewName), cfg, result);
+    writeSvgComsolLeadFull(fullfile(comsolLeadDir, overviewName), cfg, result);
     for li = 1:numel(result.layerPaths)
         role = svgLayerRole(result, li);
         fileName = layerFigureName(li, role);
-        writeSvgLayer(fullfile(jlcCenterlineDir, fileName), cfg, result, li, 'centerline');
-        writeSvgLayer(fullfile(jlcPhysicalDir, fileName), cfg, result, li, 'physical');
+        for k = 1:numel(jlcKinds)
+            writeSvgLayer(fullfile(jlcDirs{k}, fileName), cfg, result, li, jlcKinds{k});
+        end
         writeSvgComsolLayer(fullfile(comsolDir, fileName), cfg, result, li);
-        writeSvgComsolTerminalsLayer(fullfile(comsolTerminalDir, fileName), cfg, result, li);
+        writeSvgComsolLeadLayer(fullfile(comsolLeadDir, fileName), cfg, result, li);
     end
     % zh/ 与 en/ 是完整镜像：与上面 JLC/、COMSOL/ 同结构、同文件名，只把标注换成
     % 中文或英文。每张标注图都读回上面刚写出的预览再封装，几何同源、不存在第二套
@@ -263,66 +275,190 @@ writeDxfFooter(fid);
 end
 
 function writeTerminalSolidCopperDxf(filename, cfg, result, li)
-% Additive COMSOL variant of the solid copper DXF. The closed main-coil ring
-% of copper_solid_Lli.dxf is repeated here with identical vertices and the
-% original copper_solid files stay untouched. On the entry layer the two
-% center leads are added as closed copper strips with straight short-edge
-% caps, together with the PAD_A/PAD_B disks. Vias, drills, via annuli, and
-% inter-layer transition geometry are never written on any layer.
+% Additive COMSOL variant of the solid copper DXF. 本层主螺旋与画在本层的端子铜
+% 合并成**一条**闭合轮廓：每个活动层恰好一个连通体，COMSOL 2D 选中即一个域。
+% copper_solid_Lli.dxf 保持原字节不变；本变体写出的是合并结果，因此不再与它顶点
+% 相同——这是合并的必然代价，读回按合并后的规范轮廓核对。
+% 不写 PAD_A/PAD_B 圆盘；任何层都不写 VIA/DRILL、过孔焊环或层间过渡几何。
 layerName = sprintf('COPPER_SOLID_TERMINALS_L%d', li);
 entities = comsolTerminalEntities(cfg, result, li);
 fid = openOutputFile(filename);
 c = onCleanup(@() fclose(fid));
-layerNames = {layerName};
-if li == 1
-    % PAD_A/PAD_B are emitted as CIRCLE entities on their own layers. DXF
-    % readers are allowed to reject or drop entities whose layer is absent
-    % from TABLES/LAYER, so declare every layer used by the file up front.
-    layerNames = [layerNames, {result.pads.name}]; %#ok<AGROW>
-end
-writeDxfHeader(fid, layerNames);
+writeDxfHeader(fid, {layerName});
 for k = 1:numel(entities)
-    if strcmp(entities(k).kind, 'pad')
-        writeCircle(fid, entities(k).circleCenter, entities(k).circleRadius, entities(k).name);
-    else
-        % Keep the LWPOLYLINE closed flag for CAD readers, and explicitly
-        % write the final short-cap edge for COMSOL importers.
-        writeLwPolyline(fid, entities(k).ring, layerName, true);
-    end
+    % Keep the LWPOLYLINE closed flag for CAD readers, and explicitly write the
+    % final short edge so a COMSOL importer sees a closed boundary.
+    writeLwPolyline(fid, entities(k).ring, layerName, true);
 end
 writeDxfFooter(fid);
 end
 
 function entities = comsolTerminalEntities(cfg, result, li)
 % Canonical copper entity list for *_copper_solid_with_terminals_Lli.dxf.
-% The DXF writer, the SVG preview, the geometry mapping report, and the
-% export readback all consume this one definition, so a change can never make
-% the artifact and its evidence disagree. Order is the DXF write order:
-% main-coil ring, then the L1 center leads, then the pad disks.
-fieldNames = {'name', 'kind', 'ring', 'circleCenter', 'circleRadius', 'startXY', 'endXY'};
+%
+% 每个活动线圈层只输出**一条**闭合铜轮廓：本层主螺旋与画在本层的端子铜合并成
+% 一个连通体。合并是这份文件对 COMSOL 2D 有用的前提——一个闭合环选中就是一个
+% 域；不合并时线圈与引线各是独立实体、只能靠过孔在层间相连，而 2D 选域表达不
+% 了这种连接。
+%
+% 引线归到哪一层：
+%   入口引线 -> 它接触的那个线圈端所在层；
+%   回流引线 -> 路线中最后一个层间过孔的起点层（电流从该层返回）。
+% 4/2 下即 L1 = PAD_A + COIL_L1，L4 = COIL_L4 + VOUT 回流段 + PAD_B 引线。
+% 回流引线若留在 L1，L1 会被切成两块只在过孔处相连的孤岛。
+%
+% 不写 PAD_A/PAD_B 圆盘：本变体只承载导体，端点如何终止交给求解器。
+fieldNames = {'name', 'kind', 'ring', 'startXY', 'endXY', 'leads'};
 entities = struct(fieldNames{1}, {}, fieldNames{2}, {}, fieldNames{3}, {}, ...
-    fieldNames{4}, {}, fieldNames{5}, {}, fieldNames{6}, {}, fieldNames{7}, {});
-if ~isempty(result.layerPaths(li).coilXY)
-    path = comsolMainCoilPath(cfg, result, li);
-    entities(end + 1) = struct('name', sprintf('COIL_L%d', li), 'kind', 'copper_solid', ...
-        'ring', explicitComsolRing(cfg, result, li), 'circleCenter', NaN, ...
-        'circleRadius', NaN, 'startXY', path(1, :), 'endXY', path(end, :));
+    fieldNames{4}, {}, fieldNames{5}, {}, fieldNames{6}, {});
+if ~isempty(result.layerPaths(li).coilXY) && any(result.activeCoilLayers == li)
+    parts = {explicitComsolRing(cfg, result, li)};
+    leads = terminalLeadPaths(result);
+    for k = 1:numel(result.layerPaths(li).connectionPaths)
+        cp = result.layerPaths(li).connectionPaths{k};
+        if isTerminalLeadPath(cp, leads)
+            continue;   % 引线由下面的归属规则处理，避免重复并入
+        end
+        if touchesInterLayerVia(cp, result)
+            % 本层从线圈端连到层间过孔的走线，是把引线接进线圈所必需的铜。
+            parts{end + 1} = leadStripRing(cp, cfg.traceWidth / 2); %#ok<AGROW>
+        end
+    end
+    leadLayer = terminalLeadLayers(result);
+    absorbed = {};
+    for k = 1:numel(leads)
+        if leadLayer(k) ~= li
+            continue;
+        end
+        parts{end + 1} = leadStripRing(leads{k}, cfg.traceWidth / 2); %#ok<AGROW>
+        absorbed{end + 1} = terminalLeadName(k); %#ok<AGROW>
+    end
+    ring = mergeCopperRings(parts, li);
+    % leads 记录本层吸收了哪几条端子引线。空表示该层只有主螺旋，读回据此判断
+    % "面积必须变大"只适用于真的并入了引线的层。
+    entities(end + 1) = struct('name', sprintf('COIL_WITH_LEAD_L%d', li), ...
+        'kind', 'coil_with_lead', 'ring', ring, ...
+        'startXY', ring(1, :), 'endXY', ring(end, :), ...
+        'leads', strjoin(absorbed, '+'));
 end
-if li ~= 1
+end
+
+function ring = mergeCopperRings(parts, li)
+% 把同一层的若干闭合铜带并成一条闭合轮廓，并 fail closed：合并不出一个无孔
+% 连通域就说明端子铜没有真正接到线圈上，此时宁可报错也不要写出几何上不成立的
+% 轮廓。
+[px, py] = explodeRing(parts{1});
+poly = polyshape(px, py, 'Simplify', false);
+for k = 2:numel(parts)
+    [qx, qy] = explodeRing(parts{k});
+    poly = union(poly, polyshape(qx, qy, 'Simplify', false));
+end
+poly = simplify(poly);
+if poly.NumRegions ~= 1 || poly.NumHoles ~= 0
+    error('CircularFPC:ExportWriteFailed', ...
+        ['COMSOL terminal copper on L%d must merge into one hole-free ring ' ...
+         '(got %d region(s), %d hole(s)).'], li, poly.NumRegions, poly.NumHoles);
+end
+ring = poly.Vertices;
+if norm(ring(1, :) - ring(end, :)) > 1e-12
+    ring(end + 1, :) = ring(1, :);
+end
+end
+
+function [x, y] = explodeRing(ring)
+% 去掉闭合重复点与相邻重合点后再交给 polyshape。线圈铜带按密集采样的中线
+% 偏置而来，相邻点可到 1e-9 量级，直接构造会让 polyshape 报"顶点近乎重复"并
+% 静默简化；这里先自己清一遍，简化就只发生在下面那次显式 simplify。
+xy = ring;
+if size(xy, 1) > 1 && norm(xy(1, :) - xy(end, :)) <= 1e-12
+    xy(end, :) = [];
+end
+keep = [true; vecnorm(diff(xy, 1, 1), 2, 2) > 1e-7];
+xy = xy(keep, :);
+x = xy(:, 1);
+y = xy(:, 2);
+end
+
+function yn = isTerminalLeadPath(cp, leads)
+yn = false;
+for k = 1:numel(leads)
+    if pathMatches(cp, leads{k})
+        yn = true;
+        return;
+    end
+end
+end
+
+function yn = pathMatches(a, b)
+yn = (norm(a(1, :) - b(1, :)) < 1e-4 && norm(a(end, :) - b(end, :)) < 1e-4) || ...
+     (norm(a(1, :) - b(end, :)) < 1e-4 && norm(a(end, :) - b(1, :)) < 1e-4);
+end
+
+function yn = touchesInterLayerVia(cp, result)
+% 走线端点落在某个跨层过孔上，即视为"本层内接往层间过孔的铜"。
+yn = false;
+if size(cp, 1) < 2
     return;
 end
-leads = terminalLeadPaths(result);
-for k = 1:numel(leads)
-    path = leads{k};
-    entities(end + 1) = struct('name', terminalLeadName(k), 'kind', 'terminal_lead', ...
-        'ring', leadStripRing(path, cfg.traceWidth / 2), 'circleCenter', NaN, ...
-        'circleRadius', NaN, 'startXY', path(1, :), 'endXY', path(end, :));
+ends = [cp(1, :); cp(end, :)];
+for k = 1:size(ends, 1)
+    for v = 1:numel(result.vias)
+        via = result.vias(v);
+        if via.fromLayer ~= via.toLayer && norm(ends(k, :) - via.xy) < 1e-4
+            yn = true;
+            return;
+        end
+    end
 end
-for p = 1:numel(result.pads)
-    pad = result.pads(p);
-    entities(end + 1) = struct('name', pad.name, 'kind', 'pad', 'ring', zeros(0, 2), ...
-        'circleCenter', pad.xy, 'circleRadius', pad.diameter / 2, ...
-        'startXY', pad.xy, 'endXY', pad.xy);
+end
+
+function layers = terminalLeadLayers(result)
+% 每条端子引线画到哪一层，规则见 comsolTerminalEntities 的说明。单活动层组合
+% 没有层间过孔，两条引线都落在唯一的活动层上。
+route = result.seriesRoute;
+leads = terminalLeadPaths(result);
+layers = zeros(1, numel(leads));
+layers(1) = coilLayerTouchedBy(route, leads{1});
+returnLayer = lastInterLayerViaStartLayer(route);
+if isempty(returnLayer)
+    layers(2) = coilLayerTouchedBy(route, leads{2});
+else
+    layers(2) = returnLayer;
+end
+end
+
+function li = coilLayerTouchedBy(route, leadPath)
+% 引线端点与某个 COIL_L* 段端点重合时，返回该线圈段所在层。
+li = 0;
+for k = 1:numel(route)
+    if ~strncmp(route(k).name, 'COIL_L', 6)
+        continue;
+    end
+    for e = 1:2
+        if e == 1
+            pt = leadPath(1, :);
+        else
+            pt = leadPath(end, :);
+        end
+        if norm(pt - route(k).startXY) < 1e-4 || norm(pt - route(k).endXY) < 1e-4
+            li = route(k).startLayer;
+            return;
+        end
+    end
+end
+if li == 0
+    error('CircularFPC:ExportWriteFailed', ...
+        'Cannot resolve which coil layer a terminal lead attaches to.');
+end
+end
+
+function li = lastInterLayerViaStartLayer(route)
+% 路线中最后一个跨层过孔的起点层；没有跨层过孔时返回空。
+li = [];
+for k = 1:numel(route)
+    if route(k).startLayer ~= route(k).endLayer
+        li = route(k).startLayer;
+    end
 end
 end
 
@@ -583,7 +719,7 @@ end
 
 function writeSvgFull(filename, cfg, result, previewKind)
 if nargin < 4
-    previewKind = 'physical';
+    previewKind = 'trace_pad_via';
 end
 [tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 fid = fopen(filename, 'w');
@@ -617,29 +753,31 @@ for li = 1:numel(result.layerPaths)
             pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
     end
 end
-[labelX, labelY, bg] = svgLegendLayout(-extent, -extent, extent, extent, numel(result.pads) + numel(result.vias));
-writeSvgLegendBackground(fid, bg);
-idx = 0;
-for k = 1:numel(result.pads)
-    p = result.pads(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
-        p.xy(1), -p.xy(2), cfg.padDiameter / 2);
-    idx = idx + 1;
-    writeSvgTerminalText(fid, p, labelX, labelY(idx));
-end
-for k = 1:numel(result.vias)
-    v = result.vias(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
-    idx = idx + 1;
-    writeSvgTerminalText(fid, v, labelX, labelY(idx));
-end
-for k = 1:numel(result.electrodePads)
-    p = result.electrodePads(k);
-    fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
-        p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+if showsPadsAndVias(previewKind)
+    [labelX, labelY, bg] = svgLegendLayout(-extent, -extent, extent, extent, numel(result.pads) + numel(result.vias));
+    writeSvgLegendBackground(fid, bg);
+    idx = 0;
+    for k = 1:numel(result.pads)
+        p = result.pads(k);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
+            p.xy(1), -p.xy(2), cfg.padDiameter / 2);
+        idx = idx + 1;
+        writeSvgTerminalText(fid, p, labelX, labelY(idx));
+    end
+    for k = 1:numel(result.vias)
+        v = result.vias(k);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
+            v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
+            v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
+        idx = idx + 1;
+        writeSvgTerminalText(fid, v, labelX, labelY(idx));
+    end
+    for k = 1:numel(result.electrodePads)
+        p = result.electrodePads(k);
+        fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
+            p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+    end
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
@@ -648,7 +786,7 @@ end
 function writeSvgLayer(filename, cfg, result, li, previewKind)
 % 每层单独预览：板框 + 该层铜（线圈 + 连接路径）+ L1 焊盘 + 该层过孔。
 if nargin < 5
-    previewKind = 'physical';
+    previewKind = 'trace_pad_via';
 end
 [tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 fid = fopen(filename, 'w');
@@ -683,20 +821,22 @@ for k = 1:numel(paths)
     fprintf(fid, '<polyline points="%s" fill="none" stroke="%s" stroke-width="%.4f" stroke-opacity="0.85"/>\n', ...
         pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
 end
-if li == 1
-    for k = 1:numel(result.pads)
-        p = result.pads(k);
-        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
-            p.xy(1), -p.xy(2), cfg.padDiameter / 2);
+if showsPadsAndVias(previewKind)
+    if li == 1
+        for k = 1:numel(result.pads)
+            p = result.pads(k);
+            fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
+                p.xy(1), -p.xy(2), cfg.padDiameter / 2);
+        end
+        for k = 1:numel(result.electrodePads)
+            p = result.electrodePads(k);
+            fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
+                p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+        end
     end
-    for k = 1:numel(result.electrodePads)
-        p = result.electrodePads(k);
-        fprintf(fid, '<circle data-electrode-name="%s" cx="%.6f" cy="%.6f" r="%.6f" fill="#ff7f0e" stroke="#000000" stroke-width="0.15"/>\n', ...
-            p.name, p.xy(1), -p.xy(2), p.diameter / 2);
+    for k = 1:numel(result.vias)
+        writeSvgLayerVia(fid, cfg, result.vias(k));
     end
-end
-for k = 1:numel(result.vias)
-    writeSvgLayerVia(fid, cfg, result.vias(k));
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
@@ -739,11 +879,11 @@ fprintf(fid, '</svg>\n');
 fclose(fid);
 end
 
-function writeSvgComsolTerminalsFull(filename, cfg, result)
-% COMSOL preview of the copper_solid_with_terminals_L*.dxf variant: the same
-% closed copper-strip rings plus the L1 center-region PAD_A/PAD_B disks and
-% their two straight-ish leads. Vias, drills, via annuli, and inter-layer
-% transitions are omitted, so this preview shows exactly what those DXFs hold.
+function writeSvgComsolLeadFull(filename, cfg, result)
+% COMSOL preview of the copper_solid_with_terminals_L*.dxf variant: each active
+% layer's main spiral merged with its own terminal lead into one closed ring.
+% No pad disk, via, drill, via annulus, or inter-layer transition is drawn, so
+% this preview shows exactly what those DXFs hold.
 fid = fopen(filename, 'w');
 if fid < 0
     error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
@@ -754,16 +894,16 @@ fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-
     -extent, -extent, 2 * extent, 2 * extent);
 writeSvgComsolReferenceBoard(fid, cfg, result);
 for li = 1:numel(result.layerPaths)
-    writeSvgComsolTerminalsRing(fid, cfg, result, li);
+    writeSvgComsolLeadRing(fid, cfg, result, li);
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
 end
 
-function writeSvgComsolTerminalsLayer(filename, cfg, result, li)
-% Per-layer preview of the with-terminals variant. The L1 file carries the
-% pads and leads; every other layer keeps only its main-coil ring, matching
-% the corresponding *_copper_solid_with_terminals_L*.dxf contents.
+function writeSvgComsolLeadLayer(filename, cfg, result, li)
+% Per-layer preview of the coil-with-lead variant: one merged closed ring on
+% each active layer, matching the corresponding
+% *_copper_solid_with_terminals_L*.dxf contents.
 fid = fopen(filename, 'w');
 if fid < 0
     error('CircularFPC:ExportWriteFailed', 'Cannot open SVG for writing: %s', filename);
@@ -773,12 +913,12 @@ extent = svgExtent(cfg, result);
 fprintf(fid, '<svg xmlns="http://www.w3.org/2000/svg" data-preview-kind="comsol-dxf-with-terminals" data-dxf-layer="L%d" viewBox="%.6f %.6f %.6f %.6f">\n', ...
     li, -extent, -extent, 2 * extent, 2 * extent);
 writeSvgComsolReferenceBoard(fid, cfg, result);
-writeSvgComsolTerminalsRing(fid, cfg, result, li);
+writeSvgComsolLeadRing(fid, cfg, result, li);
 fprintf(fid, '</svg>\n');
 fclose(fid);
 end
 
-function writeSvgComsolTerminalsRing(fid, cfg, result, li)
+function writeSvgComsolLeadRing(fid, cfg, result, li)
 % Copper geometry of one with-terminals DXF, in SVG display coordinates.
 dxfName = sprintf('dxf/L%d/%02d_copper_solid_with_terminals_L%d.dxf', li, li, li);
 entities = comsolTerminalEntities(cfg, result, li);
@@ -786,13 +926,8 @@ colors = {'#e61919', '#f2790a', '#1a9933', '#1a4de6'};
 c = colors{mod(li - 1, numel(colors)) + 1};
 for k = 1:numel(entities)
     e = entities(k);
-    if strcmp(e.kind, 'pad')
-        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" fill-opacity="0.75" stroke="#7a0d0d" stroke-width="0.025" data-copper-entity="%s" data-copper-kind="%s" data-dxf-layer="L%d" data-dxf-file="%s"/>\n', ...
-            e.circleCenter(1), -e.circleCenter(2), e.circleRadius, e.name, e.kind, li, dxfName);
-    else
-        fprintf(fid, '<polygon points="%s" fill="%s" fill-opacity="0.32" stroke="%s" stroke-width="0.025" data-copper-entity="%s" data-copper-kind="%s" data-dxf-layer="L%d" data-dxf-file="%s" data-dxf-closed="explicit" data-dxf-cap="straight-short-edge"/>\n', ...
-            pointsAttr(e.ring), c, c, e.name, e.kind, li, dxfName);
-    end
+    fprintf(fid, '<polygon points="%s" fill="%s" fill-opacity="0.32" stroke="%s" stroke-width="0.025" data-copper-entity="%s" data-copper-kind="%s" data-dxf-layer="L%d" data-dxf-file="%s" data-dxf-closed="explicit" data-dxf-cap="straight-short-edge"/>\n', ...
+        pointsAttr(e.ring), c, c, e.name, e.kind, li, dxfName);
 end
 end
 
@@ -804,11 +939,10 @@ name = names{index};
 end
 
 function writeComsolTerminalGeometryReport(filename, cfg, result)
-% Terminal geometry mapping report for the COMSOL with-terminals variant: one
-% row per emitted DXF entity, giving the route node it came from, the closed
-% copper area, and the first/last vertices that prove each entity is closed.
-% closed=1 means the body imports as a closed 2D region; capMode records how
-% it is closed (a straight short edge on a copper strip, or a disk outline).
+% Terminal geometry mapping report for the coil-with-lead variant: one row per
+% active layer, giving the merged closed ring's copper area and the first/last
+% vertices that prove the body is closed. closed=1 means the body imports as a
+% closed 2D region; capMode records how it is closed.
 fid = openOutputFile(filename);
 c = onCleanup(@() fclose(fid));
 fprintf(fid, 'entity,kind,layer,routeNode,dxfFile,closed,vertexCount,areaMm2,capMode,startXMm,startYMm,endXMm,endYMm,firstXMm,firstYMm,lastXMm,lastYMm,firstLastMatch\n');
@@ -817,20 +951,11 @@ for li = 1:numel(result.layerPaths)
     entities = comsolTerminalEntities(cfg, result, li);
     for k = 1:numel(entities)
         e = entities(k);
-        isPad = strcmp(e.kind, 'pad');
-        if isPad
-            vertexCount = 0;
-            areaMm2 = pi * e.circleRadius^2;
-            capMode = 'closed_disk';
-            first = e.circleCenter;
-            last = e.circleCenter;
-        else
-            vertexCount = size(e.ring, 1);
-            areaMm2 = polygonArea(e.ring);
-            capMode = 'straight_short_edge';
-            first = e.ring(1, :);
-            last = e.ring(end, :);
-        end
+        vertexCount = size(e.ring, 1);
+        areaMm2 = polygonArea(e.ring);
+        capMode = 'merged_closed_ring';
+        first = e.ring(1, :);
+        last = e.ring(end, :);
         fprintf(fid, '%s,%s,%d,%s,%s,1,%d,%.6f,%s,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d\n', ...
             e.name, e.kind, li, e.name, dxfFile, vertexCount, areaMm2, capMode, ...
             e.startXY(1), e.startXY(2), e.endXY(1), e.endXY(2), ...
@@ -886,18 +1011,40 @@ fprintf(fid, ['<circle data-via-name="%s" data-via-role="drill" ', ...
 end
 
 function [traceWidth, kindAttr] = jlcPreviewStyle(cfg, previewKind)
+% 三种 JLC 预览共用同一批几何，只在"线画多细"和"画不画焊盘/过孔"上分档：
+%   path_only     按走线路径画细线，不按线宽，不含焊盘与过孔
+%   trace_only    按实际线宽画铜线，仍不含焊盘与过孔
+%   trace_pad_via 按实际线宽画铜线，并画焊盘、独立电极与过孔
 switch lower(char(previewKind))
-    case 'centerline'
+    case 'path_only'
         % A centerline DXF has no physical width; use a thin display stroke
         % while preserving the engineering coordinates and path topology.
         traceWidth = 0.04;
-        kindAttr = 'jlc-centerline';
-    case 'physical'
+        kindAttr = 'jlc-path-only';
+    case 'trace_only'
         traceWidth = cfg.traceWidth;
-        kindAttr = 'jlc-physical';
+        kindAttr = 'jlc-trace-only';
+    case 'trace_pad_via'
+        traceWidth = cfg.traceWidth;
+        kindAttr = 'jlc-trace-pad-via';
     otherwise
         error('CircularFPC:ExportWriteFailed', 'Unknown JLC preview kind: %s', previewKind);
 end
+end
+
+function yn = showsPadsAndVias(previewKind)
+% 只有 trace_pad_via 画焊盘、独立电极与过孔；前两档只画铜线，避免用端子
+% 图元遮住走线本身的形状。
+yn = strcmpi(char(previewKind), 'trace_pad_via');
+end
+
+function [dirNames, kindNames, kindAttrs] = jlcPreviewKinds()
+% JLC 预览的三个档位。目录名带数字前缀以固定排序，kindNames 是内部档位名，
+% kindAttrs 是写进 SVG 的 data-preview-kind 值。三张表在这里一次给全，新增
+% 档位时不会出现"目录改了、属性没改"的半套状态。
+dirNames = {'1_path_only', '2_trace_only', '3_trace_pad_via'};
+kindNames = {'path_only', 'trace_only', 'trace_pad_via'};
+kindAttrs = {'jlc-path-only', 'jlc-trace-only', 'jlc-trace-pad-via'};
 end
 
 function role = svgLayerRole(result, li)
@@ -912,7 +1059,7 @@ end
 
 function writeSvgConnectionZone(filename, cfg, result, previewKind)
 if nargin < 4
-    previewKind = 'physical';
+    previewKind = 'trace_pad_via';
 end
 [tracePreviewWidth, previewKindAttr] = jlcPreviewStyle(cfg, previewKind);
 w = result.effectiveDimensions.centerPlatformWidth;
@@ -970,24 +1117,26 @@ for li = 1:numel(result.layerPaths)
             pointsAttr(paths{k}), colors{cidx}, tracePreviewWidth);
     end
 end
-[labelX, labelY, bg] = svgLegendLayout(xMin, svgYMin, xMax, svgYMax, numel(result.pads) + numel(result.vias));
-writeSvgLegendBackground(fid, bg);
-idx = 0;
-for k = 1:numel(result.pads)
-    p = result.pads(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
-        p.xy(1), -p.xy(2), cfg.padDiameter / 2);
-    idx = idx + 1;
-    writeSvgTerminalText(fid, p, labelX, labelY(idx));
-end
-for k = 1:numel(result.vias)
-    v = result.vias(k);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
-    fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
-        v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
-    idx = idx + 1;
-    writeSvgTerminalText(fid, v, labelX, labelY(idx));
+if showsPadsAndVias(previewKind)
+    [labelX, labelY, bg] = svgLegendLayout(xMin, svgYMin, xMax, svgYMax, numel(result.pads) + numel(result.vias));
+    writeSvgLegendBackground(fid, bg);
+    idx = 0;
+    for k = 1:numel(result.pads)
+        p = result.pads(k);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#e61919" stroke="#000000" stroke-width="0.15"/>\n', ...
+            p.xy(1), -p.xy(2), cfg.padDiameter / 2);
+        idx = idx + 1;
+        writeSvgTerminalText(fid, p, labelX, labelY(idx));
+    end
+    for k = 1:numel(result.vias)
+        v = result.vias(k);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#474747" stroke="#000000" stroke-width="0.12"/>\n', ...
+            v.xy(1), -v.xy(2), cfg.viaPadDiameter / 2);
+        fprintf(fid, '<circle cx="%.6f" cy="%.6f" r="%.6f" fill="#ffffff" stroke="#000000" stroke-width="0.10"/>\n', ...
+            v.xy(1), -v.xy(2), cfg.viaDrillDiameter / 2);
+        idx = idx + 1;
+        writeSvgTerminalText(fid, v, labelX, labelY(idx));
+    end
 end
 fprintf(fid, '</svg>\n');
 fclose(fid);
@@ -1288,7 +1437,7 @@ if strcmp(result.manufacturing.qualificationStatus, 'UNVERIFIED_LAYER_COUNT')
 else
     fprintf(fid7, 'COMSOL: use 09_comsol_stackup.csv for the nominal layer Z coordinates; verify against the fab stackup.\n');
 end
-fprintf(fid7, 'COMSOL simulation DXFs: *_copper_solid_L*.dxf keeps only the closed main coil; *_copper_solid_with_terminals_L*.dxf adds the L1 center leads as closed copper strips with straight short-edge caps plus the PAD_A/PAD_B disks.\n');
+fprintf(fid7, 'COMSOL simulation DXFs: *_copper_solid_L*.dxf keeps only the closed main coil; *_copper_solid_with_terminals_L*.dxf merges each active layer''s spiral with that layer''s terminal lead into one closed ring and writes no pad disk.\n');
 fprintf(fid7, 'COMSOL simulation DXFs never contain vias, drills, via annuli, or inter-layer transitions; map them with reports/11_comsol_terminal_geometry.csv.\n');
 fprintf(fid7, 'File manifest 08_file_manifest.csv excludes itself.\n');
 clear c7;
@@ -1358,7 +1507,7 @@ elseif ~isempty(regexp(rel, '^dxf/L\d+/\d+_copper_solid_with_terminals_L\d+\.dxf
     role = 'copper_solid_with_terminals';
 elseif ~isempty(regexp(rel, '^preview/(zh|en)/(JLC|COMSOL)/', 'once'))
     role = 'preview_annotated';
-elseif ~isempty(regexp(rel, '^preview/(JLC/(centerline|physical)|COMSOL)/', 'once'))
+elseif ~isempty(regexp(rel, '^preview/(JLC/(1_path_only|2_trace_only|3_trace_pad_via)|COMSOL)/', 'once'))
     role = 'preview';
 elseif ~isempty(regexp(rel, '^reports/', 'once'))
     role = 'report';
@@ -1533,21 +1682,22 @@ for li = 1:cfg.boardLayerCount
 end
 
 if cfg.enablePreview
-    for kind = {'centerline', 'physical'}
-        for f = {fullfile(tempDir, 'preview', 'JLC', kind{1}, '01_overview.svg'), ...
-                fullfile(tempDir, 'preview', 'JLC', kind{1}, '02_connection_zone.svg')}
+    [jlcDirs, ~, jlcAttrs] = jlcPreviewKinds();
+    for ki = 1:numel(jlcDirs)
+        for f = {fullfile(tempDir, 'preview', 'JLC', jlcDirs{ki}, '01_overview.svg'), ...
+                fullfile(tempDir, 'preview', 'JLC', jlcDirs{ki}, '02_connection_zone.svg')}
             if ~isfile(f{1})
                 error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f{1});
             end
             svgTxt = fileread(f{1});
-            if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+            if ~contains(svgTxt, sprintf('data-preview-kind="%s"', jlcAttrs{ki}))
                 error('CircularFPC:ExportReadbackFailed', ...
                     'JLC preview kind metadata mismatch: %s', f{1});
             end
             xmlread(f{1});
         end
     end
-    comsolFull = fullfile(tempDir, 'preview', 'COMSOL', 'main', '01_overview.svg');
+    comsolFull = fullfile(tempDir, 'preview', 'COMSOL', '1_coil_only', '01_overview.svg');
     if ~isfile(comsolFull)
         error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', comsolFull);
     end
@@ -1560,20 +1710,20 @@ if cfg.enablePreview
         else
             role = sprintf('inner%d', li - 1);
         end
-        for kind = {'centerline', 'physical'}
-            f = fullfile(tempDir, 'preview', 'JLC', kind{1}, ...
+        for ki = 1:numel(jlcDirs)
+            f = fullfile(tempDir, 'preview', 'JLC', jlcDirs{ki}, ...
                 sprintf('1%d_layer_L%d_%s.svg', li, li, role));
             if ~isfile(f)
                 error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', f);
             end
             svgTxt = fileread(f);
-            if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+            if ~contains(svgTxt, sprintf('data-preview-kind="%s"', jlcAttrs{ki}))
                 error('CircularFPC:ExportReadbackFailed', ...
                     'JLC preview kind metadata mismatch: %s', f);
             end
             xmlread(f);
         end
-        comsolFile = fullfile(tempDir, 'preview', 'COMSOL', 'main', ...
+        comsolFile = fullfile(tempDir, 'preview', 'COMSOL', '1_coil_only', ...
             sprintf('1%d_layer_L%d_%s.svg', li, li, role));
         if ~isfile(comsolFile)
             error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL DXF preview: %s', comsolFile);
@@ -1593,7 +1743,7 @@ if cfg.enablePreview
                 'COMSOL full preview missing active layer L%d.', li);
         end
     end
-    comsolTermFull = fullfile(tempDir, 'preview', 'COMSOL', 'with_terminals', ...
+    comsolTermFull = fullfile(tempDir, 'preview', 'COMSOL', '2_coil_with_lead', ...
         '01_overview.svg');
     if ~isfile(comsolTermFull)
         error('CircularFPC:ExportReadbackFailed', 'Missing SVG: %s', comsolTermFull);
@@ -1603,10 +1753,10 @@ if cfg.enablePreview
         error('CircularFPC:ExportReadbackFailed', ...
             'COMSOL terminal preview kind metadata mismatch: %s', comsolTermFull);
     end
-    if ~contains(comsolTermFullTxt, 'data-copper-kind="terminal_lead"') || ...
-            ~contains(comsolTermFullTxt, 'data-copper-kind="pad"')
+    if ~contains(comsolTermFullTxt, 'data-copper-kind="coil_with_lead"') || ...
+            contains(comsolTermFullTxt, 'data-copper-kind="pad"')
         error('CircularFPC:ExportReadbackFailed', ...
-            'COMSOL terminal preview must draw the center leads and pads: %s', comsolTermFull);
+            'COMSOL coil-with-lead preview must draw merged rings and no pads: %s', comsolTermFull);
     end
     xmlread(comsolTermFull);
     for li = 1:cfg.boardLayerCount
@@ -1617,7 +1767,7 @@ if cfg.enablePreview
         else
             role = sprintf('inner%d', li - 1);
         end
-        comsolTermFile = fullfile(tempDir, 'preview', 'COMSOL', 'with_terminals', ...
+        comsolTermFile = fullfile(tempDir, 'preview', 'COMSOL', '2_coil_with_lead', ...
             sprintf('1%d_layer_L%d_%s.svg', li, li, role));
         if ~isfile(comsolTermFile)
             error('CircularFPC:ExportReadbackFailed', ...
@@ -1629,18 +1779,17 @@ if cfg.enablePreview
             error('CircularFPC:ExportReadbackFailed', ...
                 'COMSOL terminal preview metadata mismatch: %s', comsolTermFile);
         end
-        expectedLeads = (li == 1) * 2;
-        expectedPads = (li == 1) * numel(result.pads);
-        if numel(regexp(comsolTermTxt, 'data-copper-kind="terminal_lead"', 'match')) ~= expectedLeads || ...
-                numel(regexp(comsolTermTxt, 'data-copper-kind="pad"', 'match')) ~= expectedPads
+        % 每个活动层恰好一条合并后的闭合轮廓；非活动层没有铜体。焊盘在本变体里
+        % 不再导出，出现 pad 图元反而是错误。
+        expectedBodies = double(~isempty(result.layerPaths(li).coilXY));
+        if numel(regexp(comsolTermTxt, 'data-copper-kind="coil_with_lead"', 'match')) ~= expectedBodies
             error('CircularFPC:ExportReadbackFailed', ...
-                'COMSOL terminal preview copper entities mismatch on L%d: %s', li, comsolTermFile);
+                'COMSOL coil-with-lead preview must draw exactly one merged ring on L%d: %s', ...
+                li, comsolTermFile);
         end
-        for p = 1:numel(result.pads) * (li == 1)
-            if ~contains(comsolTermTxt, sprintf('data-copper-entity="%s"', result.pads(p).name))
-                error('CircularFPC:ExportReadbackFailed', ...
-                    'COMSOL terminal preview missing pad %s.', result.pads(p).name);
-            end
+        if contains(comsolTermTxt, 'data-copper-kind="pad"')
+            error('CircularFPC:ExportReadbackFailed', ...
+                'COMSOL coil-with-lead preview must not draw pads on L%d: %s', li, comsolTermFile);
         end
         % An inactive layer legitimately has no copper body, so the preview
         % cites its DXF file only when the variant actually emits geometry.
@@ -1797,10 +1946,12 @@ end
 end
 
 function verifyTerminalSolidDxf(cfg, result, layerDir, li)
-% Readback for dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf: exactly the main
-% coil ring (unchanged vertices), plus the two straight-capped center leads
-% and the two pad disks on L1; every closed body repeats its first vertex; no
-% VIA/DRILL marker, no via annulus layer, no group-43 width anywhere.
+% Readback for dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf: exactly one closed
+% body per active coil layer, being that layer's spiral merged with its terminal
+% copper; every body repeats its first vertex; the body must be strictly larger
+% than the plain copper_solid ring, otherwise the merge did not happen; no
+% CIRCLE on any layer (pads are not exported), no VIA/DRILL marker, no via
+% annulus layer, no group-43 width anywhere.
 solidFile = fullfile(layerDir, sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li));
 if ~isfile(solidFile)
     error('CircularFPC:ExportReadbackFailed', 'Missing COMSOL terminal copper DXF: %s', solidFile);
@@ -1820,8 +1971,7 @@ end
 entities = comsolTerminalEntities(cfg, result, li);
 polys = readDxfLwpolylines(txt);
 [dc, w43, nPoly] = readDxfEntities(txt);
-expectedPolys = sum(~strcmp({entities.kind}, 'pad'));
-expectedCircles = sum(strcmp({entities.kind}, 'pad'));
+expectedPolys = numel(entities);
 if nPoly ~= expectedPolys || numel(polys) ~= expectedPolys
     error('CircularFPC:ExportReadbackFailed', ...
         'COMSOL terminal DXF body count mismatch (expected %d closed rings): %s', ...
@@ -1831,10 +1981,10 @@ if ~isempty(w43) || any([polys.hasWidth])
     error('CircularFPC:ExportReadbackFailed', ...
         'COMSOL terminal DXF must not contain LWPOLYLINE group 43: %s', solidFile);
 end
-if numel(dc) ~= expectedCircles
+if ~isempty(dc)
     error('CircularFPC:ExportReadbackFailed', ...
-        'COMSOL terminal DXF pad circle count mismatch (expected %d): %s', ...
-        expectedCircles, solidFile);
+        'COMSOL terminal DXF must not contain circles (pads are not exported): %s', ...
+        solidFile);
 end
 for k = 1:numel(polys)
     if ~polys(k).closed
@@ -1854,27 +2004,9 @@ for k = 1:numel(polys)
             'COMSOL terminal DXF body %d must enclose a positive area: %s', k, solidFile);
     end
 end
-% Pad disks: on L1 the count, center, and diameter must match result.pads
-% exactly; every other layer must carry no circle at all.
-if li == 1
-    padCircles = dc(ismember({dc.layer}, {result.pads.name}));
-    if numel(padCircles) ~= numel(result.pads)
-        error('CircularFPC:ExportReadbackFailed', ...
-            'COMSOL terminal DXF pads must be written on PAD_A/PAD_B layers: %s', solidFile);
-    end
-    for k = 1:numel(result.pads)
-        pad = result.pads(k);
-        match = padCircles(strcmp({padCircles.layer}, pad.name));
-        if numel(match) ~= 1 || abs(match.cx - pad.xy(1)) > 1e-6 || ...
-                abs(match.cy - pad.xy(2)) > 1e-6 || ...
-                abs(match.r - pad.diameter / 2) > 1e-6
-            error('CircularFPC:ExportReadbackFailed', ...
-                'COMSOL terminal DXF pad %s must match result.pads diameter and center.', pad.name);
-        end
-    end
-end
-% Every emitted body must be exactly the canonical closed copper ring, in the
-% canonical order (main coil, then the two straight-capped center leads).
+% Every emitted body must be exactly the canonical merged copper ring. The
+% variant carries conductor only, so the empty-circle check above already
+% covers pads on every layer.
 for k = 1:numel(polys)
     e = entities(k);
     if size(polys(k).xy, 1) ~= size(e.ring, 1) || ...
@@ -1884,20 +2016,37 @@ for k = 1:numel(polys)
             k, e.name, solidFile);
     end
 end
-% The main-coil body must be geometrically identical to the one written to
-% copper_solid_Ln.dxf; the additive variant may never alter it.
+% The merged body must be strictly larger than the plain copper_solid ring it
+% grew out of: equal area would mean the terminal copper never got merged, and
+% carrying that copper is the whole point of this variant.
 if ~isempty(result.layerPaths(li).coilXY)
     solidTxt = fileread(fullfile(layerDir, sprintf('%02d_copper_solid_L%d.dxf', li, li)));
     solidPolys = readDxfLwpolylines(solidTxt);
-    if numel(solidPolys) ~= 1 || size(solidPolys(1).xy, 1) ~= size(polys(1).xy, 1) || ...
-            max(abs(solidPolys(1).xy - polys(1).xy), [], 'all') > 1e-12
+    if numel(solidPolys) ~= 1
         error('CircularFPC:ExportReadbackFailed', ...
-            'COMSOL terminal DXF must keep the copper_solid main-coil ring unchanged: %s', solidFile);
+            'copper_solid_L%d must contain exactly one ring: %s', li, solidFile);
+    end
+    mergedArea = polygonArea(polys(1).xy);
+    plainArea = polygonArea(solidPolys(1).xy);
+    absorbed = entities(1).leads;
+    if mergedArea < plainArea - 1e-6
+        error('CircularFPC:ExportReadbackFailed', ...
+            ['COMSOL terminal DXF %.6f mm^2 is smaller than the plain ' ...
+             'copper_solid ring %.6f mm^2, so the merge lost copper: %s'], ...
+            mergedArea, plainArea, solidFile);
+    end
+    % 只有真的并入了引线的层才必须变大；没有端子铜的层（例如 4/4 的 L2/L3）
+    % 合并环就等于原螺旋，面积理应相同。
+    if ~isempty(absorbed) && mergedArea <= plainArea + 1e-9
+        error('CircularFPC:ExportReadbackFailed', ...
+            ['COMSOL terminal DXF %.6f mm^2 does not exceed the plain ' ...
+             'copper_solid ring %.6f mm^2 although it absorbed %s: %s'], ...
+            mergedArea, plainArea, absorbed, solidFile);
     end
 end
-if li ~= 1 && ~isempty(dc)
+if ~isempty(dc)
     error('CircularFPC:ExportReadbackFailed', ...
-        'COMSOL terminal DXF must stay terminal-free outside L1: %s', solidFile);
+        'COMSOL terminal DXF must not contain circles on any layer: %s', solidFile);
 end
 if contains(txt, 'VIA') || contains(txt, 'DRILL')
     error('CircularFPC:ExportReadbackFailed', ...
@@ -1968,29 +2117,25 @@ if ~isequal(t.Properties.VariableNames, expCols)
     error('CircularFPC:ExportReadbackFailed', '11 COMSOL terminal geometry columns mismatch.');
 end
 expectedRows = 0;
-expectedLeads = 0;
-expectedPads = 0;
 for li = 1:numel(result.layerPaths)
     expectedRows = expectedRows + numel(comsolTerminalEntities(cfg, result, li));
-    expectedLeads = expectedLeads + 2 * (li == 1);
-    expectedPads = expectedPads + numel(result.pads) * (li == 1);
 end
 if height(t) ~= expectedRows
     error('CircularFPC:ExportReadbackFailed', ...
         '11 COMSOL terminal geometry row count must match every emitted body.');
 end
-if sum(strcmp(t.kind, 'terminal_lead')) ~= expectedLeads || ...
-        sum(strcmp(t.kind, 'pad')) ~= expectedPads
+% 每个活动层一行合并轮廓；焊盘不再导出，出现 pad 行即为错误。
+if sum(strcmp(t.kind, 'coil_with_lead')) ~= expectedRows || ...
+        any(strcmp(t.kind, 'pad')) || any(strcmp(t.kind, 'terminal_lead'))
     error('CircularFPC:ExportReadbackFailed', ...
-        '11 COMSOL terminal geometry must list both L1 leads and both pads.');
+        '11 COMSOL terminal geometry must list one merged ring per active layer.');
 end
 for k = 1:height(t)
     if t.closed(k) ~= 1
         error('CircularFPC:ExportReadbackFailed', ...
             '11 COMSOL terminal geometry row %d must be a closed 2D body.', k);
     end
-    if ~strcmp(char(t.capMode(k)), 'straight_short_edge') && ...
-            ~strcmp(char(t.capMode(k)), 'closed_disk')
+    if ~strcmp(char(t.capMode(k)), 'merged_closed_ring')
         error('CircularFPC:ExportReadbackFailed', ...
             '11 COMSOL terminal geometry capMode mismatch on row %d.', k);
     end
@@ -2002,9 +2147,9 @@ for k = 1:height(t)
         error('CircularFPC:ExportReadbackFailed', ...
             '11 COMSOL terminal geometry row %d must close on its first vertex.', k);
     end
-    if strcmp(char(t.capMode(k)), 'straight_short_edge') && t.vertexCount(k) < 4
+    if t.vertexCount(k) < 4
         error('CircularFPC:ExportReadbackFailed', ...
-            '11 COMSOL terminal geometry row %d copper strip is degenerate.', k);
+            '11 COMSOL terminal geometry row %d copper ring is degenerate.', k);
     end
     absDxf = fullfile(tempDir, char(t.dxfFile(k)));
     if ~isfile(absDxf)
@@ -2012,29 +2157,17 @@ for k = 1:height(t)
             '11 COMSOL terminal geometry cites a missing DXF on row %d.', k);
     end
 end
-% PAD_A/PAD_B rows must carry the same center and radius as result.pads.
-for p = 1:numel(result.pads)
-    pad = result.pads(p);
-    row = t(strcmp(t.entity, pad.name) & strcmp(t.kind, 'pad'), :);
-    if height(row) ~= 1 || abs(row.startXMm - pad.xy(1)) > 1e-6 || ...
-            abs(row.startYMm - pad.xy(2)) > 1e-6 || ...
-            abs(row.areaMm2 - pi * (pad.diameter / 2)^2) > 1e-6
+% 每行必须落在对应层的合并轮廓上，实体名与层号一一对应，面积取自该轮廓。
+for k = 1:height(t)
+    li = t.layer(k);
+    ents = comsolTerminalEntities(cfg, result, li);
+    if numel(ents) ~= 1 || ~strcmp(t.entity(k), ents(1).name)
         error('CircularFPC:ExportReadbackFailed', ...
-            '11 COMSOL terminal geometry pad row mismatch for %s.', pad.name);
+            '11 COMSOL terminal geometry row %d must name the layer merged ring.', k);
     end
-end
-leads = terminalLeadPaths(result);
-for k = 1:numel(leads)
-    name = terminalLeadName(k);
-    row = t(strcmp(t.entity, name) & t.layer == 1 & strcmp(t.kind, 'terminal_lead'), :);
-    if height(row) ~= 1
+    if abs(t.areaMm2(k) - polygonArea(ents(1).ring)) > 1e-6
         error('CircularFPC:ExportReadbackFailed', ...
-            '11 COMSOL terminal geometry must map %s on layer 1.', name);
-    end
-    if abs(row.startXMm - leads{k}(1, 1)) > 1e-6 || abs(row.startYMm - leads{k}(1, 2)) > 1e-6 || ...
-            abs(row.endXMm - leads{k}(end, 1)) > 1e-6 || abs(row.endYMm - leads{k}(end, 2)) > 1e-6
-        error('CircularFPC:ExportReadbackFailed', ...
-            '11 COMSOL terminal geometry lead endpoints mismatch for %s.', name);
+            '11 COMSOL terminal geometry row %d area mismatch.', k);
     end
 end
 end
@@ -2326,13 +2459,19 @@ for k = 1:numel(result.vias)
     end
 end
 if cfg.enablePreview
-    for kind = {'centerline', 'physical'}
-        for f = {fullfile(tempDir, 'preview', 'JLC', kind{1}, '01_overview.svg'), ...
-                fullfile(tempDir, 'preview', 'JLC', kind{1}, '02_connection_zone.svg')}
+    [jlcDirs, ~, jlcAttrs] = jlcPreviewKinds();
+    for ki = 1:numel(jlcDirs)
+        % 端子标注只由最高档（trace_pad_via）绘制；另两档按设计不画端子，
+        % 因此只核对 kind 元数据，不去要求它们含有焊盘/过孔文字。
+        for f = {fullfile(tempDir, 'preview', 'JLC', jlcDirs{ki}, '01_overview.svg'), ...
+                fullfile(tempDir, 'preview', 'JLC', jlcDirs{ki}, '02_connection_zone.svg')}
         svgTxt = fileread(f{1});
-        if ~contains(svgTxt, sprintf('data-preview-kind="jlc-%s"', kind{1}))
+        if ~contains(svgTxt, sprintf('data-preview-kind="%s"', jlcAttrs{ki}))
             error('CircularFPC:ExportReadbackFailed', ...
                 'JLC preview kind metadata mismatch: %s', f{1});
+        end
+        if ~strcmp(jlcAttrs{ki}, 'jlc-trace-pad-via')
+            continue;
         end
         for k = 1:numel(result.pads)
             p = result.pads(k);

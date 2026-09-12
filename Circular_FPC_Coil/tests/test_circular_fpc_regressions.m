@@ -766,7 +766,7 @@ verifyEqual(testCase, result.effectiveDimensions.centerPlatformHeight, 28.0, 'Ab
 verifyEqual(testCase, result.effectiveDimensions.bridgeTargetWidth, 3.0, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.coilPitch, 0.355, 'AbsTol', 1e-9);
 verifyEqual(testCase, result.effectiveDimensions.turnsPerCoilLayer, 7);
-fullSvg = fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg');
+fullSvg = fullfile(result.outputPath, 'preview', 'JLC', '3_trace_pad_via', '01_overview.svg');
 verifyTrue(testCase, isfile(fullSvg));
 if isfile(fullSvg)
     svgTxt = fileread(fullSvg);
@@ -1246,11 +1246,11 @@ for k = 1:cfg.boardLayerCount
     layerDxf = fullfile(out, 'dxf', sprintf('L%d', k), sprintf('%02d_copper_L%d.dxf', k, k));
     verifyTrue(testCase, isfile(layerDxf), sprintf('missing %s', layerDxf));
 end
-previewFull = fullfile(out, 'preview', 'JLC', 'physical', '01_overview.svg');
-previewZone = fullfile(out, 'preview', 'JLC', 'physical', '02_connection_zone.svg');
-centerlineFull = fullfile(out, 'preview', 'JLC', 'centerline', '01_overview.svg');
-centerlineZone = fullfile(out, 'preview', 'JLC', 'centerline', '02_connection_zone.svg');
-comsolFull = fullfile(out, 'preview', 'COMSOL', 'main', '01_overview.svg');
+previewFull = fullfile(out, 'preview', 'JLC', '3_trace_pad_via', '01_overview.svg');
+previewZone = fullfile(out, 'preview', 'JLC', '3_trace_pad_via', '02_connection_zone.svg');
+centerlineFull = fullfile(out, 'preview', 'JLC', '1_path_only', '01_overview.svg');
+centerlineZone = fullfile(out, 'preview', 'JLC', '1_path_only', '02_connection_zone.svg');
+comsolFull = fullfile(out, 'preview', 'COMSOL', '1_coil_only', '01_overview.svg');
 verifyTrue(testCase, isfile(previewFull));
 verifyTrue(testCase, isfile(previewZone));
 verifyTrue(testCase, isfile(centerlineFull));
@@ -1273,7 +1273,7 @@ for li = 1:cfg.boardLayerCount
     else
         role = sprintf('inner%d', li - 1);
     end
-    comsolLayer = fullfile(out, 'preview', 'COMSOL', 'main', ...
+    comsolLayer = fullfile(out, 'preview', 'COMSOL', '1_coil_only', ...
         sprintf('1%d_layer_L%d_%s.svg', li, li, role));
     verifyTrue(testCase, isfile(comsolLayer), sprintf('missing COMSOL preview for L%d', li));
     if isfile(comsolLayer)
