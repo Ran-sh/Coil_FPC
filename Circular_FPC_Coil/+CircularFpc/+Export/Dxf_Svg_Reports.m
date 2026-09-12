@@ -373,7 +373,7 @@ function xy = extendForOverlap(xy, result, reach)
 %
 % 为什么需要：线圈铜条的端帽是径向的，引线铜条的端帽垂直于引线切向。两段铜条
 % 只在端点相切时，偏置后可能只共用一个角点，polyshape 并集便得到两个区域。
-% 手动端子坐标下确实发生过（2/2 manual 报 "got 2 region(s)"）。
+% 端子引线合并曾因此报 "got 2 region(s)"。
 atPad = false(2, 1);
 for e = 1:2
     if e == 1
@@ -1335,9 +1335,8 @@ if isfield(result, 'terminalRouting')
     fprintf(fid, 'terminalEntrySweepDeg: %.6f\n', result.terminalRouting.entrySweepDeg);
     fprintf(fid, 'terminalOutputSweepDeg: %.6f\n', result.terminalRouting.outputSweepDeg);
 else
-    fprintf(fid, 'terminalRoutingMode: manual\n');
-    fprintf(fid, 'terminalEntrySweepDeg: NaN\n');
-    fprintf(fid, 'terminalOutputSweepDeg: NaN\n');
+    error('CircularFPC:ExportWriteFailed', ...
+        'Terminal routing metadata is missing; terminal routing always runs.');
 end
 fprintf(fid, 'terminalLeadSpacing: %.6f\n', cfg.terminalLeadSpacing);
 fprintf(fid, 'terminalLeadLength: %.6f\n', cfg.terminalLeadLength);

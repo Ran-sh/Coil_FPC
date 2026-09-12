@@ -42,10 +42,6 @@ cfg = struct( ...
     'padPairSpacing', 2.0, ... % 兼容旧参数；自动模式下与 terminalLeadSpacing 同步
     'terminalLeadSpacing', 2.0, ... % mm，两条平行端子引出线中心线间距 d
     'terminalLeadLength', 1.5, ... % mm，单次圆弧切点到 PAD 中心的直线长度 L；VOUT 到 PAD_B 同为 L
-    'terminalPlacementMode', 'auto', ... % 'auto' 使用 d/L 单弯拓扑；'manual' 使用人工坐标
-    'manualPadAXY', zeros(0, 2), ... % manual 模式 PAD_A 坐标
-    'manualPadBXY', zeros(0, 2), ... % manual 模式 PAD_B 坐标
-    'manualSeriesViaXY', zeros(0, 2), ... % manual 模式串联过孔坐标
     'padDiameter', 0.6096, ... % PAD_A/PAD_B 直径 [mm]
     'viaPadDiameter', 0.55, ... % 过孔焊环外径 [mm]
     'viaDrillDiameter', 0.31, ... % 过孔钻孔内径 [mm]

@@ -66,9 +66,6 @@ if ~mfReport.passed
     error('CircularFPC:InvalidConfig', ...
         'Manufacturing rules violated: %s', strjoin(mfReport.failures, '; '));
 end
-if ~ismember(cfg.terminalPlacementMode, {'auto', 'manual'})
-    error('CircularFPC:InvalidConfig', 'terminalPlacementMode must be ''auto'' or ''manual''.');
-end
 if ~ismember(cfg.boardSizingMode, {'auto', 'fixed'})
     error('CircularFPC:InvalidConfig', 'boardSizingMode must be ''auto'' or ''fixed''.');
 end
@@ -76,14 +73,7 @@ if ~isscalar(cfg.electrodeAngleDeg) || ~isnumeric(cfg.electrodeAngleDeg) || ...
         ~isfinite(cfg.electrodeAngleDeg)
     error('CircularFPC:InvalidConfig', 'electrodeAngleDeg must be a finite numeric scalar.');
 end
-for m = {'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
-    v = cfg.(m{1});
-    if ~isnumeric(v) || (~isempty(v) && (size(v, 2) ~= 2 || any(~isfinite(v(:)))))
-        error('CircularFPC:InvalidConfig', '%s must be empty or an Nx2 finite numeric matrix.', m{1});
-    end
-end
-if strcmp(cfg.terminalPlacementMode, 'auto') && ...
-        cfg.terminalLeadSpacing < cfg.padDiameter + cfg.terminalClearance - 1e-9
+if cfg.terminalLeadSpacing < cfg.padDiameter + cfg.terminalClearance - 1e-9
     error('CircularFPC:TerminalPlacementInvalid', ...
         ['terminalLeadSpacing d=%.6f mm is too small for PAD diameter %.6f mm ', ...
          'plus terminal clearance %.6f mm.'], ...

@@ -56,10 +56,6 @@ verifyEqual(testCase, cfg.padDiameter, 0.6096, 'AbsTol', 1e-9); % 焊盘 24 mil
 verifyEqual(testCase, cfg.minCopperInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 实际走线必须严格 >90°
 verifyEqual(testCase, cfg.minBoardInteriorAngleDeg, 90.0, 'AbsTol', 1e-9); % 实际板框/槽边必须严格 >90°
 verifyEqual(testCase, cfg.geometryScale, 1.0, 'AbsTol', 1e-9);
-verifyEqual(testCase, cfg.terminalPlacementMode, 'auto');
-verifyEmpty(testCase, cfg.manualPadAXY);
-verifyEmpty(testCase, cfg.manualPadBXY);
-verifyEqual(testCase, size(cfg.manualSeriesViaXY), [0 2]);
 verifyTrue(testCase, isfield(cfg, 'padDiameter'));
 verifyTrue(testCase, isfield(cfg, 'viaDrillDiameter'));
 verifyTrue(testCase, isfield(cfg, 'viaPadDiameter'));
@@ -256,21 +252,6 @@ resX = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
 verifyTrue(testCase, resX.validation.passed, ...
     sprintf('4/4 extreme validation failed: %s', strjoin(resX.validation.messages, ' | ')));
 verifyGreaterThanOrEqual(testCase, resX.validation.minCopperSpacingMm, 0.15 - 1e-9);
-% 手动模式 4/4 往返：从 auto 结果取端子坐标回填
-names = {res.vias.name};
-[~, i1] = ismember('V12', names);
-[~, i2] = ismember('V23', names);
-[~, i3] = ismember('V34', names);
-[~, i4] = ismember('VOUT', names);
-mxy = [res.vias(i1).xy; res.vias(i2).xy; res.vias(i3).xy; res.vias(i4).xy];
-resM = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
-    'terminalPlacementMode', 'manual', ...
-    'manualPadAXY', res.pads(1).xy, ...
-    'manualPadBXY', res.pads(2).xy, ...
-    'manualSeriesViaXY', mxy, ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.0));
-verifyTrue(testCase, resM.validation.passed, ...
-    sprintf('4/4 manual round-trip failed: %s', strjoin(resM.validation.messages, ' | ')));
 end
 
 function testViaSizeRules(testCase)
@@ -1176,64 +1157,6 @@ for angleDeg = [0 90]
 end
 end
 
-function testManualCoordinatesRoundTrip(testCase)
-outRoot = createTempOutput(testCase);
-% 先从自动模式读取一组已经满足严格圆弧接触角的坐标，再原样回填 manual。
-% 手动模式不应悄悄改写用户端子坐标。
-seed = analyzeInternal(struct('boardLayerCount', 2, 'coilLayerCount', 2));
-seedV12 = seed.vias(strcmp({seed.vias.name}, 'V12'));
-seedVout = seed.vias(strcmp({seed.vias.name}, 'VOUT'));
-outerXY = seedV12.xy;
-voutXY = seedVout.xy;
-overrides = struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
-    'terminalPlacementMode', 'manual', ...
-    'manualPadAXY', seed.pads(1).xy, 'manualPadBXY', seed.pads(2).xy, ...
-    'manualSeriesViaXY', [outerXY; voutXY], ...
-    'boardSizingMode', 'fixed', 'boardOuterDiameter', 26.0, ...
-    'outputRoot', outRoot, 'designName', 'manual_ok');
-result = circular_fpc_main(overrides);
-padA = result.pads(strcmp({result.pads.name}, 'PAD_A'));
-padB = result.pads(strcmp({result.pads.name}, 'PAD_B'));
-verifyEqual(testCase, padA.xy, seed.pads(1).xy, 'AbsTol', 1e-9);
-verifyEqual(testCase, padB.xy, seed.pads(2).xy, 'AbsTol', 1e-9);
-via12 = result.vias(strcmp({result.vias.name}, 'V12'));
-viaOut = result.vias(strcmp({result.vias.name}, 'VOUT'));
-verifyEqual(testCase, via12.xy, outerXY, 'AbsTol', 1e-9);
-verifyEqual(testCase, viaOut.xy, voutXY, 'AbsTol', 1e-9);
-verifyTrue(testCase, isfield(padA, 'placementRegion'), 'PAD_A missing placementRegion');
-if isfield(padA, 'placementRegion')
-    verifyEqual(testCase, padA.placementRegion, 'MANUAL');
-end
-verifyTrue(testCase, isfield(padA, 'bridgeAngleDeg'), 'PAD_A missing bridgeAngleDeg');
-if isfield(padA, 'bridgeAngleDeg')
-    verifyTrue(testCase, isnan(padA.bridgeAngleDeg));
-end
-verifyTrue(testCase, isfield(padB, 'placementRegion'), 'PAD_B missing placementRegion');
-if isfield(padB, 'placementRegion')
-    verifyEqual(testCase, padB.placementRegion, 'MANUAL');
-end
-verifyTrue(testCase, isfield(padB, 'bridgeAngleDeg'), 'PAD_B missing bridgeAngleDeg');
-if isfield(padB, 'bridgeAngleDeg')
-    verifyTrue(testCase, isnan(padB.bridgeAngleDeg));
-end
-for k = 1:numel(result.vias)
-    v = result.vias(k);
-    verifyTrue(testCase, isfield(v, 'placementRegion'), sprintf('%s missing placementRegion', v.name));
-    if isfield(v, 'placementRegion')
-        verifyEqual(testCase, v.placementRegion, 'MANUAL');
-    end
-    verifyTrue(testCase, isfield(v, 'bridgeAngleDeg'), sprintf('%s missing bridgeAngleDeg', v.name));
-    if isfield(v, 'bridgeAngleDeg')
-        verifyTrue(testCase, isnan(v.bridgeAngleDeg));
-    end
-end
-verifyExportedTerminalMetadata(testCase, result);
-verifyPhysicalSeriesRoute(testCase, result, [1 2]);
-verifyError(testCase, @() circular_fpc_main(struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
-    'terminalPlacementMode', 'manual', 'manualPadAXY', [50 50], ...
-    'outputRoot', outRoot, 'designName', 'manual_bad')), 'CircularFPC:TerminalPlacementInvalid');
-end
-
 function testExportContractAndDxfReadback(testCase)
 outRoot = createTempOutput(testCase);
 startEpochSecond = floor(now * 86400);
@@ -1619,7 +1542,6 @@ if isfile(readmePath)
     readmeTxt = fileread(readmePath);
     for kw = {'circular_fpc_default_config', 'circular_fpc_main', 'geometryScale', ...
             'terminalLeadSpacing', 'terminalLeadLength', 'connectionAngleDeg', ...
-            'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY', ...
             'PAD_A', 'PAD_B', 'VOUT', 'Gerber', 'DXF', ...
             '2/1', '2/2', '4/1', '4/2', '4/4', '6/6', ...
             'mountingSlotSpan', 'mountingSlotRise', 'electrodePadDiameter'}
