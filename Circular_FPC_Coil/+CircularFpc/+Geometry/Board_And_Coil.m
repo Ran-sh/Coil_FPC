@@ -983,12 +983,12 @@ function [coils, vias] = attachUpstreamOuterViaArcs(cfg, eff, activeLayers, coil
 % 奇数层外端接触弧，与 attachDownstreamOuterViaArcs 对称：沿螺旋从外端往回退几
 % 步找一个接入点，用"过该点与过孔中心、且在该点与螺旋切向同向"的唯一圆弧并入。
 %
-% 候选选择（与下游侧同款判据，两侧必须对称）：
+% 候选选择（与下游侧共用 outerViaArcScores，两侧必须对称）——字典序：
 %   可行 = 扫角严格在 (90.1°, 150°] 且弧半径 >= 一个线宽（半径过小的弧缓冲成
 %   铜带会自压出孔，COMSOL 合并环要求每层恰好一条无孔闭合环）。
-%   可行候选里取 |扫角-120°| 最小者；一条可行候选都没有时，仍按连续惩罚分
-%   选出最接近可行的候选，把它的真实扫角/半径如实写进过孔字段——自动定径
-%   回路据此继续增大 E，最终由 Generate 的收尾检查 fail closed。
+%   存在可行候选时只在可行集合里按 |扫角-120°| 择优；一个可行都没有时才按
+%   连续惩罚分选最接近可行的候选，把它的真实扫角/半径如实写进过孔字段——
+%   自动定径回路据此继续增大 E，最终由 Generate 的收尾检查 fail closed。
 %
 % 注意弧的方向：tangentCircularArc 返回的是 p0(过孔) → p1(接入点)，而线圈是从
 % 内向外走到接入点后要继续去过孔，所以必须把弧翻转再接上，否则路径会跳回过孔
@@ -1030,13 +1030,10 @@ for p = 1:2:(numel(activeLayers) - 1)
         end
     end
     % 回退窗口按螺旋角度取（默认 24°），采样密度改变时物理回退量不变。
-    maxBack = min(size(spiral, 1) - 1, ...
-        max(2, round(outerTailSearchSweepDeg() / 360 * cfg.samplePointsPerTurn)));
-    bestScore = inf;
-    bestIndex = 0;
-    bestArcRev = zeros(0, 2);
-    bestSweepDeg = NaN;
-    bestRadiusMm = NaN;
+    maxBack = min(size(spiral, 1) - 1, outerViaSearchSampleCount(cfg));
+    bestFeasible = struct('score', inf, 'index', 0, 'arc', zeros(0, 2), ...
+        'sweep', NaN, 'radius', NaN);
+    bestFallback = bestFeasible;
     for back = 2:maxBack
         i = size(spiral, 1) - back + 1;
         tangent = spiral(i, :) - spiral(i - 1, :);
@@ -1051,18 +1048,25 @@ for p = 1:2:(numel(activeLayers) - 1)
         if ~isfinite(arcRadius)
             continue;
         end
-        sweepPenalty = max(0, angleFloor - sweepDeg) + max(0, sweepDeg - 150);
-        radiusPenalty = max(0, cfg.traceWidth - arcRadius);
-        score = abs(sweepDeg - 120) + 0.02 * back + sweepPenalty + radiusPenalty;
-        if score < bestScore
-            bestScore = score;
-            bestIndex = i;
-            bestArcRev = flipud(arc);   % 翻成 接入点 → 过孔
-            bestSweepDeg = sweepDeg;
-            bestRadiusMm = arcRadius;
+        baseScore = abs(sweepDeg - 120) + 0.02 * back;
+        [feasibleScore, fallbackScore] = outerViaArcScores( ...
+            sweepDeg, arcRadius, baseScore, cfg, angleFloor);
+        if feasibleScore < bestFeasible.score
+            bestFeasible = struct('score', feasibleScore, 'index', i, ...
+                'arc', flipud(arc), 'sweep', sweepDeg, 'radius', arcRadius);
+        end
+        if fallbackScore < bestFallback.score
+            bestFallback = struct('score', fallbackScore, 'index', i, ...
+                'arc', flipud(arc), 'sweep', sweepDeg, 'radius', arcRadius);
         end
     end
-    if bestIndex == 0
+    % 字典序选择：存在可行候选就只在可行集合里择优；一个都没有时才退到
+    % "最接近可行"的候选，让定径回路量到真实亏欠（而不是被惩罚分折中。
+    best = bestFeasible;
+    if best.index == 0
+        best = bestFallback;
+    end
+    if best.index == 0
         % fail closed：宁可报出来让用户把过孔往外挪，也不写一条会围孔的铜。
         error('CircularFPC:GeometryInfeasible', ...
             ['%s: no single-arc contact joins the spiral outer end of L%d to the via. ', ...
@@ -1070,12 +1074,12 @@ for p = 1:2:(numel(activeLayers) - 1)
              'Move the via further out along its radial.'], ...
             name, fromLayer, norm(viaXY - spiral(end, :)));
     end
-    q = [spiral(1:bestIndex, :); bestArcRev(2:end, :)];
+    q = [spiral(1:best.index, :); best.arc(2:end, :)];
     q(end, :) = viaXY;
     coils{fromLayer} = q;
     viaIndex = find(strcmp({vias.name}, name), 1);
-    vias(viaIndex).upstreamContactSweepDeg = bestSweepDeg;
-    vias(viaIndex).upstreamContactRadiusMm = bestRadiusMm;
+    vias(viaIndex).upstreamContactSweepDeg = best.sweep;
+    vias(viaIndex).upstreamContactRadiusMm = best.radius;
 end
 end
 
@@ -1096,12 +1100,12 @@ for p = 1:numel(activeLayers) - 1
     if size(q, 1) < 6
         continue;
     end
-    maxIndex = min(size(q, 1) - 1, 24);
-    bestScore = inf;
-    bestIndex = 0;
-    bestArc = zeros(0, 2);
-    bestSweepDeg = NaN;
-    bestRadiusMm = NaN;
+    % 回退窗口与上游侧同款：按螺旋角度取（默认 24°），采样密度改变时物理
+    % 回退量不变（i-1 即从螺旋起点回退的采样数，与上游 back-1 对称）。
+    maxIndex = min(size(q, 1) - 1, outerViaSearchSampleCount(cfg));
+    bestFeasible = struct('score', inf, 'index', 0, 'arc', zeros(0, 2), ...
+        'sweep', NaN, 'radius', NaN);
+    bestFallback = bestFeasible;
     for i = 2:maxIndex
         tangent = q(i + 1, :) - q(i, :);
         [arc, sweepDeg] = tangentCircularArc(v.xy, q(i, :), tangent, 73);
@@ -1112,29 +1116,57 @@ for p = 1:numel(activeLayers) - 1
         if ~isfinite(arcRadius)
             continue;
         end
-        % 与上游侧同款连续惩罚：可行（扫角 90.1°~150° 且半径 >= 一个线宽）候选
-        % 惩罚为零、按 |扫角-120°| 择优；一条可行都没有时保留最接近可行的候选，
-        % 让引擎量到真实扫角/半径后继续增大 E，而不是无声接受非法接触角。
-        sweepPenalty = max(0, angleFloor - sweepDeg) + max(0, sweepDeg - 150);
-        radiusPenalty = max(0, cfg.traceWidth - arcRadius);
-        score = abs(sweepDeg - 120) + 0.02 * i + sweepPenalty + radiusPenalty;
-        if score < bestScore
-            bestScore = score;
-            bestIndex = i;
-            bestArc = arc;
-            bestSweepDeg = sweepDeg;
-            bestRadiusMm = arcRadius;
+        baseScore = abs(sweepDeg - 120) + 0.02 * i;
+        [feasibleScore, fallbackScore] = outerViaArcScores( ...
+            sweepDeg, arcRadius, baseScore, cfg, angleFloor);
+        if feasibleScore < bestFeasible.score
+            bestFeasible = struct('score', feasibleScore, 'index', i, ...
+                'arc', arc, 'sweep', sweepDeg, 'radius', arcRadius);
+        end
+        if fallbackScore < bestFallback.score
+            bestFallback = struct('score', fallbackScore, 'index', i, ...
+                'arc', arc, 'sweep', sweepDeg, 'radius', arcRadius);
         end
     end
-    if bestIndex == 0
+    best = bestFeasible;
+    if best.index == 0
+        best = bestFallback;
+    end
+    if best.index == 0
         error('CircularFPC:GeometryInfeasible', ...
             'No >90-degree circular via contact can join %s to layer %d.', name, toLayer);
     end
-    coils{toLayer} = [bestArc(1:end - 1, :); q(bestIndex:end, :)];
+    coils{toLayer} = [best.arc(1:end - 1, :); q(best.index:end, :)];
     viaIndex = find(strcmp({vias.name}, name), 1);
-    vias(viaIndex).contactSweepDeg = bestSweepDeg;
-    vias(viaIndex).contactRadiusMm = bestRadiusMm;
+    vias(viaIndex).contactSweepDeg = best.sweep;
+    vias(viaIndex).contactRadiusMm = best.radius;
 end
+end
+
+function [feasibleScore, fallbackScore] = outerViaArcScores(sweepDeg, arcRadius, baseScore, cfg, angleFloor)
+% 外端过孔接触弧的统一候选评分，上游/下游两侧必须共用（对称契约）。
+%   可行 = 扫角 ∈ (angleFloor, 150] 且弧半径 >= 一个线宽（半径过小的弧缓冲成
+%   铜带会自压出孔，COMSOL 合并环要求每层恰好一条无孔闭合环）。
+%   feasibleScore：仅当该候选可行时等于 baseScore，否则 Inf —— 使"可行优先"
+%                  成为字典序（可行候选永远压过不可行候选，而不是被
+%                  "更接近 120° 的不可行候选"折中掉）。
+%   fallbackScore：baseScore + 违规连续惩罚；仅当不存在任何可行候选时用于
+%                  选出最接近可行的候选，让定径回路量到真实亏欠。
+sweepPenalty = max(0, angleFloor - sweepDeg) + max(0, sweepDeg - 150);
+radiusPenalty = max(0, cfg.traceWidth - arcRadius);
+feasibleScore = inf;
+fallbackScore = baseScore + sweepPenalty + radiusPenalty;
+if sweepDeg > angleFloor && sweepDeg <= 150 && arcRadius >= cfg.traceWidth
+    feasibleScore = baseScore;
+    fallbackScore = inf;
+end
+end
+
+function count = outerViaSearchSampleCount(cfg)
+% 上/下游接触弧候选的回退窗口（按螺旋角度 24° 折算成采样点数）。两侧都用
+% 本函数，采样密度改变时物理回退量保持一致；360 点/圈下返回 24，与历史的
+% 固定 24 点窗口一致（两侧接点的实际回退都是 1..23 个样本）。
+count = max(2, round(outerTailSearchSweepDeg() / 360 * cfg.samplePointsPerTurn));
 end
 
 function count = outerTailSampleCount()

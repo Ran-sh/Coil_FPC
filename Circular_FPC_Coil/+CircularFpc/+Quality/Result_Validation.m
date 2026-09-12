@@ -257,8 +257,16 @@ v.viaOverlapFree = checkViaOverlap(cfg, geom.vias);
 outerViaMask = strcmp({geom.vias.role}, 'OUTER_TRANSITION');
 % 外端过孔两侧都是接触弧（下游 contactSweepDeg / 上游 upstreamContactSweepDeg），
 % 规则必须对两侧同时把关——只测一侧会让另一侧的非法接触角静默通过。
-outerViaSweeps = [geom.vias(outerViaMask).contactSweepDeg, ...
-    geom.vias(outerViaMask).upstreamContactSweepDeg];
+outerVias = geom.vias(outerViaMask);
+outerViaSweeps = [outerVias.contactSweepDeg, outerVias.upstreamContactSweepDeg];
+outerViaRadii = [outerVias.contactRadiusMm, outerVias.upstreamContactRadiusMm];
+% 完备性 fail-closed：每个外端过孔的四个接触量都必须实测。缺失不能映射成
+% Inf/0 之类恰好满足上下限的值（那等于 fail open）。
+if isempty(outerVias)
+    v.outerViaContactsMeasured = true;
+else
+    v.outerViaContactsMeasured = all(isfinite(outerViaSweeps)) && all(isfinite(outerViaRadii));
+end
 outerViaSweeps = outerViaSweeps(isfinite(outerViaSweeps));
 if isempty(outerViaSweeps)
     v.minOuterViaContactSweepDeg = inf;
@@ -267,8 +275,6 @@ else
     v.minOuterViaContactSweepDeg = min(outerViaSweeps);
     v.maxOuterViaContactSweepDeg = max(outerViaSweeps);
 end
-outerViaRadii = [geom.vias(outerViaMask).contactRadiusMm, ...
-    geom.vias(outerViaMask).upstreamContactRadiusMm];
 outerViaRadii = outerViaRadii(isfinite(outerViaRadii));
 if isempty(outerViaRadii)
     v.minOuterViaContactRadiusMm = inf;
@@ -348,6 +354,9 @@ end
 if v.minOuterViaContactRadiusMm < cfg.traceWidth - 1e-9
     v.messages{end + 1} = 'outer via contact arc radius must be at least one trace width'; %#ok<AGROW>
 end
+if ~v.outerViaContactsMeasured
+    v.messages{end + 1} = 'outer via contact sweep/radius measurements are missing on at least one side'; %#ok<AGROW>
+end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>
 end
@@ -383,6 +392,7 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minOuterViaContactSweepDeg > copperAngleFloor && ...
     v.maxOuterViaContactSweepDeg <= 150 && ...
     v.minOuterViaContactRadiusMm >= cfg.traceWidth - 1e-9 && ...
+    v.outerViaContactsMeasured && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
     v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree && ...
