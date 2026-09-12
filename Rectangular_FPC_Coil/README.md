@@ -38,7 +38,7 @@ rectangular_fpc_output/<designName>_yyyyMMdd_HHmm/
 - 目录存在不代表发布完成；读取必须通过 `RectangularFpc.Publish.Read_Committed` 校验提交证据并持有访问锁，并发占用时稍后重试。
 - 跨分钟保留历史版本。
 - `analysisOnly=true` 不创建文件或目录。
-- 历史 `fpc_coil_output/` 不迁移、不删除。
+- 旧输出根 `fpc_coil_output/` 已清空移除；`.gitignore` 的规则保留，避免误提交再生的同名目录。
 
 安全读取示例：
 

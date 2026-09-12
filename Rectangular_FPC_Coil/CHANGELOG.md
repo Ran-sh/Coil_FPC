@@ -20,7 +20,7 @@
 ### Changed
 
 - 项目目录由 `FPC_Coil` 更名为 `Rectangular_FPC_Coil`，正式实现统一使用 `rectangular_fpc_*`。
-- 默认输出根目录由 `fpc_coil_output` 改为 `rectangular_fpc_output`；旧输出目录不迁移、不删除。
+- 默认输出根目录由 `fpc_coil_output` 改为 `rectangular_fpc_output`；改名时旧输出目录未迁移，其后已清空移除。
 - 2 / 4 层串联过孔改为带逐层反焊盘的贯穿通孔；内侧引线圆角上限调整为 0.60 mm，以满足非连接层净距。
 - 6 / 8 层保留相邻层过孔模型，并在制造报告中标记为未验证工艺。
 - 空引线或未落到过孔、VOUT、PAD 的端点现在会使电气拓扑验证失败并阻止官方制造资格。
@@ -53,6 +53,7 @@
   `Fpc_Coil_Main` / `Fpc_Coil_Default_Config`，仍发出 `RectangularFPC:DeprecatedAPI`。
   旧的顶层写法 `fpc_coil_main(...)` 不再解析，请改用 `rectangular_fpc_main`。
 - `rectangular_fpc_read_committed(...)` 更名为 `RectangularFpc.Publish.Read_Committed(...)`。
+- 旧输出根 `fpc_coil_output/` 已移除；`.gitignore` 规则保留。
 - 保留 `outputFolder`、`totalLengthMm`、`totalResistanceOhm` 等主要旧结果字段作为别名。
 - 保留核心矩形螺旋、电气串联拓扑、默认 4 层 × 12 匝以及 2 / 4 / 6 / 8 层能力。
 
