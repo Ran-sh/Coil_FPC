@@ -484,8 +484,8 @@ for grp = {'JLC', 'COMSOL'}
         contract{end + 1} = strrep(strrep(full, [pv filesep], ''), '', '/'); %#ok<AGROW>
     end
 end
-verifyEqual(testCase, numel(contract), 22, ...
-    'the 4/2 contract set is expected to hold 22 previews');
+verifyEqual(testCase, numel(contract), 28, ...
+    'the 4/2 contract set holds 28 previews: three JLC tiers plus two COMSOL');
 for lang = {'zh', 'en'}
     for k = 1:numel(contract)
         p = fullfile(pv, lang{1}, strrep(contract{k}, '/', filesep));
@@ -548,7 +548,7 @@ result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'attached
 pv = fullfile(result.outputPath, 'preview');
 for lang = {'zh', 'en'}
     files = dir(fullfile(pv, lang{1}, '**', '*.svg'));
-    verifyEqual(testCase, numel(files), 22, ...
+    verifyEqual(testCase, numel(files), 28, ...
         'each language set mirrors the whole 22-figure contract set');
     for k = 1:numel(files)
         p = fullfile(files(k).folder, files(k).name);

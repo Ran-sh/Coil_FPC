@@ -321,7 +321,8 @@ if ~isempty(result.layerPaths(li).coilXY) && any(result.activeCoilLayers == li)
         end
         if touchesInterLayerVia(cp, result)
             % 本层从线圈端连到层间过孔的走线，是把引线接进线圈所必需的铜。
-            parts{end + 1} = leadStripRing(cp, cfg.traceWidth / 2); %#ok<AGROW>
+            parts{end + 1} = leadStripRing( ...
+                extendForOverlap(cp, result, cfg.traceWidth), cfg.traceWidth / 2); %#ok<AGROW>
         end
     end
     leadLayer = terminalLeadLayers(result);
@@ -330,7 +331,8 @@ if ~isempty(result.layerPaths(li).coilXY) && any(result.activeCoilLayers == li)
         if leadLayer(k) ~= li
             continue;
         end
-        parts{end + 1} = leadStripRing(leads{k}, cfg.traceWidth / 2); %#ok<AGROW>
+        parts{end + 1} = leadStripRing( ...
+            extendForOverlap(leads{k}, result, cfg.traceWidth), cfg.traceWidth / 2); %#ok<AGROW>
         absorbed{end + 1} = terminalLeadName(k); %#ok<AGROW>
     end
     ring = mergeCopperRings(parts, li);
@@ -362,6 +364,40 @@ end
 ring = poly.Vertices;
 if norm(ring(1, :) - ring(end, :)) > 1e-12
     ring(end + 1, :) = ring(1, :);
+end
+end
+
+function xy = extendForOverlap(xy, result, reach)
+% 把"接线圈/过孔"的那一端沿自身切向延长 reach，让偏置后的铜条真正重叠。
+% 焊盘那一端保持原样：它是引线的自由端，长度不该悄悄变。
+%
+% 为什么需要：线圈铜条的端帽是径向的，引线铜条的端帽垂直于引线切向。两段铜条
+% 只在端点相切时，偏置后可能只共用一个角点，polyshape 并集便得到两个区域。
+% 手动端子坐标下确实发生过（2/2 manual 报 "got 2 region(s)"）。
+atPad = false(2, 1);
+for e = 1:2
+    if e == 1
+        pt = xy(1, :);
+    else
+        pt = xy(end, :);
+    end
+    for p = 1:numel(result.pads)
+        if norm(pt - result.pads(p).xy) < 1e-4
+            atPad(e) = true;
+        end
+    end
+end
+if ~atPad(2) && ~atPad(1)
+    atPad(2) = true;   % 两端都不在焊盘上：只延长起点端，保持结果确定
+end
+if ~atPad(2)
+    d = xy(end, :) - xy(end - 1, :);
+    d = d / norm(d);
+    xy(end + 1, :) = xy(end, :) + reach * d;
+elseif ~atPad(1)
+    d = xy(1, :) - xy(2, :);
+    d = d / norm(d);
+    xy = [xy(1, :) + reach * d; xy];
 end
 end
 

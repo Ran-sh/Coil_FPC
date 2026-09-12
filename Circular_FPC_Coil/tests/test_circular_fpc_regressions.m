@@ -1255,10 +1255,10 @@ verifyTrue(testCase, isfile(previewFull));
 verifyTrue(testCase, isfile(previewZone));
 verifyTrue(testCase, isfile(centerlineFull));
 verifyTrue(testCase, isfile(centerlineZone));
-verifyTrue(testCase, contains(fileread(centerlineFull), 'data-preview-kind="jlc-centerline"'));
-verifyTrue(testCase, contains(fileread(centerlineZone), 'data-preview-kind="jlc-centerline"'));
-verifyTrue(testCase, contains(fileread(previewFull), 'data-preview-kind="jlc-physical"'));
-verifyTrue(testCase, contains(fileread(previewZone), 'data-preview-kind="jlc-physical"'));
+verifyTrue(testCase, contains(fileread(centerlineFull), 'data-preview-kind="jlc-path-only"'));
+verifyTrue(testCase, contains(fileread(centerlineZone), 'data-preview-kind="jlc-path-only"'));
+verifyTrue(testCase, contains(fileread(previewFull), 'data-preview-kind="jlc-trace-pad-via"'));
+verifyTrue(testCase, contains(fileread(previewZone), 'data-preview-kind="jlc-trace-pad-via"'));
 previewFullTxt = fileread(previewFull);
 verifyEqual(testCase, numel(regexp(previewFullTxt, 'data-board-role="mounting-cutout"', 'match')), 4);
 verifyEqual(testCase, numel(regexp(previewFullTxt, 'data-board-role="mounting-glass"', 'match')), 4);
@@ -1517,8 +1517,8 @@ end
 cfg2 = circular_fpc_default_config(struct('outputRoot', outRoot, 'designName', 'cfpc_red_nopreview', 'enablePreview', false));
 circular_fpc_main(cfg2);
 out2 = fullfile(outRoot, 'cfpc_red_nopreview');
-verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '01_overview.svg')));
-verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', 'physical', '02_connection_zone.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', '3_trace_pad_via', '01_overview.svg')));
+verifyFalse(testCase, isfile(fullfile(out2, 'preview', 'JLC', '3_trace_pad_via', '02_connection_zone.svg')));
 verifyFalse(testCase, isfolder(fullfile(out2, 'preview')));
 verifyTrue(testCase, isfile(fullfile(out2, 'dxf', '00_board_outline.dxf')));
 verifyTrue(testCase, isfile(fullfile(out2, 'reports', '05_validation_report.txt')));
@@ -1585,10 +1585,10 @@ for k = 1:6
         verifyTrue(testCase, isfile(fullfile(r.outputPath, 'dxf', sprintf('L%d', li), ...
             sprintf('%02d_copper_L%d.dxf', li, li))));
     end
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', '02_connection_zone.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '01_overview.svg')));
-    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', '02_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '3_trace_pad_via', '01_overview.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '3_trace_pad_via', '02_connection_zone.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '1_path_only', '01_overview.svg')));
+    verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '1_path_only', '02_connection_zone.svg')));
     for li = 1:r.boardLayerCount
         if li == 1
             role = 'top';
@@ -1597,10 +1597,10 @@ for k = 1:6
         else
             role = sprintf('inner%d', li - 1);
         end
-        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'physical', ...
+        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '3_trace_pad_via', ...
             sprintf('1%d_layer_L%d_%s.svg', li, li, role))), ...
             sprintf('missing per-layer preview for L%d', li));
-        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', 'centerline', ...
+        verifyTrue(testCase, isfile(fullfile(r.outputPath, 'preview', 'JLC', '1_path_only', ...
             sprintf('1%d_layer_L%d_%s.svg', li, li, role))), ...
             sprintf('missing per-layer centerline preview for L%d', li));
     end
@@ -1683,33 +1683,14 @@ for c = 1:size(combos, 1)
                 sprintf('%s closed body %d must repeat its first vertex', tag, r));
         end
         if li == 1
-            % L1：主螺旋 + 两条中心引线 + PAD_A/PAD_B。
-            expectedRings = 1 + 2 * isActive;
-            expectedCircles = 2 * isActive;
-            verifyEqual(testCase, polyCount, expectedRings, ...
-                sprintf('%s L1 must hold the main coil plus two center leads', tag));
-            verifyEqual(testCase, numel(circles), expectedCircles, ...
-                sprintf('%s L1 must hold PAD_A/PAD_B', tag));
-            verifyEqual(testCase, sort({circles.layer}), {'PAD_A', 'PAD_B'}, ...
-                sprintf('%s pad circles must use the PAD_A/PAD_B layers', tag));
-            % PAD_A/PAD_B 圆直径必须与 result.pads 一致（含圆心坐标）。
-            verifyEqual(testCase, sort([circles.r]), sort([result.pads.diameter] / 2), ...
-                'AbsTol', 1e-9, sprintf('%s pad radius must equal padDiameter/2', tag));
-            verifyEqual(testCase, sortrows([[circles.cx].', [circles.cy].']), ...
-                sortrows(cat(1, result.pads.xy)), 'AbsTol', 1e-9, ...
-                sprintf('%s pad centers must match result.pads', tag));
-            % 两条引线是独立闭合铜条，宽度等于 traceWidth。
-            leadRings = rings(2:end);
-            verifyEqual(testCase, numel(leadRings), 2, ...
-                sprintf('%s L1 lead body count', tag));
-            for r = 1:numel(leadRings)
-                areaMm2 = shoelaceArea(leadRings{r});
-                verifyGreaterThan(testCase, areaMm2, result.config.traceWidth ^ 2, ...
-                    sprintf('%s lead %d must enclose real copper area', tag, r));
-                % 闭合铜条：偏移两侧点数相同，端点用一条直短边封口。
-                verifyEqual(testCase, mod(size(leadRings{r}, 1) - 1, 2), 0, ...
-                    sprintf('%s lead %d must be a left/right offset body', tag, r));
-            end
+            % 本变体只承载导体：每个活动层恰好一条合并后的闭合轮廓，且不导出焊盘。
+            % 焊盘不导出比"焊盘尺寸正确"更强——它连出现都不允许。
+            verifyEqual(testCase, polyCount, isActive, ...
+                sprintf('%s active layer must hold exactly one merged ring', tag));
+            verifyEqual(testCase, numel(circles), 0, ...
+                sprintf('%s must not export pad circles', tag));
+            verifyGreaterThan(testCase, shoelaceArea(rings{1}), result.config.traceWidth ^ 2, ...
+                sprintf('%s merged ring must enclose real copper area', tag));
         elseif isActive
             verifyEqual(testCase, polyCount, 1, ...
                 sprintf('%s L%d must keep exactly the main coil ring', tag, li));
@@ -2450,8 +2431,8 @@ for k = 1:numel(result.vias)
     verifyEqual(testCase, row.toLayer, v.toLayer, ...
         sprintf('%s toLayer must match result', v.name));
 end
-svgFiles = {fullfile(result.outputPath, 'preview', 'JLC', 'physical', '01_overview.svg'), ...
-    fullfile(result.outputPath, 'preview', 'JLC', 'physical', '02_connection_zone.svg')};
+svgFiles = {fullfile(result.outputPath, 'preview', 'JLC', '3_trace_pad_via', '01_overview.svg'), ...
+    fullfile(result.outputPath, 'preview', 'JLC', '3_trace_pad_via', '02_connection_zone.svg')};
 for f = svgFiles
     verifyTrue(testCase, isfile(f{1}), sprintf('missing %s', f{1}));
     if ~isfile(f{1})
