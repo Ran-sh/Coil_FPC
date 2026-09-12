@@ -905,6 +905,10 @@ electrodePads = layoutRegions.electrodePads;
 % 自动选择 90°~150° 内最接近 120° 的圆弧，保证接触角严格大于 90°，
 % 且不再用直线弦或贝塞尔微调段制造锐角/回头钩。
 [coils, vias] = attachDownstreamOuterViaArcs(cfg, activeLayers, coils, vias);
+
+% 奇数层外端接触弧：原实现追加三次贝塞尔，末端会收出一个钩。改成与下游层对称的
+% "沿螺旋往回退一点、取单段切向圆弧并入"——弧从螺旋接入点起、到过孔中心止。
+[coils, vias] = attachUpstreamOuterViaArcs(cfg, activeLayers, coils, vias);
 % 4/4 内端延伸（用户设计约定）：L2/L4 的内端经 180° 内弯弧直接延伸到
 % V23/VOUT 中心，L3 的起点前置同样的内弯弧——过孔落在线圈端点上，
 % 无任何过渡走线（全部铜箔为同心螺旋 + 过孔处的径向微连接）。
@@ -969,6 +973,83 @@ else
         'TRACE_L1_EXIT', vout.xy, pads(2).xy, [], [], cfg, false, routeInfo);
 end
 seriesRoute = addRouteComponent(seriesRoute, 'PAD_B', 'PAD', pads(2).xy, pads(2).xy, 1, 1);
+end
+
+function [coils, vias] = attachUpstreamOuterViaArcs(cfg, activeLayers, coils, vias)
+% 奇数层外端接触弧，与 attachDownstreamOuterViaArcs 对称：沿螺旋从外端往回退几
+% 步找一个接入点，用"过该点与过孔中心、且在该点与螺旋切向同向"的唯一圆弧并入，
+% 评分同样取 90°~150° 内最接近 120° 的弧。
+%
+% 注意弧的方向：tangentCircularArc 返回的是 p0(过孔) → p1(接入点)，而线圈是从
+% 内向外走到接入点后要继续去过孔，所以必须把弧翻转再接上，否则路径会跳回过孔
+% 造成自交。
+angleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
+% 上界是 numel-1：本函数要访问 activeLayers(p+1)，单活动层组合没有层间过孔，
+% 写成 numel 会越界（下游那个函数用的就是 numel-1）。
+for p = 1:2:(numel(activeLayers) - 1)
+    fromLayer = activeLayers(p);
+    name = sprintf('V%d%d', activeLayers(p), activeLayers(p + 1));
+    v = vias(strcmp({vias.name}, name));
+    if isempty(v)
+        continue;
+    end
+    q = coils{fromLayer};
+    if size(q, 1) < 8
+        continue;
+    end
+    viaXY = q(end, :);
+    % buildCoils 追加的是 smoothOutwardArc 的 ext(2:end)，nArc=45 即 44 个点。
+    tailCount = 44;
+    if size(q, 1) <= tailCount + 4
+        continue;
+    end
+    spiral = q(1:end - tailCount, :);
+    maxBack = min(size(spiral, 1) - 1, 24);
+    bestScore = inf;
+    bestIndex = 0;
+    bestArcRev = zeros(0, 2);
+    for back = 2:maxBack
+        i = size(spiral, 1) - back + 1;
+        tangent = spiral(i, :) - spiral(i - 1, :);
+        % 传 -tangent：弧按 p0→p1 返回且到达 p1 的切向为给定值；翻转后路径
+        % 变成 p1→p0，其在 p1 的出发切向为 -(-tangent) = +tangent，与螺旋
+        % 到达方向一致，接点才是一阶连续（否则会在这里掉头 180°）。
+        [arc, sweepDeg] = tangentCircularArc(viaXY, spiral(i, :), -tangent, 73);
+        if isempty(arc)
+            continue;
+        end
+        score = abs(sweepDeg - 120) + 0.02 * back;
+        if sweepDeg <= angleFloor || sweepDeg > 150
+            score = score + 1e4;
+        end
+        arcRev = flipud(arc);   % 翻成 接入点 → 过孔
+        % 弧半径筛选：半径小于一个线宽的弧，把 traceWidth 宽的铜带缓冲上去会
+        % 自己压到自己，合并成闭合轮廓时便围出一个孔（COMSOL 变体要求每层恰好
+        % 一条无孔闭合环）。手动端子里过孔离螺旋外端只有 0.05 mm 时，唯一解是
+        % 半径约 0.035 mm 的近半圆，正是这种情形。
+        arcRadius = norm(viaXY - spiral(i, :)) / (2 * sin(deg2rad(sweepDeg) / 2));
+        if ~isfinite(arcRadius) || arcRadius < cfg.traceWidth
+            continue;
+        end
+        if score < bestScore
+            bestScore = score;
+            bestIndex = i;
+            bestArcRev = arcRev;
+        end
+    end
+    if bestIndex == 0
+        % fail closed：宁可报出来让用户把过孔往外挪，也不写一条会围孔的铜。
+        error('CircularFPC:GeometryInfeasible', ...
+            ['%s: no single-arc contact joins the spiral outer end of L%d to the via. ' ...
+             'The via is only %.4f mm from that end, so every candidate arc is tighter ' ...
+             'than one trace width (%.4f mm) and would enclose a hole when buffered. ' ...
+             'Move the via at least %.4f mm further out along its radial.'], ...
+            name, fromLayer, norm(viaXY - spiral(end, :)), cfg.traceWidth, cfg.traceWidth);
+    end
+    q = [spiral(1:bestIndex, :); bestArcRev(2:end, :)];
+    q(end, :) = viaXY;
+    coils{fromLayer} = q;
+end
 end
 
 function [coils, vias] = attachDownstreamOuterViaArcs(cfg, activeLayers, coils, vias)
@@ -1120,42 +1201,32 @@ end
 
 function [pads, vias, returnLayer, routeInfo] = buildTerminals(cfg, eff, activeLayers, coils, layoutRegions)
 % 构造全部端子（焊盘 + 过孔）：
-%   - auto 模式：在入口桥轴上自动搜索 PAD_A/PAD_B 位置、VOUT 与内端过渡过孔位置；
-%   - manual 模式：直接采用 cfg.manualPadAXY/manualPadBXY/manualSeriesViaXY。
+%   在入口桥轴上自动搜索 PAD_A/PAD_B 位置、VOUT 与内端过渡过孔位置。
 % 过孔命名与角色（2/1、4/1: VRET, VOUT；2/2: V12, VOUT；4/2: V14, VOUT；
 % 4/4: V12, V23, V34, VOUT；6/6: V12, V23, V34, V45, V56, VOUT）。
-manual = strcmp(cfg.terminalPlacementMode, 'manual');
 theta = layoutRegions.theta;
 u = layoutRegions.u;
 t = layoutRegions.t;
-if manual
-    padA = cfg.manualPadAXY;
-    padB = cfg.manualPadBXY;
-    rPad = NaN;
-    rVout = NaN;
-    rV23 = NaN;
-else
-    rPad = searchPadCenterRadius(cfg, layoutRegions, coils); % 焊盘对中心沿入口桥轴搜索
-    pairCenter = rPad * u;
-    padA = pairCenter - (cfg.terminalLeadSpacing / 2) * t; % 切向负侧为 PAD_A
-    padB = pairCenter + (cfg.terminalLeadSpacing / 2) * t; % 切向正侧为 PAD_B
-    % VOUT 位于焊盘对与线圈之间：下限 = rPad + 与 PAD_B 的净距约束
-    deltaVout = sqrt(max(0, (cfg.padDiameter / 2 + cfg.viaPadDiameter / 2 + cfg.terminalClearance)^2 - ...
-        (cfg.terminalLeadSpacing / 2 - layoutRegions.laneOffset)^2));
-    rVout = searchSafeRadiusOnAxis(cfg, layoutRegions, u, t, layoutRegions.laneOffset, ...
-        cfg.viaPadDiameter / 2, layoutRegions.rStart - 0.36, rPad + deltaVout + 0.02, coils);
-    rV23 = NaN;
-    if numel(activeLayers) == 4 && activeLayers(end) == 4
-        % 4/4 的 V23 位于 theta+90 桥轴上、L1 在该角度相邻匝的内切位置：
-        % 焊环边缘距 L1 铜边 = viaCoilSpacing（与 VOUT 同款约束）；
-        % L2 的内端延伸弧直接落到 V23 中心（无过渡走线，用户设计约定）。
-        % clamp 下限：禁止公式在极端参数下为负（负值会让过孔跑到对侧轴线）。
-        % V23 是与其余过孔相同的 0.55/0.31 mm 贯通过孔；按真实焊环
-        % 到相邻匝的 viaCoilSpacing 定位，不引入额外禁铜圈。
-        keepoutR = cfg.viaCoilSpacing + cfg.viaPadDiameter / 2;
-        rV23 = max(0.1, layoutRegions.rStart - (keepoutR + ...
-            cfg.traceWidth / 2 + 1e-3) + 0.25 * eff.coilPitch);
-    end
+rPad = searchPadCenterRadius(cfg, layoutRegions, coils); % 焊盘对中心沿入口桥轴搜索
+pairCenter = rPad * u;
+padA = pairCenter - (cfg.terminalLeadSpacing / 2) * t; % 切向负侧为 PAD_A
+padB = pairCenter + (cfg.terminalLeadSpacing / 2) * t; % 切向正侧为 PAD_B
+% VOUT 位于焊盘对与线圈之间：下限 = rPad + 与 PAD_B 的净距约束
+deltaVout = sqrt(max(0, (cfg.padDiameter / 2 + cfg.viaPadDiameter / 2 + cfg.terminalClearance)^2 - ...
+    (cfg.terminalLeadSpacing / 2 - layoutRegions.laneOffset)^2));
+rVout = searchSafeRadiusOnAxis(cfg, layoutRegions, u, t, layoutRegions.laneOffset, ...
+    cfg.viaPadDiameter / 2, layoutRegions.rStart - 0.36, rPad + deltaVout + 0.02, coils);
+rV23 = NaN;
+if numel(activeLayers) == 4 && activeLayers(end) == 4
+    % 4/4 的 V23 位于 theta+90 桥轴上、L1 在该角度相邻匝的内切位置：
+    % 焊环边缘距 L1 铜边 = viaCoilSpacing（与 VOUT 同款约束）；
+    % L2 的内端延伸弧直接落到 V23 中心（无过渡走线，用户设计约定）。
+    % clamp 下限：禁止公式在极端参数下为负（负值会让过孔跑到对侧轴线）。
+    % V23 是与其余过孔相同的 0.55/0.31 mm 贯通过孔；按真实焊环
+    % 到相邻匝的 viaCoilSpacing 定位，不引入额外禁铜圈。
+    keepoutR = cfg.viaCoilSpacing + cfg.viaPadDiameter / 2;
+    rV23 = max(0.1, layoutRegions.rStart - (keepoutR + ...
+        cfg.traceWidth / 2 + 1e-3) + 0.25 * eff.coilPitch);
 end
 pads = struct('name', {}, 'xy', {}, 'diameter', {}, 'layer', {}, 'removable', {}, ...
     'placementRegion', {}, 'bridgeAngleDeg', {});
@@ -1169,17 +1240,10 @@ pads(2).xy = padB;
 pads(2).diameter = cfg.padDiameter;
 pads(2).layer = 1;
 pads(2).removable = true;
-if manual
-    pads(1).placementRegion = 'MANUAL';
-    pads(1).bridgeAngleDeg = NaN;
-    pads(2).placementRegion = 'MANUAL';
-    pads(2).bridgeAngleDeg = NaN;
-else
-    pads(1).placementRegion = 'ENTRY_BRIDGE'; % 焊盘位于入口桥（外围圆环与中央矩形之间的连接区）
-    pads(1).bridgeAngleDeg = theta;
-    pads(2).placementRegion = 'ENTRY_BRIDGE';
-    pads(2).bridgeAngleDeg = theta;
-end
+pads(1).placementRegion = 'ENTRY_BRIDGE'; % 焊盘位于入口桥（外围圆环与中央矩形之间的连接区）
+pads(1).bridgeAngleDeg = theta;
+pads(2).placementRegion = 'ENTRY_BRIDGE';
+pads(2).bridgeAngleDeg = theta;
 if numel(activeLayers) == 1
     returnLayer = cfg.boardLayerCount;
     viaNames = {'VRET', 'VOUT'};
@@ -1228,13 +1292,6 @@ else
     viaAngles(end + 1) = theta; %#ok<AGROW>
 end
 nVias = numel(viaNames);
-if manual
-    if size(cfg.manualSeriesViaXY, 1) ~= nVias
-        error('CircularFPC:TerminalPlacementInvalid', ...
-            'manualSeriesViaXY must have exactly %d rows for this layer combination.', nVias);
-    end
-    viaXY = cfg.manualSeriesViaXY;
-end
 vias = struct('name', {}, 'xy', {}, 'drillDiameter', {}, 'padDiameter', {}, ...
     'fromLayer', {}, 'toLayer', {}, 'isOutputReturn', {}, 'role', {}, ...
     'placementRegion', {}, 'bridgeAngleDeg', {}, 'contactSweepDeg', {});
@@ -1248,33 +1305,24 @@ for k = 1:nVias
     vias(k).isOutputReturn = strcmp(viaNames{k}, 'VOUT');
     vias(k).role = viaRoles{k};
     vias(k).contactSweepDeg = NaN;
-    if manual
-        vias(k).placementRegion = 'MANUAL';
-        vias(k).bridgeAngleDeg = NaN;
-    else
-        vias(k).placementRegion = viaRegions{k};
-        vias(k).bridgeAngleDeg = viaAngles(k);
-    end
+    vias(k).placementRegion = viaRegions{k};
+    vias(k).bridgeAngleDeg = viaAngles(k);
 end
 validateTerminals(cfg, layoutRegions, pads, vias);
-if manual
-    routeInfo = [];
+routeInfo = struct();
+routeInfo.layoutRegions = layoutRegions;
+routeInfo.padA = pads(1).xy;
+routeInfo.padB = pads(2).xy;
+routeInfo.rPad = rPad;
+routeInfo.rVout = rVout;
+routeInfo.rV23 = rV23;
+vout = vias(strcmp({vias.name}, 'VOUT'));
+routeInfo.voutXY = vout(1).xy;
+v23 = vias(strcmp({vias.name}, 'V23'));
+if isempty(v23)
+    routeInfo.v23XY = [];
 else
-    routeInfo = struct();
-    routeInfo.layoutRegions = layoutRegions;
-    routeInfo.padA = pads(1).xy;
-    routeInfo.padB = pads(2).xy;
-    routeInfo.rPad = rPad;
-    routeInfo.rVout = rVout;
-    routeInfo.rV23 = rV23;
-    vout = vias(strcmp({vias.name}, 'VOUT'));
-    routeInfo.voutXY = vout(1).xy;
-    v23 = vias(strcmp({vias.name}, 'V23'));
-    if isempty(v23)
-        routeInfo.v23XY = [];
-    else
-        routeInfo.v23XY = v23(1).xy;
-    end
+    routeInfo.v23XY = v23(1).xy;
 end
 end
 
@@ -1309,27 +1357,25 @@ for i = 1:numel(names)
         end
     end
 end
-if ~strcmp(pads(1).placementRegion, 'MANUAL')
-    u = layoutRegions.u;
-    t = layoutRegions.t;
-    center = (pads(1).xy + pads(2).xy) / 2;
-    if abs(dot(center, t)) > 1e-6 || dot(center, u) <= 0 || ...
-            abs(norm(pads(2).xy - pads(1).xy) - cfg.terminalLeadSpacing) > 1e-6
+u = layoutRegions.u;
+t = layoutRegions.t;
+center = (pads(1).xy + pads(2).xy) / 2;
+if abs(dot(center, t)) > 1e-6 || dot(center, u) <= 0 || ...
+        abs(norm(pads(2).xy - pads(1).xy) - cfg.terminalLeadSpacing) > 1e-6
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Automatic pad pair violates the entry bridge layout contract.');
+end
+vout = vias(strcmp({vias.name}, 'VOUT'));
+if numel(vout) ~= 1 || abs(dot(vout(1).xy, t) - layoutRegions.laneOffset) > 1e-6
+    error('CircularFPC:TerminalPlacementInvalid', ...
+        'Automatic VOUT violates the entry bridge positive lane contract.');
+end
+v23 = vias(strcmp({vias.name}, 'V23'));
+if ~isempty(v23)
+    % V23 位于 theta+90 桥轴（+t 方向）：垂直分量（u 投影）必须为零
+    if numel(v23) ~= 1 || abs(dot(v23(1).xy, layoutRegions.u)) > 1e-6
         error('CircularFPC:TerminalPlacementInvalid', ...
-            'Automatic pad pair violates the entry bridge layout contract.');
-    end
-    vout = vias(strcmp({vias.name}, 'VOUT'));
-    if numel(vout) ~= 1 || abs(dot(vout(1).xy, t) - layoutRegions.laneOffset) > 1e-6
-        error('CircularFPC:TerminalPlacementInvalid', ...
-            'Automatic VOUT violates the entry bridge positive lane contract.');
-    end
-    v23 = vias(strcmp({vias.name}, 'V23'));
-    if ~isempty(v23)
-        % V23 位于 theta+90 桥轴（+t 方向）：垂直分量（u 投影）必须为零
-        if numel(v23) ~= 1 || abs(dot(v23(1).xy, layoutRegions.u)) > 1e-6
-            error('CircularFPC:TerminalPlacementInvalid', ...
-                'Automatic V23 violates the theta+90 bridge axis contract.');
-        end
+            'Automatic V23 violates the theta+90 bridge axis contract.');
     end
 end
 end
@@ -1466,14 +1512,18 @@ for p = 2:2:numel(activeLayers) - 1
     S = coils{lowerLayer}(end, :);
     a = S - coils{lowerLayer}(end - 1, :);
     a = a / norm(a);
-    ext = smoothInwardArc(S, a, max(norm(v.xy - S), 1e-6), 61);
-    coils{lowerLayer} = [coils{lowerLayer}; ext(2:end, :)];
+    % 内端同样用单段切向圆弧并入过孔（不再是 180° 的平滑贝塞尔弧）：
+    % tangentCircularArc 返回 过孔→内端 且在内端与切向同向的弧，翻转后接到
+    % 线圈末端；传 -a 是为了翻转后在内端的出发切向与螺旋到达方向一致。
+    extRev = flipud(tangentCircularArc(v.xy, S, -a, 61));
+    coils{lowerLayer} = [coils{lowerLayer}; extRev(2:end, :)];
 
     SNext = coils{upperLayer}(1, :);
     aNext = coils{upperLayer}(2, :) - coils{upperLayer}(1, :);
     aNext = aNext / norm(aNext);
-    arcNext = smoothInwardArc(SNext, -aNext, max(norm(SNext - v.xy), 1e-6), 61);
-    coils{upperLayer} = [flipud(arcNext); coils{upperLayer}(2:end, :)];
+    % 上层起点前置同一段单圆弧：弧从过孔到起点、到达切向与螺旋出发方向一致。
+    arcNext = tangentCircularArc(v.xy, SNext, aNext, 61);
+    coils{upperLayer} = [arcNext(1:end - 1, :); coils{upperLayer}];
 end
 
 lastLayer = activeLayers(end);
@@ -1482,30 +1532,8 @@ aLast = SLast - coils{lastLayer}(end - 1, :);
 aLast = aLast / norm(aLast);
 dBack = vout.xy - SLast;
 dBack = dBack / norm(dBack);
-stub = sampleBezier(SLast, aLast, vout.xy, dBack, 0.3, 0.3, 97);
-coils{lastLayer} = [coils{lastLayer}; stub(2:end, :)];
-end
-
-function xy = smoothInwardArc(S, a, E, n)
-% 内端延伸弧（镜像 smoothOutwardArc）：从线圈内端 S 沿切向 a 经 180° 圆弧
-% 过渡到径向向内，终点位于 S - E·uLoc（uLoc 为 S 的径向单位向量），
-% 内端过孔（V23/VOUT）落在弧终点。180° 弧采样密度保证逐点偏转角 < 10°。
-uLoc = S / norm(S);
-tLoc = [-uLoc(2), uLoc(1)];
-R = E / 2;
-n1 = [-a(2), a(1)];
-n2 = [a(2), -a(1)];
-if dot(n1, -uLoc) >= dot(n2, -uLoc)
-    C = S + R * n1; turn = 1;
-else
-    C = S + R * n2; turn = -1;
-end
-v = S - C;
-phi0 = atan2(dot(v, tLoc), dot(v, uLoc));
-phis = phi0 + deg2rad(180) * turn * (0:n - 1).' / (n - 1);
-xy = C + R * (cos(phis) * uLoc + sin(phis) * tLoc);
-xy(1, :) = S;
-xy(end, :) = S - E * uLoc;
+stubRev = flipud(tangentCircularArc(vout.xy, SLast, -aLast, 97));
+coils{lastLayer} = [coils{lastLayer}; stubRev(2:end, :)];
 end
 
 function pts = sampleBezier(p0, d0, p3, d1, L1, L2, n)

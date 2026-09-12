@@ -85,9 +85,6 @@ L2 多绕 0.25 圈、L4 少绕 0.25 圈，6/6 模式下 L2/L4/L6 分别多绕
 `terminalLeadSpacing` 和 `terminalLeadLength` 分别控制平行端子引线的中心距和直线长度；
 自动端子使用由原始阿基米德螺旋端点切线确定的单一相切圆弧，不改变线圈点，
 也不会通过第二圆弧或微折线补端点。
-`connectionAngleDeg` 控制整体连接方向。手动模式可使用 `manualPadAXY`、
-`manualPadBXY` 和 `manualSeriesViaXY`。
-
 自动端子按 `PAD_A → 线圈串联网络 → VOUT → PAD_B` 排列。`geometryScale`
 只缩放板框、中心平台、内径和桥宽等主体几何，线宽、间距、焊盘、过孔和
 嘉立创制造净距保持实际毫米值。默认所有过孔均为相同的 0.55/0.31 mm 贯通过孔，

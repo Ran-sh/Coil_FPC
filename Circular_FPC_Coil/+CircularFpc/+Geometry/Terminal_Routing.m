@@ -10,12 +10,7 @@ function result = Terminal_Routing(cfg, result)
 %   PAD_A -- straight L --> one >90-deg tangent arc --> L1 inner endpoint
 %   last active layer --> one >90-deg tangent arc --> VOUT -- straight L --> PAD_B
 %
-% PAD_A/PAD_B are therefore fixed by d and L.  Manual terminal placement is
-% intentionally left unchanged.
-
-if strcmp(cfg.terminalPlacementMode, 'manual')
-    return;
-end
+% PAD_A/PAD_B are therefore fixed by d and L.
 
 u = [cosd(cfg.connectionAngleDeg), sind(cfg.connectionAngleDeg)];
 t = [-sind(cfg.connectionAngleDeg), cosd(cfg.connectionAngleDeg)];

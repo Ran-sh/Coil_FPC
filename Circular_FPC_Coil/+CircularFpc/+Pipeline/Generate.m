@@ -9,12 +9,6 @@ eff.viaEndExtension = max(0, cfg.viaCoilSpacing + cfg.viaPadDiameter / 2 + cfg.t
 if strcmp(cfg.boardSizingMode, 'auto')
     % 板框自动定尺寸：线圈最外圈中心线 + 延伸区 + 端点过孔焊环 + 板边净距。
     eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
-    if strcmp(cfg.terminalPlacementMode, 'manual')
-        % 手动模式仍允许 auto 板径，但必须再包住用户给定的实际端子坐标；
-        % 这样 auto → manual 回读不会把已验证的外移过孔截回板边。
-        eff.boardOuterDiameter = max(eff.boardOuterDiameter, ...
-            requiredManualTerminalBoardDiameter(cfg));
-    end
 end
 activeLayers = activeLayerMap(cfg);         % 层叠组合 → 活动线圈层
 directions = ones(1, numel(activeLayers));  % 绕向：+1 = CCW 由内向外，-1 = CW 由外向内
@@ -91,21 +85,8 @@ end
 % Auto 模式的基础网络只作为 terminal reroute 的输入。它仍然包含旧的
 % 端子桥路径，某些合法 d/L 组合（例如较小 d）可能只会让这套即将被
 % 替换的旧路径触发角度/净距检查；最终结果会在 CircularFpc.Geometry.Terminal_Routing
-% 完成后重新做完整 validation + manufacturing 检查。manual 模式没有后置
-% 重布线，因此必须在这里严格拒绝基础几何失败。
-if strcmp(cfg.terminalPlacementMode, 'manual')
-    if ~validation.passed
-        error('CircularFPC:ValidationFailed', ...
-            'Generated geometry failed validation: %s', strjoin(validation.messages, '; '));
-    end
-    manufacturing = CircularFpc.Quality.Jlc_Rules('check_result', cfg, validation);
-    if ~manufacturing.passed
-        error('CircularFPC:ValidationFailed', ...
-            'Manufacturing result checks failed: %s', strjoin(manufacturing.failures, '; '));
-    end
-else
-    manufacturing = CircularFpc.Quality.Jlc_Rules('check_result', cfg, validation);
-end
+% 完成后重新做完整 validation + manufacturing 检查。
+manufacturing = CircularFpc.Quality.Jlc_Rules('check_result', cfg, validation);
 % 平台水平/垂直边槽余量已预检，四角与内圆自然形成的四个连接区由
 % 最终布尔拓扑和铜到槽 DRC 检查；保留空 advisories 字段维持报告结构。
 validation.advisories = {};
@@ -153,25 +134,6 @@ coilOuterRMax = rStart + eff.coilPitch * spanMax;
 maxCopperR = coilOuterRMax + cfg.traceWidth / 2;
 d = 2 * (maxCopperR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2 + ...
     cfg.geometrySafetyMargin);
-end
-
-function d = requiredManualTerminalBoardDiameter(cfg)
-% 手动端子坐标的最大铜切线 + 板边净距 + 板框线宽半宽。
-maxTerminalR = -inf;
-if ~isempty(cfg.manualPadAXY)
-    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualPadAXY.^2, 2))) + cfg.padDiameter / 2);
-end
-if ~isempty(cfg.manualPadBXY)
-    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualPadBXY.^2, 2))) + cfg.padDiameter / 2);
-end
-if ~isempty(cfg.manualSeriesViaXY)
-    maxTerminalR = max(maxTerminalR, max(sqrt(sum(cfg.manualSeriesViaXY.^2, 2))) + cfg.viaPadDiameter / 2);
-end
-if isinf(maxTerminalR)
-    d = 0;
-else
-    d = 2 * (maxTerminalR + cfg.edgeClearance + cfg.boardOutlineLineWidth / 2);
-end
 end
 
 function active = activeLayerMap(cfg)
