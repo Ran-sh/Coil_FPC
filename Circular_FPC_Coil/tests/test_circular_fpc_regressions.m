@@ -258,13 +258,14 @@ function testOuterViaContactsMeasuredOnBothSides(testCase)
 % 外端过孔两侧接触弧契约（审查补充）：上游（奇数层外端→过孔）与下游（过孔→
 % 偶数层外端）都必须被测量，且同时满足 扫角 ∈ (90°+容差, 150°] 与
 % 半径 >= 一个线宽。本测试不复用生产弧参数：独立用三点拟合圆恢复上游层
-% 折线尾部恰好 73 点的接触弧，复算扫角/半径并与过孔字段交叉核对。
-% 覆盖低匝数（上游弧曾静默非法的复现档）与非默认采样密度 180；
-% 720 采样在 main 上即受端子入口弧限制（TerminalPlacementInvalid，与
-% 本契约无关），不在此展开。
+% 折线尾部恰好 73 点、下游层折线头部恰好 73 点的接触弧，复算扫角/半径并
+% 与过孔字段交叉核对；接点回退角在 180/240/360 采样下保持有界（角度窗口
+% 的物理不变性，而不是采样点数窗口）。覆盖低匝数（上游弧曾静默非法的复现
+% 档）；480/540/720 采样在 main 上即受端子入口弧限制
+% （TerminalPlacementInvalid，与本契约无关、已用 main 原树复核），不在此展开。
 combos = {2, 2, 2, 360; 2, 2, 3, 360; 2, 2, 7, 360; 2, 2, 7, 180; ...
-    4, 2, 7, 360; 4, 4, 7, 360; 6, 6, 7, 360};
-expectedContacts = {1; 1; 1; 1; 1; 2; 3};
+    2, 2, 7, 240; 4, 2, 7, 360; 4, 4, 7, 360; 6, 6, 7, 360};
+expectedContacts = {1; 1; 1; 1; 1; 1; 2; 3};
 verifiedCount = 0;
 for k = 1:size(combos, 1)
     label = sprintf('%dL%dC t%d s%d', combos{k, 1}, combos{k, 2}, combos{k, 3}, combos{k, 4});
@@ -273,6 +274,8 @@ for k = 1:size(combos, 1)
         'samplePointsPerTurn', combos{k, 4}));
     verifyTrue(testCase, res.validation.passed, ...
         sprintf('%s failed: %s', label, strjoin(res.validation.messages, ' | ')));
+    verifyTrue(testCase, res.validation.outerViaContactsMeasured, ...
+        sprintf('%s: outer via contact measurements incomplete', label));
     verifyGreaterThanOrEqual(testCase, res.validation.minOuterViaContactRadiusMm, ...
         res.config.traceWidth - 1e-9, label);
     outerVias = res.vias(strcmp({res.vias.role}, 'OUTER_TRANSITION'));
@@ -282,32 +285,58 @@ for k = 1:size(combos, 1)
             sprintf('%s: %s missing upstream contact sweep', label, v.name));
         verifyTrue(testCase, isfinite(v.upstreamContactRadiusMm), ...
             sprintf('%s: %s missing upstream contact radius', label, v.name));
+        verifyTrue(testCase, isfinite(v.contactSweepDeg), ...
+            sprintf('%s: %s missing downstream contact sweep', label, v.name));
         verifyTrue(testCase, isfinite(v.contactRadiusMm), ...
             sprintf('%s: %s missing downstream contact radius', label, v.name));
         verifyGreaterThan(testCase, v.upstreamContactSweepDeg, ...
             res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg, label);
         verifyLessThanOrEqual(testCase, v.upstreamContactSweepDeg, 150, label);
+        verifyGreaterThan(testCase, v.contactSweepDeg, ...
+            res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg, label);
+        verifyLessThanOrEqual(testCase, v.contactSweepDeg, 150, label);
         verifyGreaterThanOrEqual(testCase, v.upstreamContactRadiusMm, ...
             res.config.traceWidth - 1e-9, label);
         verifyGreaterThanOrEqual(testCase, v.contactRadiusMm, ...
             res.config.traceWidth - 1e-9, label);
-        % 独立测量：上游层折线尾部的 73 点必须是同一圆上的弧。
+        % 独立测量（上游）：折线尾部 73 点必须落在同一个圆上（残差双侧有界），
+        % 拟合出的扫角/半径与过孔字段交叉核对。
         xy = res.layerPaths(v.fromLayer).coilXY;
         arc = xy(end - 72:end, :);
         center = circCenterFrom3Points(arc(1, :), arc(37, :), arc(73, :));
         radius = norm(arc(73, :) - center);
         verifyLessThanOrEqual(testCase, ...
-            max(sqrt(sum((arc - center).^2, 2))) - radius, 1e-6, ...
+            max(abs(sqrt(sum((arc - center).^2, 2)) - radius)), 1e-6, ...
             sprintf('%s: %s upstream tail is not a single arc', label, v.name));
         sweep = measuredSweepDeg(center, arc);
         verifyEqual(testCase, sweep, v.upstreamContactSweepDeg, 'AbsTol', 1e-6);
+        verifyEqual(testCase, radius, v.upstreamContactRadiusMm, 'AbsTol', 1e-6);
         verifyGreaterThan(testCase, sweep, 90.1, label);
         verifyLessThanOrEqual(testCase, sweep, 150, label);
         verifyEqual(testCase, arc(end, :), v.xy, 'AbsTol', 1e-9);
+        % 独立测量（下游）：折线头部 73 点同上。
+        darc = res.layerPaths(v.toLayer).coilXY(1:73, :);
+        dcenter = circCenterFrom3Points(darc(1, :), darc(37, :), darc(73, :));
+        dradius = norm(darc(1, :) - dcenter);
+        verifyLessThanOrEqual(testCase, ...
+            max(abs(sqrt(sum((darc - dcenter).^2, 2)) - dradius)), 1e-6, ...
+            sprintf('%s: %s downstream head is not a single arc', label, v.name));
+        dsweep = measuredSweepDeg(dcenter, darc);
+        verifyEqual(testCase, dsweep, v.contactSweepDeg, 'AbsTol', 1e-6);
+        verifyEqual(testCase, dradius, v.contactRadiusMm, 'AbsTol', 1e-6);
+        verifyGreaterThan(testCase, dsweep, 90.1, label);
+        verifyLessThanOrEqual(testCase, dsweep, 150, label);
+        verifyEqual(testCase, darc(1, :), v.xy, 'AbsTol', 1e-9);
+        % 角度窗口的物理不变性：两侧接点自过孔方向量起的回退角都有界，
+        % 不随采样密度漂移（若退回采样点数窗口，180 采样下会胀到 ~48°）。
+        verifyLessThanOrEqual(testCase, positionAngleDeg(v.xy, arc(1, :)), 25, ...
+            sprintf('%s: %s upstream junction back-off exceeds the angular window', label, v.name));
+        verifyLessThanOrEqual(testCase, positionAngleDeg(v.xy, darc(73, :)), 25, ...
+            sprintf('%s: %s downstream junction back-off exceeds the angular window', label, v.name));
         verifiedCount = verifiedCount + 1;
     end
 end
-verifyEqual(testCase, verifiedCount, 10);
+verifyEqual(testCase, verifiedCount, 11);
 % 已删除的手动端子模式字段必须被拒绝为未知配置，防止契约悄悄回潮。
 for f = {'terminalPlacementMode', 'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
     overrides = struct();
@@ -337,6 +366,12 @@ function sweep = measuredSweepDeg(center, arc)
 v1 = arc(1, :) - center;
 v2 = arc(end, :) - center;
 sweep = atan2d(abs(v1(1) * v2(2) - v1(2) * v2(1)), dot(v1, v2));
+end
+
+function deg = positionAngleDeg(a, b)
+% 两个位置向量相对原点的夹角（度）。阿基米德螺旋的极角≈位置角，因此
+% 过孔方向与接点位置的夹角即接点沿螺旋的回退角。
+deg = atan2d(abs(a(1) * b(2) - a(2) * b(1)), dot(a, b));
 end
 
 function testViaSizeRules(testCase)
