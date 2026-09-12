@@ -1216,6 +1216,14 @@ end
 end
 
 function writeReports(cfg, result, reportsDir)
+% Preflight: terminal routing metadata must exist before any report file is
+% opened. Erroring mid-write would leave an open fid behind (on Windows an
+% open handle can block staging-tree deletion), so fail before the first
+% fopen instead of inside the summary writer.
+if ~isfield(result, 'terminalRouting')
+    error('CircularFPC:ExportWriteFailed', ...
+        'Terminal routing metadata is missing; terminal routing always runs.');
+end
 % 报告文件：
 %   01_pad_via_coordinates.csv  焊盘/过孔坐标与端子元数据
 %   02_layer_map.csv            每物理层是否活动线圈层及绕向
@@ -1325,6 +1333,7 @@ fprintf(fid, 'maxSeriesContinuityErrorMm: %.9f\n', result.validation.maxSeriesCo
 fprintf(fid, 'maxConnectionTurnDeg: %.6f\n', result.validation.maxConnectionTurnDeg);
 fprintf(fid, 'minOuterViaContactSweepDeg: %.6f\n', result.validation.minOuterViaContactSweepDeg);
 fprintf(fid, 'maxOuterViaContactSweepDeg: %.6f\n', result.validation.maxOuterViaContactSweepDeg);
+fprintf(fid, 'minOuterViaContactRadiusMm: %.6f\n', result.validation.minOuterViaContactRadiusMm);
 fprintf(fid, 'connectionAngleDeg: %.6f\n', cfg.connectionAngleDeg);
 fprintf(fid, 'copperThickness: %.6f mm\n', cfg.copperThickness);
 fprintf(fid, 'copperType: %s\n', result.manufacturing.stackup.copperType);
@@ -1334,9 +1343,6 @@ if isfield(result, 'terminalRouting')
     fprintf(fid, 'terminalRoutingMode: %s\n', result.terminalRouting.mode);
     fprintf(fid, 'terminalEntrySweepDeg: %.6f\n', result.terminalRouting.entrySweepDeg);
     fprintf(fid, 'terminalOutputSweepDeg: %.6f\n', result.terminalRouting.outputSweepDeg);
-else
-    error('CircularFPC:ExportWriteFailed', ...
-        'Terminal routing metadata is missing; terminal routing always runs.');
 end
 fprintf(fid, 'terminalLeadSpacing: %.6f\n', cfg.terminalLeadSpacing);
 fprintf(fid, 'terminalLeadLength: %.6f\n', cfg.terminalLeadLength);
@@ -1422,6 +1428,7 @@ fprintf(fid, 'PASS maxSeriesContinuityErrorMm: %.9f\n', v.maxSeriesContinuityErr
 fprintf(fid, 'PASS maxConnectionTurnDeg: %.6f\n', v.maxConnectionTurnDeg);
 fprintf(fid, 'PASS minOuterViaContactSweepDeg: %.6f\n', v.minOuterViaContactSweepDeg);
 fprintf(fid, 'PASS maxOuterViaContactSweepDeg: %.6f\n', v.maxOuterViaContactSweepDeg);
+fprintf(fid, 'PASS minOuterViaContactRadiusMm: %.6f\n', v.minOuterViaContactRadiusMm);
 fprintf(fid, 'PASS viaOverlapFree: %d\n', v.viaOverlapFree);
 fprintf(fid, 'PASS windingSuperpositionConsistent: %d\n', v.windingSuperpositionConsistent);
 fprintf(fid, 'PASS minSignedCirculationDeg: %.6f\n', v.minSignedCirculationDeg);

@@ -166,8 +166,8 @@ ec = 0.30; % 默认 edgeClearance（与嘉立创铜-板框 DRC 对应）
 end
 
 function testInnerTransitionDetour(testCase)
-% 4/4 分数匝方案：V12/V34 两侧线圈必须在同一个过孔中心汇合；上游使用
-% 110° 圆弧，下游自动选择 >90° 且 <=150° 的单圆弧切向并入螺旋。
+% 4/4 分数匝方案：V12/V34 两侧线圈必须在同一个过孔中心汇合；上游与下游都用
+% 单段切向圆弧并入过孔，接触扫角（两侧）自动选择 >90° 且 <=150°。
 % 不允许直线弦锐接、S 形或 180° 回头钩。
 res = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4));
 verifyTrue(testCase, res.validation.passed, ...
@@ -252,6 +252,91 @@ resX = analyzeInternal(struct('boardLayerCount', 4, 'coilLayerCount', 4, ...
 verifyTrue(testCase, resX.validation.passed, ...
     sprintf('4/4 extreme validation failed: %s', strjoin(resX.validation.messages, ' | ')));
 verifyGreaterThanOrEqual(testCase, resX.validation.minCopperSpacingMm, 0.15 - 1e-9);
+end
+
+function testOuterViaContactsMeasuredOnBothSides(testCase)
+% 外端过孔两侧接触弧契约（审查补充）：上游（奇数层外端→过孔）与下游（过孔→
+% 偶数层外端）都必须被测量，且同时满足 扫角 ∈ (90°+容差, 150°] 与
+% 半径 >= 一个线宽。本测试不复用生产弧参数：独立用三点拟合圆恢复上游层
+% 折线尾部恰好 73 点的接触弧，复算扫角/半径并与过孔字段交叉核对。
+% 覆盖低匝数（上游弧曾静默非法的复现档）与非默认采样密度 180；
+% 720 采样在 main 上即受端子入口弧限制（TerminalPlacementInvalid，与
+% 本契约无关），不在此展开。
+combos = {2, 2, 2, 360; 2, 2, 3, 360; 2, 2, 7, 360; 2, 2, 7, 180; ...
+    4, 2, 7, 360; 4, 4, 7, 360; 6, 6, 7, 360};
+expectedContacts = {1; 1; 1; 1; 1; 2; 3};
+verifiedCount = 0;
+for k = 1:size(combos, 1)
+    label = sprintf('%dL%dC t%d s%d', combos{k, 1}, combos{k, 2}, combos{k, 3}, combos{k, 4});
+    res = analyzeInternal(struct('boardLayerCount', combos{k, 1}, ...
+        'coilLayerCount', combos{k, 2}, 'turnsPerCoilLayer', combos{k, 3}, ...
+        'samplePointsPerTurn', combos{k, 4}));
+    verifyTrue(testCase, res.validation.passed, ...
+        sprintf('%s failed: %s', label, strjoin(res.validation.messages, ' | ')));
+    verifyGreaterThanOrEqual(testCase, res.validation.minOuterViaContactRadiusMm, ...
+        res.config.traceWidth - 1e-9, label);
+    outerVias = res.vias(strcmp({res.vias.role}, 'OUTER_TRANSITION'));
+    verifyEqual(testCase, numel(outerVias), expectedContacts{k}, label);
+    for v = outerVias
+        verifyTrue(testCase, isfinite(v.upstreamContactSweepDeg), ...
+            sprintf('%s: %s missing upstream contact sweep', label, v.name));
+        verifyTrue(testCase, isfinite(v.upstreamContactRadiusMm), ...
+            sprintf('%s: %s missing upstream contact radius', label, v.name));
+        verifyTrue(testCase, isfinite(v.contactRadiusMm), ...
+            sprintf('%s: %s missing downstream contact radius', label, v.name));
+        verifyGreaterThan(testCase, v.upstreamContactSweepDeg, ...
+            res.config.minCopperInteriorAngleDeg + res.config.angleToleranceDeg, label);
+        verifyLessThanOrEqual(testCase, v.upstreamContactSweepDeg, 150, label);
+        verifyGreaterThanOrEqual(testCase, v.upstreamContactRadiusMm, ...
+            res.config.traceWidth - 1e-9, label);
+        verifyGreaterThanOrEqual(testCase, v.contactRadiusMm, ...
+            res.config.traceWidth - 1e-9, label);
+        % 独立测量：上游层折线尾部的 73 点必须是同一圆上的弧。
+        xy = res.layerPaths(v.fromLayer).coilXY;
+        arc = xy(end - 72:end, :);
+        center = circCenterFrom3Points(arc(1, :), arc(37, :), arc(73, :));
+        radius = norm(arc(73, :) - center);
+        verifyLessThanOrEqual(testCase, ...
+            max(sqrt(sum((arc - center).^2, 2))) - radius, 1e-6, ...
+            sprintf('%s: %s upstream tail is not a single arc', label, v.name));
+        sweep = measuredSweepDeg(center, arc);
+        verifyEqual(testCase, sweep, v.upstreamContactSweepDeg, 'AbsTol', 1e-6);
+        verifyGreaterThan(testCase, sweep, 90.1, label);
+        verifyLessThanOrEqual(testCase, sweep, 150, label);
+        verifyEqual(testCase, arc(end, :), v.xy, 'AbsTol', 1e-9);
+        verifiedCount = verifiedCount + 1;
+    end
+end
+verifyEqual(testCase, verifiedCount, 10);
+% 已删除的手动端子模式字段必须被拒绝为未知配置，防止契约悄悄回潮。
+for f = {'terminalPlacementMode', 'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
+    overrides = struct();
+    overrides.(f{1}) = [];
+    verifyError(testCase, @() circular_fpc_default_config(overrides), ...
+        'CircularFPC:UnknownConfigField');
+end
+end
+
+function center = circCenterFrom3Points(a, b, c)
+% 三点外接圆圆心（二维）。三点共线时返回 [NaN NaN]，由调用方的残差断言拦截。
+d = 2 * (a(1) * (b(2) - c(2)) + b(1) * (c(2) - a(2)) + c(1) * (a(2) - b(2)));
+if abs(d) < 1e-12
+    center = [NaN NaN];
+    return;
+end
+a2 = sum(a.^2);
+b2 = sum(b.^2);
+c2 = sum(c.^2);
+center = [(a2 * (b(2) - c(2)) + b2 * (c(2) - a(2)) + c2 * (a(2) - b(2))) / d, ...
+    (a2 * (c(1) - b(1)) + b2 * (a(1) - c(1)) + c2 * (b(1) - a(1))) / d];
+end
+
+function sweep = measuredSweepDeg(center, arc)
+% 圆弧扫角（度）：圆心到弧首/弧末两个向量的夹角，取 [0,180] 的劣角。
+% 本契约的接触弧扫角 <=150°，劣角即真实扫角。
+v1 = arc(1, :) - center;
+v2 = arc(end, :) - center;
+sweep = atan2d(abs(v1(1) * v2(2) - v1(2) * v2(1)), dot(v1, v2));
 end
 
 function testViaSizeRules(testCase)
@@ -782,7 +867,8 @@ function testTurnsContractPhysicalRevolutions(testCase)
 % 匝数契约（物理 360° 圈数）：turnsPerCoilLayer = N 时每层螺旋角跨度必须为
 % N + spanExtra（4/4 分数匝）个完整圆周。用独立 atan2 + unwrap 直接测量生成的
 % 线圈折线，不复用生产 span 公式。CW 偶数层为纯螺旋（无外伸接触弧），
-% 端到端解卷绕角即物理匝数；CCW 层外端附加 110° 延伸弧，不在本测试范围。
+% 端到端解卷绕角即物理匝数；CCW 层外端附加延伸弧后被上游单段切向圆弧重建，
+% 不在本测试范围。
 % 容差 0.02 圈：外端与串联过孔的单圆弧切向并入会修剪螺旋末端一小段角行程
 % （默认参数下实测偏差 <= 0.004 圈），仍远小于任何系统性匝数偏差。
 combos = {2, 2; 4, 4; 6, 6};

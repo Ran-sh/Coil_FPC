@@ -846,14 +846,17 @@ for p = 1:numel(activeLayers)
         xy = flipud(xy); % 翻转点序，使起点在半径大的一端（接外层过渡过孔）
     end
     % 外端延伸：用短平滑曲线从线圈切线转向板外，过孔落在径向对齐的终点。
-    % 转角严格大于 90°，同时明显小于旧 180° 回头弧，形成连续的切向/泪滴式接入。
+    % 该延伸只服务单活动层组合（2/1、4/1）与作为上游单弧的剥离尾巴；多层时
+    % 奇数层外端的接触弧由 attachUpstreamOuterViaArcs 重建为单段切向圆弧。
     % 奇数层外端为末点，偶数层外端为首点。
     E = eff.viaEndExtension;
     % 每个外端通孔由串联方向上游的奇数序号线圈直接形成接触弧；下游偶数序号层
     % 从同一过孔接到其原始螺旋外端。若两层都各做一条外伸弧，反向绕制会令两条
     % 接触弧分居过孔两侧，并迫使下游连接再次向外回钩。
     if E > 0 && directions(p) > 0
-        nArc = 45;
+        % 采样数与 attachUpstreamOuterViaArcs 的剥尾点数共用同一常数（见
+        % outerTailSampleCount）：追加 ext(2:end) 即 追加 outerTailSampleCount 个点。
+        nArc = outerTailSampleCount() + 1;
         outerEnd = xy(end, :);
         a = xy(end, :) - xy(end - 1, :);
         ext = smoothOutwardArc(outerEnd, a / norm(a), E, nArc);
@@ -901,16 +904,17 @@ end
 
 [pads, vias, returnLayer, routeInfo] = buildTerminals(cfg, eff, activeLayers, coils, layoutRegions);
 electrodePads = layoutRegions.electrodePads;
-% 外端通孔的下游层也从同一孔中心离开，并以单一圆弧切向并入下一层螺旋。
-% 自动选择 90°~150° 内最接近 120° 的圆弧，保证接触角严格大于 90°，
-% 且不再用直线弦或贝塞尔微调段制造锐角/回头钩。
+% 外端通孔两侧接触弧都由单段切向圆弧构成：下游层从孔中心出发切向并入下一层
+% 螺旋，上游层沿螺旋往回退一点取单弧并入孔中心。两侧候选都按"扫角 90°~150°
+% 内最接近 120°、半径不小于一个线宽"评分，选中的扫角/半径如实写入过孔字段，
+% 由结果验证与自动定径回路统一把关。
 [coils, vias] = attachDownstreamOuterViaArcs(cfg, activeLayers, coils, vias);
 
 % 奇数层外端接触弧：原实现追加三次贝塞尔，末端会收出一个钩。改成与下游层对称的
 % "沿螺旋往回退一点、取单段切向圆弧并入"——弧从螺旋接入点起、到过孔中心止。
-[coils, vias] = attachUpstreamOuterViaArcs(cfg, activeLayers, coils, vias);
-% 4/4 内端延伸（用户设计约定）：L2/L4 的内端经 180° 内弯弧直接延伸到
-% V23/VOUT 中心，L3 的起点前置同样的内弯弧——过孔落在线圈端点上，
+[coils, vias] = attachUpstreamOuterViaArcs(cfg, eff, activeLayers, coils, vias);
+% 4/4 内端延伸（用户设计约定）：L2/L4 的内端经单段切向圆弧直接延伸到
+% V23/VOUT 中心，L3 的起点前置同样的圆弧——过孔落在线圈端点上，
 % 无任何过渡走线（全部铜箔为同心螺旋 + 过孔处的径向微连接）。
 coils = applyInnerExtensions(cfg, activeLayers, coils, vias);
 seriesRoute = struct('name', {}, 'kind', {}, 'startXY', {}, 'endXY', {}, ...
@@ -975,15 +979,22 @@ end
 seriesRoute = addRouteComponent(seriesRoute, 'PAD_B', 'PAD', pads(2).xy, pads(2).xy, 1, 1);
 end
 
-function [coils, vias] = attachUpstreamOuterViaArcs(cfg, activeLayers, coils, vias)
+function [coils, vias] = attachUpstreamOuterViaArcs(cfg, eff, activeLayers, coils, vias)
 % 奇数层外端接触弧，与 attachDownstreamOuterViaArcs 对称：沿螺旋从外端往回退几
-% 步找一个接入点，用"过该点与过孔中心、且在该点与螺旋切向同向"的唯一圆弧并入，
-% 评分同样取 90°~150° 内最接近 120° 的弧。
+% 步找一个接入点，用"过该点与过孔中心、且在该点与螺旋切向同向"的唯一圆弧并入。
+%
+% 候选选择（与下游侧同款判据，两侧必须对称）：
+%   可行 = 扫角严格在 (90.1°, 150°] 且弧半径 >= 一个线宽（半径过小的弧缓冲成
+%   铜带会自压出孔，COMSOL 合并环要求每层恰好一条无孔闭合环）。
+%   可行候选里取 |扫角-120°| 最小者；一条可行候选都没有时，仍按连续惩罚分
+%   选出最接近可行的候选，把它的真实扫角/半径如实写进过孔字段——自动定径
+%   回路据此继续增大 E，最终由 Generate 的收尾检查 fail closed。
 %
 % 注意弧的方向：tangentCircularArc 返回的是 p0(过孔) → p1(接入点)，而线圈是从
 % 内向外走到接入点后要继续去过孔，所以必须把弧翻转再接上，否则路径会跳回过孔
 % 造成自交。
 angleFloor = cfg.minCopperInteriorAngleDeg + cfg.angleToleranceDeg;
+E = eff.viaEndExtension;
 % 上界是 numel-1：本函数要访问 activeLayers(p+1)，单活动层组合没有层间过孔，
 % 写成 numel 会越界（下游那个函数用的就是 numel-1）。
 for p = 1:2:(numel(activeLayers) - 1)
@@ -998,16 +1009,34 @@ for p = 1:2:(numel(activeLayers) - 1)
         continue;
     end
     viaXY = q(end, :);
-    % buildCoils 追加的是 smoothOutwardArc 的 ext(2:end)，nArc=45 即 44 个点。
-    tailCount = 44;
+    % buildCoils 在 E>0 时为奇数层追加 smoothOutwardArc 的 ext(2:end)，采样数由
+    % 外尾采样常数统一给出（该函数 nArc = 常数+1，剥掉的点数 = 常数）。E<=0 时
+    % 没有追加尾巴，一个点都不能剥。剥完后校验"过孔 = 螺旋末端沿径向外推 E"，
+    % 防止采样/追加逻辑改动后这里悄悄剥掉真实螺旋样本。
+    tailCount = outerTailSampleCount() * double(E > 0);
     if size(q, 1) <= tailCount + 4
         continue;
     end
     spiral = q(1:end - tailCount, :);
-    maxBack = min(size(spiral, 1) - 1, 24);
+    if E > 0
+        spiralEnd = spiral(end, :);
+        expectedViaR = norm(spiralEnd) + E;
+        alignment = dot(viaXY, spiralEnd) / (norm(viaXY) * norm(spiralEnd));
+        if abs(norm(viaXY) - expectedViaR) > 1e-6 || alignment < 1 - 1e-6
+            error('CircularFPC:GeometryInfeasible', ...
+                ['%s: the outer via does not sit one viaEndExtension (%.6f mm) beyond ', ...
+                 'the L%d spiral end; the extension tail contract changed.'], ...
+                name, E, fromLayer);
+        end
+    end
+    % 回退窗口按螺旋角度取（默认 24°），采样密度改变时物理回退量不变。
+    maxBack = min(size(spiral, 1) - 1, ...
+        max(2, round(outerTailSearchSweepDeg() / 360 * cfg.samplePointsPerTurn)));
     bestScore = inf;
     bestIndex = 0;
     bestArcRev = zeros(0, 2);
+    bestSweepDeg = NaN;
+    bestRadiusMm = NaN;
     for back = 2:maxBack
         i = size(spiral, 1) - back + 1;
         tangent = spiral(i, :) - spiral(i - 1, :);
@@ -1018,37 +1047,35 @@ for p = 1:2:(numel(activeLayers) - 1)
         if isempty(arc)
             continue;
         end
-        score = abs(sweepDeg - 120) + 0.02 * back;
-        if sweepDeg <= angleFloor || sweepDeg > 150
-            score = score + 1e4;
-        end
-        arcRev = flipud(arc);   % 翻成 接入点 → 过孔
-        % 弧半径筛选：半径小于一个线宽的弧，把 traceWidth 宽的铜带缓冲上去会
-        % 自己压到自己，合并成闭合轮廓时便围出一个孔（COMSOL 变体要求每层恰好
-        % 一条无孔闭合环）。手动端子里过孔离螺旋外端只有 0.05 mm 时，唯一解是
-        % 半径约 0.035 mm 的近半圆，正是这种情形。
         arcRadius = norm(viaXY - spiral(i, :)) / (2 * sin(deg2rad(sweepDeg) / 2));
-        if ~isfinite(arcRadius) || arcRadius < cfg.traceWidth
+        if ~isfinite(arcRadius)
             continue;
         end
+        sweepPenalty = max(0, angleFloor - sweepDeg) + max(0, sweepDeg - 150);
+        radiusPenalty = max(0, cfg.traceWidth - arcRadius);
+        score = abs(sweepDeg - 120) + 0.02 * back + sweepPenalty + radiusPenalty;
         if score < bestScore
             bestScore = score;
             bestIndex = i;
-            bestArcRev = arcRev;
+            bestArcRev = flipud(arc);   % 翻成 接入点 → 过孔
+            bestSweepDeg = sweepDeg;
+            bestRadiusMm = arcRadius;
         end
     end
     if bestIndex == 0
         % fail closed：宁可报出来让用户把过孔往外挪，也不写一条会围孔的铜。
         error('CircularFPC:GeometryInfeasible', ...
-            ['%s: no single-arc contact joins the spiral outer end of L%d to the via. ' ...
-             'The via is only %.4f mm from that end, so every candidate arc is tighter ' ...
-             'than one trace width (%.4f mm) and would enclose a hole when buffered. ' ...
-             'Move the via at least %.4f mm further out along its radial.'], ...
-            name, fromLayer, norm(viaXY - spiral(end, :)), cfg.traceWidth, cfg.traceWidth);
+            ['%s: no single-arc contact joins the spiral outer end of L%d to the via. ', ...
+             'The via is only %.4f mm from that end, so every candidate arc is degenerate. ', ...
+             'Move the via further out along its radial.'], ...
+            name, fromLayer, norm(viaXY - spiral(end, :)));
     end
     q = [spiral(1:bestIndex, :); bestArcRev(2:end, :)];
     q(end, :) = viaXY;
     coils{fromLayer} = q;
+    viaIndex = find(strcmp({vias.name}, name), 1);
+    vias(viaIndex).upstreamContactSweepDeg = bestSweepDeg;
+    vias(viaIndex).upstreamContactRadiusMm = bestRadiusMm;
 end
 end
 
@@ -1074,23 +1101,29 @@ for p = 1:numel(activeLayers) - 1
     bestIndex = 0;
     bestArc = zeros(0, 2);
     bestSweepDeg = NaN;
+    bestRadiusMm = NaN;
     for i = 2:maxIndex
         tangent = q(i + 1, :) - q(i, :);
         [arc, sweepDeg] = tangentCircularArc(v.xy, q(i, :), tangent, 73);
         if isempty(arc)
             continue;
         end
-        score = abs(sweepDeg - 120) + 0.02 * i;
-        if sweepDeg <= angleFloor || sweepDeg > 150
-            % 自动板径/过孔外移迭代的早期轮次可能暂时没有严格可行弧；
-            % 保留一个候选让引擎测量并继续增大 E，但优先级远低于 90.1°~150° 弧。
-            score = score + 1e4;
+        arcRadius = norm(v.xy - q(i, :)) / (2 * sin(deg2rad(sweepDeg) / 2));
+        if ~isfinite(arcRadius)
+            continue;
         end
+        % 与上游侧同款连续惩罚：可行（扫角 90.1°~150° 且半径 >= 一个线宽）候选
+        % 惩罚为零、按 |扫角-120°| 择优；一条可行都没有时保留最接近可行的候选，
+        % 让引擎量到真实扫角/半径后继续增大 E，而不是无声接受非法接触角。
+        sweepPenalty = max(0, angleFloor - sweepDeg) + max(0, sweepDeg - 150);
+        radiusPenalty = max(0, cfg.traceWidth - arcRadius);
+        score = abs(sweepDeg - 120) + 0.02 * i + sweepPenalty + radiusPenalty;
         if score < bestScore
             bestScore = score;
             bestIndex = i;
             bestArc = arc;
             bestSweepDeg = sweepDeg;
+            bestRadiusMm = arcRadius;
         end
     end
     if bestIndex == 0
@@ -1100,7 +1133,22 @@ for p = 1:numel(activeLayers) - 1
     coils{toLayer} = [bestArc(1:end - 1, :); q(bestIndex:end, :)];
     viaIndex = find(strcmp({vias.name}, name), 1);
     vias(viaIndex).contactSweepDeg = bestSweepDeg;
+    vias(viaIndex).contactRadiusMm = bestRadiusMm;
 end
+end
+
+function count = outerTailSampleCount()
+% buildCoils 为奇数层外端追加的 smoothOutwardArc 采样常数：该函数以
+% nArc = outerTailSampleCount() + 1 调用并只追加 ext(2:end)，因此剥掉的
+% 点数恰为本常数。attachUpstreamOuterViaArcs 与 buildCoils 必须共用同一
+% 来源，改采样数时两处同步。
+count = 44;
+end
+
+function deg = outerTailSearchSweepDeg()
+% 上游接触弧的回退搜索窗口，按螺旋角度计（默认 24°）；换算成采样点数后
+% 在 360 点/圈下与旧实现一致（24 点）。
+deg = 24;
 end
 
 function [xy, sweepDeg] = tangentCircularArc(p0, p1, tangentAtEnd, n)
@@ -1294,7 +1342,8 @@ end
 nVias = numel(viaNames);
 vias = struct('name', {}, 'xy', {}, 'drillDiameter', {}, 'padDiameter', {}, ...
     'fromLayer', {}, 'toLayer', {}, 'isOutputReturn', {}, 'role', {}, ...
-    'placementRegion', {}, 'bridgeAngleDeg', {}, 'contactSweepDeg', {});
+    'placementRegion', {}, 'bridgeAngleDeg', {}, 'contactSweepDeg', {}, ...
+    'contactRadiusMm', {}, 'upstreamContactSweepDeg', {}, 'upstreamContactRadiusMm', {});
 for k = 1:nVias
     vias(k).name = viaNames{k};
     vias(k).xy = viaXY(k, :);
@@ -1305,6 +1354,9 @@ for k = 1:nVias
     vias(k).isOutputReturn = strcmp(viaNames{k}, 'VOUT');
     vias(k).role = viaRoles{k};
     vias(k).contactSweepDeg = NaN;
+    vias(k).contactRadiusMm = NaN;
+    vias(k).upstreamContactSweepDeg = NaN;
+    vias(k).upstreamContactRadiusMm = NaN;
     vias(k).placementRegion = viaRegions{k};
     vias(k).bridgeAngleDeg = viaAngles(k);
 end
@@ -1491,9 +1543,9 @@ end
 
 function coils = applyInnerExtensions(cfg, activeLayers, coils, vias)
 % Full multilayer variants place even-to-odd inner transitions directly on
-% their vias. The final active layer receives the same short smooth stub to
-% VOUT. This keeps the inter-layer topology explicit without changing the
-% main spiral samples used by the COMSOL export.
+% their vias. The final active layer receives the same single tangent
+% circular arc to VOUT. This keeps the inter-layer topology explicit without
+% changing the main spiral samples used by the COMSOL export.
 is44 = cfg.boardLayerCount == 4 && cfg.coilLayerCount == 4;
 is66 = cfg.boardLayerCount == 6 && cfg.coilLayerCount == 6;
 if ~(is44 || is66)
