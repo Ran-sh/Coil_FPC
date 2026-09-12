@@ -260,12 +260,23 @@ outerViaMask = strcmp({geom.vias.role}, 'OUTER_TRANSITION');
 outerVias = geom.vias(outerViaMask);
 outerViaSweeps = [outerVias.contactSweepDeg, outerVias.upstreamContactSweepDeg];
 outerViaRadii = [outerVias.contactRadiusMm, outerVias.upstreamContactRadiusMm];
-% 完备性 fail-closed：每个外端过孔的四个接触量都必须实测。缺失不能映射成
-% Inf/0 之类恰好满足上下限的值（那等于 fail open）。
-if isempty(outerVias)
+% 完备性 fail-closed（三重）：
+%   1) 外端过孔的数量必须等于层拓扑给出的期望值 floor(活动层数/2)，
+%      期望名称是奇数序号相邻层对（V12/V34/V56...）——防止过孔被漏建或
+%      角色被改标后整个接触闸门被空洞地跳过；
+%   2) 每个外端过孔的四个接触量都必须实测，缺失不能映射成 Inf/0 之类
+%      恰好满足上下限的值（那等于 fail open）；
+%   3) 2/1、4/1 没有层间外端过孔，期望数量为 0，判据为真。
+expectedOuterNames = arrayfun(@(p) sprintf('V%d%d', ...
+    geom.activeLayers(p), geom.activeLayers(p + 1)), ...
+    1:2:(numel(geom.activeLayers) - 1), 'UniformOutput', false);
+if isempty(expectedOuterNames)
     v.outerViaContactsMeasured = true;
 else
-    v.outerViaContactsMeasured = all(isfinite(outerViaSweeps)) && all(isfinite(outerViaRadii));
+    namesMatched = isempty(setdiff(expectedOuterNames, {outerVias.name})) && ...
+        isempty(setdiff({outerVias.name}, expectedOuterNames));
+    v.outerViaContactsMeasured = numel(outerVias) == numel(expectedOuterNames) && ...
+        namesMatched && all(isfinite(outerViaSweeps)) && all(isfinite(outerViaRadii));
 end
 outerViaSweeps = outerViaSweeps(isfinite(outerViaSweeps));
 if isempty(outerViaSweeps)
@@ -355,7 +366,8 @@ if v.minOuterViaContactRadiusMm < cfg.traceWidth - 1e-9
     v.messages{end + 1} = 'outer via contact arc radius must be at least one trace width'; %#ok<AGROW>
 end
 if ~v.outerViaContactsMeasured
-    v.messages{end + 1} = 'outer via contact sweep/radius measurements are missing on at least one side'; %#ok<AGROW>
+    v.messages{end + 1} = ['outer via contact measurements are missing, incomplete, or ', ...
+        'the OUTER_TRANSITION via set does not match the layer topology']; %#ok<AGROW>
 end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>

@@ -388,6 +388,36 @@ verifyEqual(testCase, result.validation.minOuterViaContactSweepDeg, ...
     114.00214740156351, 'AbsTol', tol);
 end
 
+function testOuterViaContactCompletenessFailsClosed(testCase)
+% 完备性判据的负向测试（审查补充）：外端过孔的接触测量缺失、或
+% OUTER_TRANSITION 集合与层拓扑错配（过孔被漏建/角色被改标），都必须让
+% 验证 fail closed，而不是让接触闸门被空洞地跳过。
+result = circular_fpc_main(struct( ...
+    'analysisOnly', true, 'enableFigure', false, ...
+    'boardLayerCount', 4, 'coilLayerCount', 4, ...
+    'designName', 'contact_completeness_probe'));
+verifyTrue(testCase, result.validation.passed);
+verifyTrue(testCase, result.validation.outerViaContactsMeasured);
+% (a) 测量缺失：V12 的上游接触扫角变成 NaN。
+geom = resultGeometry(result);
+idx12 = find(strcmp({geom.vias.name}, 'V12'), 1);
+geom.vias(idx12).upstreamContactSweepDeg = NaN;
+brokenMeasurement = CircularFpc.Quality.Result_Validation('validate_result', ...
+    result.config, result.effectiveDimensions, geom);
+verifyFalse(testCase, brokenMeasurement.outerViaContactsMeasured);
+verifyFalse(testCase, brokenMeasurement.passed);
+verifyTrue(testCase, any(contains(brokenMeasurement.messages, 'outer via contact')));
+% (b) 集合错配：V34 被改标为 INNER_TRANSITION，外端过孔集合与拓扑期望
+% （V12+V34）不再匹配。
+geom2 = resultGeometry(result);
+idx34 = find(strcmp({geom2.vias.name}, 'V34'), 1);
+geom2.vias(idx34).role = 'INNER_TRANSITION';
+brokenRole = CircularFpc.Quality.Result_Validation('validate_result', ...
+    result.config, result.effectiveDimensions, geom2);
+verifyFalse(testCase, brokenRole.outerViaContactsMeasured);
+verifyFalse(testCase, brokenRole.passed);
+end
+
 function testFourLayerWindingSuperpositionIsVerifiedAndNotVacuous(testCase)
 % 磁场同向叠加的几何前提：四个活动层的电流环绕方向必须同号。该性质此前只由
 % 生成器写入的 windingDirection 标签（逐层 CCW/CW 交替，描述的是绕制行进
