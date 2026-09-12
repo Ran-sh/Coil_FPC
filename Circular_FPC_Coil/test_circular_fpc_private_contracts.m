@@ -526,8 +526,8 @@ verifyTrue(testCase, contains(zhTxt, 'class="terminal-leader"'));
 % manifest 必须登记全部镜像，且每个文件都在清单里。
 man = readtable(fullfile(result.outputPath, 'reports', '08_file_manifest.csv'));
 roles = string(man.role);
-verifyEqual(testCase, sum(roles == "preview_annotated"), 44, ...
-    '22 contract previews must each have a zh and an en mirror');
+verifyEqual(testCase, sum(roles == "preview_annotated"), 2 * numel(contract), ...
+    'every contract preview must have a zh and an en mirror');
 verifyFalse(testCase, any(roles == "preview_base"), ...
     'the redundant base/ copy set is gone');
 listed = string(man.relativePath);

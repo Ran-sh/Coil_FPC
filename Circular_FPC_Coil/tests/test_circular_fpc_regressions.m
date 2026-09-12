@@ -1649,7 +1649,7 @@ for c = 1:size(combos, 1)
     verifyEqual(testCase, result.activeCoilLayers, expectedActive{c});
     tag = sprintf('%d/%d', bc, cc);
     for li = 1:bc
-        isActive = any(result.activeCoilLayers == li);
+        isActive = double(any(result.activeCoilLayers == li));
         wtFile = fullfile(out, 'dxf', sprintf('L%d', li), ...
             sprintf('%02d_copper_solid_with_terminals_L%d.dxf', li, li));
         verifyTrue(testCase, isfile(wtFile), sprintf('%s missing %s', tag, wtFile));
@@ -1743,6 +1743,7 @@ for c = 1:size(combos, 1)
         verifyTrue(testCase, ~isempty(xmlread(capFull)));
     end
     for li = 1:bc
+        isActive = double(any(result.activeCoilLayers == li));
         if li == 1
             role = 'top';
         elseif li == bc
@@ -1778,7 +1779,7 @@ for c = 1:size(combos, 1)
             'firstLastMatch'}, sprintf('%s 11 CSV columns must be exact', tag));
         % 每个活动层一行合并轮廓；焊盘不再导出，出现 pad 行即为错误。
         verifyEqual(testCase, sum(strcmp(t.kind, 'coil_with_lead')), ...
-            sum(expectedActive{c}), ...
+            numel(expectedActive{c}), ...
             sprintf('%s 11 CSV must map one merged ring per active layer', tag));
         verifyEqual(testCase, sum(strcmp(t.kind, 'pad')), 0, ...
             sprintf('%s 11 CSV must not map pads', tag));
@@ -1792,12 +1793,15 @@ for c = 1:size(combos, 1)
             verifyTrue(testCase, isfile(fullfile(out, char(t.dxfFile(r)))), ...
                 sprintf('%s 11 CSV row %d cites a missing DXF', tag, r));
         end
-        % 报告中的引线端点必须等于 route 映射的 L1 连接路径端点。
-        for k = 1:2
-            leadName = {'TRACE_L1_ENTRY', 'TRACE_L1_EXIT'};
-            row = t(strcmp(t.entity, leadName{k}) & t.kind == "terminal_lead", :);
-            verifyEqual(testCase, height(row), 1, ...
-                sprintf('%s 11 CSV must map %s on L1', tag, leadName{k}));
+        % 每行的实体名就是所在层的合并轮廓名。引线归到哪一层由导出端按电气拓扑
+        % 推导，已在 DXF 读回里核对（合并环到 PAD_A/PAD_B 的距离为 0）。
+        for li = 1:bc
+            row = t(t.layer == li, :);
+            if isempty(row)
+                continue;
+            end
+            verifyEqual(testCase, char(row.entity), sprintf('COIL_WITH_LEAD_L%d', li), ...
+                sprintf('%s 11 CSV row must name the L%d merged ring', tag, li));
         end
     end
     % manifest：新增角色必须出现在固定词表中，且 sha256 自洽。
