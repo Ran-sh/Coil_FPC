@@ -255,7 +255,10 @@ v.actualBridgeWidthMm = geom.actualBridgeWidth;
 v.maxConnectionTurnDeg = computeMaxConnectionTurnDeg(geom.connectionPaths, geom.seriesRoute, geom.coils);
 v.viaOverlapFree = checkViaOverlap(cfg, geom.vias);
 outerViaMask = strcmp({geom.vias.role}, 'OUTER_TRANSITION');
-outerViaSweeps = [geom.vias(outerViaMask).contactSweepDeg];
+% 外端过孔两侧都是接触弧（下游 contactSweepDeg / 上游 upstreamContactSweepDeg），
+% 规则必须对两侧同时把关——只测一侧会让另一侧的非法接触角静默通过。
+outerViaSweeps = [geom.vias(outerViaMask).contactSweepDeg, ...
+    geom.vias(outerViaMask).upstreamContactSweepDeg];
 outerViaSweeps = outerViaSweeps(isfinite(outerViaSweeps));
 if isempty(outerViaSweeps)
     v.minOuterViaContactSweepDeg = inf;
@@ -263,6 +266,14 @@ if isempty(outerViaSweeps)
 else
     v.minOuterViaContactSweepDeg = min(outerViaSweeps);
     v.maxOuterViaContactSweepDeg = max(outerViaSweeps);
+end
+outerViaRadii = [geom.vias(outerViaMask).contactRadiusMm, ...
+    geom.vias(outerViaMask).upstreamContactRadiusMm];
+outerViaRadii = outerViaRadii(isfinite(outerViaRadii));
+if isempty(outerViaRadii)
+    v.minOuterViaContactRadiusMm = inf;
+else
+    v.minOuterViaContactRadiusMm = min(outerViaRadii);
 end
 % 各活动层的电流环流方向必须同向：这是磁场在板法向上叠加（而不是相邻层相消）
 % 的充分几何条件。指标完全由生成的线圈折线独立测量，不读取 windingDirection
@@ -334,6 +345,9 @@ end
 if v.minOuterViaContactSweepDeg <= copperAngleFloor || v.maxOuterViaContactSweepDeg > 150
     v.messages{end + 1} = 'outer via contact arc sweep must be >90 degrees and <=150 degrees'; %#ok<AGROW>
 end
+if v.minOuterViaContactRadiusMm < cfg.traceWidth - 1e-9
+    v.messages{end + 1} = 'outer via contact arc radius must be at least one trace width'; %#ok<AGROW>
+end
 if v.actualBridgeWidthMm < eff.bridgeTargetWidth - 1e-9
     v.messages{end + 1} = 'actual bridge width below target'; %#ok<AGROW>
 end
@@ -368,6 +382,7 @@ v.passed = v.finiteCoordinates && v.noZeroLengthSegments && v.noSelfIntersection
     v.minBoardInteriorAngleDeg > boardAngleFloor && ...
     v.minOuterViaContactSweepDeg > copperAngleFloor && ...
     v.maxOuterViaContactSweepDeg <= 150 && ...
+    v.minOuterViaContactRadiusMm >= cfg.traceWidth - 1e-9 && ...
     v.actualBridgeWidthMm >= eff.bridgeTargetWidth - 1e-9 && ...
     v.uniqueSeriesNetwork && v.maxSeriesContinuityErrorMm <= 1e-9 && ...
     v.maxConnectionTurnDeg <= 10 && v.viaOverlapFree && ...

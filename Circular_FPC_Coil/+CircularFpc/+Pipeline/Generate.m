@@ -19,7 +19,7 @@ directions(2:2:end) = -1;                   % 奇数序号层 CCW、偶数层 CW
 crossLayerSizing = cfg.boardLayerCount >= 4 && cfg.coilLayerCount == cfg.boardLayerCount;
 contactArcSizing = cfg.coilLayerCount > 1;
 autoOuterSizing = crossLayerSizing || contactArcSizing;
-maxOuterSizingPasses = 12;
+maxOuterSizingPasses = 20;
 for sizingPass = 1:maxOuterSizingPasses
     if sizingPass > 1 && strcmp(cfg.boardSizingMode, 'auto')
         eff.boardOuterDiameter = requiredBoardDiameter(cfg, eff);
@@ -56,8 +56,24 @@ for sizingPass = 1:maxOuterSizingPasses
     contactArcInvalid = contactArcSizing && ...
         (validation.minOuterViaContactSweepDeg <= angleFloor || ...
         validation.maxOuterViaContactSweepDeg > 150);
+    % 两阶段步长：前 8 轮保持历史 0.05 mm 平步长（默认配置的收敛轨迹与
+    % 锁定净距哨兵完全不变）；若 8 轮后接触角仍不可行，说明平步长预算
+    % 不足以跨过亏欠（典型是粗采样下候选扫角随 E 变化缓慢），改为按亏欠
+    % 比例升级（上限 0.5 mm/轮），避免把可收敛配置误报成不可行。
     deltaContact = 0.05 * contactArcInvalid;
-    requiredExtension = max([0, deltaDrill, deltaContact]);
+    if contactArcInvalid && sizingPass > 8
+        contactDeficitDeg = max(angleFloor - validation.minOuterViaContactSweepDeg, 0) + ...
+            max(validation.maxOuterViaContactSweepDeg - 150, 0);
+        deltaContact = min(0.5, 0.05 + 0.02 * contactDeficitDeg);
+    end
+    radiusInfeasible = contactArcSizing && ...
+        validation.minOuterViaContactRadiusMm < cfg.traceWidth - 1e-9;
+    deltaRadius = 0.05 * radiusInfeasible;
+    if radiusInfeasible && sizingPass > 8
+        deltaRadius = min(0.5, 0.05 + ...
+            0.5 * (cfg.traceWidth - validation.minOuterViaContactRadiusMm));
+    end
+    requiredExtension = max([0, deltaDrill, deltaContact, deltaRadius]);
     if requiredExtension <= 1e-9
         break;
     end
@@ -81,6 +97,12 @@ if contactArcSizing && (validation.minOuterViaContactSweepDeg <= ...
         ['Outer-via circular contacts cannot satisfy the strict >90-degree ', ...
         'and <=150-degree sweep rule within %d automatic sizing passes.'], ...
         maxOuterSizingPasses);
+end
+if contactArcSizing && validation.minOuterViaContactRadiusMm < cfg.traceWidth - 1e-9
+    error('CircularFPC:GeometryInfeasible', ...
+        ['Outer-via circular contacts cannot reach a radius of one trace ', ...
+        'width (%.4f mm) within %d automatic sizing passes.'], ...
+        cfg.traceWidth, maxOuterSizingPasses);
 end
 % Auto 模式的基础网络只作为 terminal reroute 的输入。它仍然包含旧的
 % 端子桥路径，某些合法 d/L 组合（例如较小 d）可能只会让这套即将被
