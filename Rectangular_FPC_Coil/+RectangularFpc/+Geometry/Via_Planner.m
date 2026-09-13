@@ -202,11 +202,19 @@ if outerCount > 0
     if ~okTab
         failureCode = tabReason;
         if strcmp(failureCode, 'TAB_VIA_CAPACITY')
-            failureReason = sprintf( ...
-                ['无法在右侧尾板放置 %d 个层间过孔：可用长度不足，或（6/8 层贯穿通孔模型的）', ...
-                 '反焊盘引线通道在该侧容不下行偏移 %.3f mm 的最小值。', ...
-                 '建议增大 tabLength / tabWidth、减小过孔数量，或调整 outerViaPitch / outerViaRowOffsetY。'], ...
-                outerCount, cfg.outerViaRowOffsetY);
+            if cfg.layerCount > 4
+                failureReason = sprintf( ...
+                    ['无法在右侧尾板放置 %d 个层间过孔：可用长度不足，或 6/8 层贯穿通孔模型的', ...
+                     '反焊盘引线通道容不下 %.3f mm 的行偏移下限（请求 %.3f mm，方向 %s）。', ...
+                     '建议增大 tabLength / tabWidth、减小过孔数量，或调整 outerViaPitch / outerViaRowOffsetY。'], ...
+                    outerCount, requiredTabRowOffset(cfg), cfg.outerViaRowOffsetY, ...
+                    sideLabel(cfg.outerViaRowOffsetY));
+            else
+                failureReason = sprintf( ...
+                    ['无法在右侧尾板放置 %d 个层间过孔：可用长度不足。', ...
+                     '建议增大 tabLength / tabWidth、减小过孔数量，或调整 outerViaPitch / outerViaRowOffsetY。'], ...
+                    outerCount);
+            end
         end
         return;
     end
@@ -235,8 +243,7 @@ tol = cfg.geometryTolerance;
 % 2/4 层尾板只有一个远离走廊的反焊盘，不构成阻挡，保持用户配置值不变。
 rowOffsetY = cfg.outerViaRowOffsetY;
 if cfg.layerCount > 4
-    requiredRowOffset = cfg.viaPadDiameter/2 + cfg.viaToCopperClearance + ...
-        cfg.traceWidth/2 + cfg.viaOuterBendRadius;
+    requiredRowOffset = requiredTabRowOffset(cfg);
     % 保留用户偏好的方向（负偏移 = 板中线另一侧），只把幅值抬到下限。
     if rowOffsetY < 0
         rowOffsetY = min(rowOffsetY, -requiredRowOffset);
@@ -444,4 +451,23 @@ v = b - a;
 w = p - a;
 c = max(0, min(1, dot(w, v)/dot(v, v)));
 d = norm(w - c*v);
+end
+
+%% ---------------------------------------------------------------
+
+function required = requiredTabRowOffset(cfg)
+% 6/8 层贯穿通孔模型下尾板过孔行的最小偏移幅值：同排过孔在非连接层上的
+% 反焊盘半径 + 半线宽 + 外侧逃逸弧半径。低于它时跨越反焊盘场的引线布不通
+% （实测 0.8 mm 失败 / 0.9 mm 通过，与公式一致）。负值表示板中线另一侧，
+% 由调用方按用户请求的方向取符号。
+required = cfg.viaPadDiameter/2 + cfg.viaToCopperClearance + ...
+    cfg.traceWidth/2 + cfg.viaOuterBendRadius;
+end
+
+function label = sideLabel(offsetY)
+if offsetY < 0
+    label = '负侧';
+else
+    label = '正侧';
+end
 end

@@ -89,7 +89,7 @@ cfg.innerViaPitch = 2.00;                                  % mm，内圈过孔�
 cfg.innerViaRowOffsetY = 0.00;                             % mm，内圈过孔排相对主体中线的 Y 方向偏移
 cfg.outerViaLayout = 'horizontal';                         % 字符串，右侧尾板过孔排列方向，当前支持 'horizontal'（沿 X 方向）
 cfg.outerViaPitch = 1.50;                                  % mm，尾板过孔期望中心间距
-cfg.outerViaRowOffsetY = 0.50;                             % mm，尾板过孔排相对主体中线的 Y 方向错位，避免串联过孔共线
+cfg.outerViaRowOffsetY = 0.50;                             % mm，尾板过孔排相对主体中线的 Y 方向错位；2/4 层为择优偏好，6/8 层贯穿通孔模型下符号是硬约束（负值=另一侧），幅值会被抬到反焊盘引线通道所需下限
 cfg.viaKeepoutMargin = 0.10;                               % mm，过孔自动规划附加安全余量
 cfg.autoViaGridStep = 0.25;                                % mm，自动过孔候选位置搜索步长
 cfg.recommendedTurnMargin = 1;                             % 匝，推荐匝数相对完整验证上限保留的匝数裕量
