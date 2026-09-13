@@ -113,6 +113,17 @@ for k = 1:size(enumFields, 1)
     cfg.(name) = char(value);
 end
 
+% legacy_auto 把同奇偶的所有串联过孔放在同一个锚点位移上：3 个及以上串联过孔时
+% 这些孔互相重合，在贯穿通孔模型下等于把串联链短路（实测 4/6/8 层既有的布线/
+% 匝数扫描也均无法通过）。2 层只有 1 个串联过孔，该模式仍有效。
+if strcmp(cfg.viaPlacementMode, 'legacy_auto') && cfg.layerCount > 2
+    error('RectangularFPC:InvalidConfigValue', ...
+        ['viaPlacementMode ''legacy_auto'' is only available for 2-layer designs: ', ...
+         'it places all odd/even series vias on one shared anchor, so three or more ', ...
+         'plated through holes would coincide and short the series chain. ', ...
+         'Use ''hybrid_auto'' for 4/6/8-layer designs.']);
+end
+
 % coilOuterCornerRadius: empty by default; manual mode requires a valid scalar.
 if isempty(cfg.coilOuterCornerRadius)
     if strcmp(cfg.coilOuterCornerRadiusMode, 'manual')
