@@ -193,22 +193,35 @@ verifyError(testCase, @() analyzeInternal(struct( ...
 end
 
 function testTerminalBendsStayFeasibleAcrossSamplingDensities(testCase)
-% 采样密度不变式（backlog 修复）：端子单弯弧的弦基线至少跨 1° 参数角
-% （k = ceil(spt/360)），扫角滞后下限回到 0.5°，因此 180~720 点/圈全部
-% 可行且两侧扫角逐密度一致有界；修复前 420+ 密度会误报
-% TerminalPlacementInvalid（真切向扫角 89.66° < 90.1° 下限，全靠弦滞后
-% 补偿）。360 点/圈 k=1，扫角与历史值逐位一致（90.1562…）。
-expected = [180, 90.6562; 240, 90.4062; 300, 90.2562; 360, 90.1562; ...
-    420, 90.5134; 480, 90.4062; 540, 90.3229; 600, 90.2562; 720, 90.1562];
-for k = 1:size(expected, 1)
-    s = expected(k, 1);
+% 采样密度不变式（backlog 修复）：端子单弯弧的端点切向取**精确 1° 螺旋
+% 参数**的解析弦（旋向由相邻采样点极角差决定），扫角与采样密度真正无关
+% ——历史 1 采样弦在 360 点/圈恰好补 0.5° 滞后才达标，420+ 会误报
+% TerminalPlacementInvalid；ceil 方案虽可行但在 k 边界有 ~0.5° 锯齿跳变。
+% 本测试覆盖 k 边界三连（359/360/361、719/720/721）并断言全密度同一扫角
+% （= 真切向 89.6562° + 0.5° 弦滞后，余量 0.056°）；2/1、4/1 无出口弧
+% 只在 720 上受既有单线圈验证限制（main 原树复核），不在本矩阵内。
+densities = [180 240 300 359 360 361 420 480 540 600 719 720 721];
+for k = 1:numel(densities)
+    s = densities(k);
     r = analyzeInternal(struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
         'samplePointsPerTurn', s));
-    verifyTrue(testCase, r.validation.passed, sprintf('s%d failed', s));
-    verifyEqual(testCase, r.terminalRouting.entrySweepDeg, expected(k, 2), ...
-        'AbsTol', 1e-3, sprintf('s%d entry sweep drifted', s));
-    verifyEqual(testCase, r.terminalRouting.outputSweepDeg, expected(k, 2), ...
-        'AbsTol', 1e-3, sprintf('s%d output sweep drifted', s));
+    verifyTrue(testCase, r.validation.passed, sprintf('2/2 s%d failed', s));
+    verifyEqual(testCase, r.terminalRouting.entrySweepDeg, 90.1562, ...
+        'AbsTol', 1e-3, sprintf('2/2 s%d entry sweep drifted', s));
+    verifyEqual(testCase, r.terminalRouting.outputSweepDeg, 90.1562, ...
+        'AbsTol', 1e-3, sprintf('2/2 s%d output sweep drifted', s));
+end
+% 输出侧修剪（4/4 的 VOUT 桩）与小内端结构（6/6）也必须同样恒定。
+for combo = {{4, 4, 480}, {4, 4, 361}, {6, 6, 480}}
+    c = combo{1};
+    r = analyzeInternal(struct('boardLayerCount', c{1}, 'coilLayerCount', c{2}, ...
+        'samplePointsPerTurn', c{3}));
+    label = sprintf('%d/%d s%d', c{1}, c{2}, c{3});
+    verifyTrue(testCase, r.validation.passed, sprintf('%s failed', label));
+    verifyGreaterThan(testCase, r.terminalRouting.entrySweepDeg, ...
+        r.config.minCopperInteriorAngleDeg + r.config.angleToleranceDeg, label);
+    verifyEqual(testCase, r.terminalRouting.outputSweepDeg, ...
+        r.terminalRouting.entrySweepDeg, 'AbsTol', 1e-9, label);
 end
 end
 

@@ -48,8 +48,8 @@ oldVout = result.vias(strcmp({result.vias.name}, 'VOUT')).xy;
 % Input lane: Q_A is the tangent point at the end of the straight section.
 % Preserve the Archimedean coil exactly. Its sampled endpoint tangent and
 % the radial lead direction uniquely define one tangent circular arc.
-entryTangent = unitVector(terminalChordTangent(coil1, cfg.samplePointsPerTurn, false), ...
-    'L1 entry tangent');
+entryTangent = unitVector(terminalChordTangent(sIn, coil1(2, :), ...
+    result.effectiveDimensions, cfg, false), 'L1 entry tangent');
 [entryArc, qA, entryBendRadius, entrySweepDeg] = tangentArcEndingAtLane( ...
     sIn, u, entryTangent, t, -d / 2, 49);
 padA = qA - L * u;
@@ -71,8 +71,8 @@ if numel(active) > 1
     lastCoil = trimInnerStub(lastCoil, rStart);
     result.layerPaths(lastLi).coilXY = lastCoil;
     sOut = lastCoil(end, :);
-    outputTangent = unitVector(terminalChordTangent(lastCoil, cfg.samplePointsPerTurn, true), ...
-        'last active layer output tangent');
+    outputTangent = unitVector(terminalChordTangent(sOut, lastCoil(end - 1, :), ...
+        result.effectiveDimensions, cfg, true), 'last active layer output tangent');
     [outputPath, voutXY, outputBendRadius, outputSweepDeg] = ...
         tangentArcStartingAtLane(sOut, outputTangent, -u, t, d / 2, 49);
 else
@@ -269,20 +269,33 @@ result.layoutRegions = layoutRegions;
 return;
 end
 
-function tangent = terminalChordTangent(coil, samplePointsPerTurn, fromEnd)
-% 采样折线的弦方向滞后阿基米德螺旋真切向半个采样角（弦=弦跨中点参数处的
-% 切向）。端子单弯弧的存在域要求扫角严格大于 90°+容差（90.1°），而螺旋
-% 真切向的扫角在默认参数下只有约 89.66°——历史行为靠 1 采样弦的 0.5°
-% 滞后在 360 点/圈恰好达标，更高采样密度（420+）会跌破下限并误报
-% TerminalPlacementInvalid。弦基线改为"至少跨 1° 参数角"
-% （k = ceil(spt/360)），滞后下限回到 0.5°，扫角与采样密度无关；
-% 360 点/圈时 k=1，与历史几何逐字节一致。
-k = max(1, ceil(samplePointsPerTurn / 360));
-k = min(k, size(coil, 1) - 1);
+function tangent = terminalChordTangent(endPoint, neighbor, eff, cfg, fromEnd)
+% 端子单弯弧的端点切向：取**精确 1° 螺旋参数**的弦（不是整数个采样点）。
+% 采样折线的弦方向滞后真切向半个弦跨角，而螺旋真切向在默认参数下扫角只有
+% 约 89.66°，低于单弯弧存在域要求的下限 90°+容差；历史行为靠 1 采样弦在
+% 360 点/圈恰好补 0.5° 才达标，密度更高或更低时扫角漂移甚至误报
+% TerminalPlacementInvalid。改用解析求值的固定 1° 弦后，扫角与采样密度
+% 真正无关（连 ceil 方案在 k 边界的 ~0.5° 锯齿跳变也消除）；
+% 360 点/圈时解析点与相邻采样点重合，几何与历史逐字节一致。
+%
+% 旋向由相邻采样点的极角差决定（奇数层 CCW、偶数层 CW，不能写死符号）；
+% 1° 参数点的半径按生成器的阿基米德公式解析求值。
+phi0 = atan2(endPoint(2), endPoint(1));
+phiNeighbor = atan2(neighbor(2), neighbor(1));
+dphi = phiNeighbor - phi0;
+dphi = atan2(sin(dphi), cos(dphi));   % 归一化到 (-pi, pi]
+stepSign = sign(dphi);
+if stepSign == 0
+    stepSign = 1;
+end
+delta = stepSign * deg2rad(1);
+rStart = eff.coilInnerDiameter / 2 + cfg.traceWidth / 2;
+r = rStart + eff.coilPitch * abs(delta) / (2 * pi);
+point = r * [cos(phi0 + delta), sin(phi0 + delta)];
 if fromEnd
-    tangent = coil(end, :) - coil(end - k, :);
+    tangent = endPoint - point;
 else
-    tangent = coil(k + 1, :) - coil(1, :);
+    tangent = point - endPoint;
 end
 end
 
