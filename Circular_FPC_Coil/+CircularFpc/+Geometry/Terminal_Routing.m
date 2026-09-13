@@ -48,7 +48,8 @@ oldVout = result.vias(strcmp({result.vias.name}, 'VOUT')).xy;
 % Input lane: Q_A is the tangent point at the end of the straight section.
 % Preserve the Archimedean coil exactly. Its sampled endpoint tangent and
 % the radial lead direction uniquely define one tangent circular arc.
-entryTangent = unitVector(coil1(2, :) - coil1(1, :), 'L1 entry tangent');
+entryTangent = unitVector(terminalChordTangent(coil1, cfg.samplePointsPerTurn, false), ...
+    'L1 entry tangent');
 [entryArc, qA, entryBendRadius, entrySweepDeg] = tangentArcEndingAtLane( ...
     sIn, u, entryTangent, t, -d / 2, 49);
 padA = qA - L * u;
@@ -70,7 +71,7 @@ if numel(active) > 1
     lastCoil = trimInnerStub(lastCoil, rStart);
     result.layerPaths(lastLi).coilXY = lastCoil;
     sOut = lastCoil(end, :);
-    outputTangent = unitVector(lastCoil(end, :) - lastCoil(end - 1, :), ...
+    outputTangent = unitVector(terminalChordTangent(lastCoil, cfg.samplePointsPerTurn, true), ...
         'last active layer output tangent');
     [outputPath, voutXY, outputBendRadius, outputSweepDeg] = ...
         tangentArcStartingAtLane(sOut, outputTangent, -u, t, d / 2, 49);
@@ -266,6 +267,23 @@ result.effectiveDimensions = eff;
 result.boardLoops = boardLoops;
 result.layoutRegions = layoutRegions;
 return;
+end
+
+function tangent = terminalChordTangent(coil, samplePointsPerTurn, fromEnd)
+% 采样折线的弦方向滞后阿基米德螺旋真切向半个采样角（弦=弦跨中点参数处的
+% 切向）。端子单弯弧的存在域要求扫角严格大于 90°+容差（90.1°），而螺旋
+% 真切向的扫角在默认参数下只有约 89.66°——历史行为靠 1 采样弦的 0.5°
+% 滞后在 360 点/圈恰好达标，更高采样密度（420+）会跌破下限并误报
+% TerminalPlacementInvalid。弦基线改为"至少跨 1° 参数角"
+% （k = ceil(spt/360)），滞后下限回到 0.5°，扫角与采样密度无关；
+% 360 点/圈时 k=1，与历史几何逐字节一致。
+k = max(1, ceil(samplePointsPerTurn / 360));
+k = min(k, size(coil, 1) - 1);
+if fromEnd
+    tangent = coil(end, :) - coil(end - k, :);
+else
+    tangent = coil(k + 1, :) - coil(1, :);
+end
 end
 
 function [arc, startPoint, radius, sweepDeg] = tangentArcEndingAtLane( ...

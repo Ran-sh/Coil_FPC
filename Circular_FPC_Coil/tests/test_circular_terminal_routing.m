@@ -192,6 +192,26 @@ verifyError(testCase, @() analyzeInternal(struct( ...
     'CircularFPC:ValidationFailed');
 end
 
+function testTerminalBendsStayFeasibleAcrossSamplingDensities(testCase)
+% 采样密度不变式（backlog 修复）：端子单弯弧的弦基线至少跨 1° 参数角
+% （k = ceil(spt/360)），扫角滞后下限回到 0.5°，因此 180~720 点/圈全部
+% 可行且两侧扫角逐密度一致有界；修复前 420+ 密度会误报
+% TerminalPlacementInvalid（真切向扫角 89.66° < 90.1° 下限，全靠弦滞后
+% 补偿）。360 点/圈 k=1，扫角与历史值逐位一致（90.1562…）。
+expected = [180, 90.6562; 240, 90.4062; 300, 90.2562; 360, 90.1562; ...
+    420, 90.5134; 480, 90.4062; 540, 90.3229; 600, 90.2562; 720, 90.1562];
+for k = 1:size(expected, 1)
+    s = expected(k, 1);
+    r = analyzeInternal(struct('boardLayerCount', 2, 'coilLayerCount', 2, ...
+        'samplePointsPerTurn', s));
+    verifyTrue(testCase, r.validation.passed, sprintf('s%d failed', s));
+    verifyEqual(testCase, r.terminalRouting.entrySweepDeg, expected(k, 2), ...
+        'AbsTol', 1e-3, sprintf('s%d entry sweep drifted', s));
+    verifyEqual(testCase, r.terminalRouting.outputSweepDeg, expected(k, 2), ...
+        'AbsTol', 1e-3, sprintf('s%d output sweep drifted', s));
+end
+end
+
 function testLayerPreviewShowsIdenticalThroughViasOnEveryLayer(testCase)
 root = tempname;
 mkdir(root);

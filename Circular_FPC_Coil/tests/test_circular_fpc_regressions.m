@@ -261,11 +261,10 @@ function testOuterViaContactsMeasuredOnBothSides(testCase)
 % 折线尾部恰好 73 点、下游层折线头部恰好 73 点的接触弧，复算扫角/半径并
 % 与过孔字段交叉核对；接点回退角在 180/240/360 采样下保持有界（角度窗口
 % 的物理不变性，而不是采样点数窗口）。覆盖低匝数（上游弧曾静默非法的复现
-% 档）；480/540/720 采样在 main 上即受端子入口弧限制
-% （TerminalPlacementInvalid，与本契约无关、已用 main 原树复核），不在此展开。
+% 档）与高采样密度 480/720（端子弦基线修复后全密度可行）。
 combos = {2, 2, 2, 360; 2, 2, 3, 360; 2, 2, 7, 360; 2, 2, 7, 180; ...
-    2, 2, 7, 240; 4, 2, 7, 360; 4, 4, 7, 360; 6, 6, 7, 360};
-expectedContacts = {1; 1; 1; 1; 1; 1; 2; 3};
+    2, 2, 7, 240; 2, 2, 7, 480; 2, 2, 7, 720; 4, 2, 7, 360; 4, 4, 7, 360; 6, 6, 7, 360};
+expectedContacts = {1; 1; 1; 1; 1; 1; 1; 1; 2; 3};
 verifiedCount = 0;
 for k = 1:size(combos, 1)
     label = sprintf('%dL%dC t%d s%d', combos{k, 1}, combos{k, 2}, combos{k, 3}, combos{k, 4});
@@ -336,7 +335,7 @@ for k = 1:size(combos, 1)
         verifiedCount = verifiedCount + 1;
     end
 end
-verifyEqual(testCase, verifiedCount, 11);
+verifyEqual(testCase, verifiedCount, 13);
 % 已删除的手动端子模式字段必须被拒绝为未知配置，防止契约悄悄回潮。
 for f = {'terminalPlacementMode', 'manualPadAXY', 'manualPadBXY', 'manualSeriesViaXY'}
     overrides = struct();
