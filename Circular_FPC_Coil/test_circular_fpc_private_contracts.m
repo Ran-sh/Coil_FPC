@@ -416,6 +416,21 @@ brokenRole = CircularFpc.Quality.Result_Validation('validate_result', ...
     result.config, result.effectiveDimensions, geom2);
 verifyFalse(testCase, brokenRole.outerViaContactsMeasured);
 verifyFalse(testCase, brokenRole.passed);
+% (c) 空期望集合的对称检查：4/1 没有外端过渡过孔，VRET 被误标为
+% OUTER_TRANSITION 时完备性必须失败，而不是空洞地通过。
+res41 = circular_fpc_main(struct( ...
+    'analysisOnly', true, 'enableFigure', false, ...
+    'boardLayerCount', 4, 'coilLayerCount', 1, ...
+    'designName', 'contact_completeness_single_coil'));
+verifyTrue(testCase, res41.validation.passed);
+verifyTrue(testCase, res41.validation.outerViaContactsMeasured);
+geom3 = resultGeometry(res41);
+idxRet = find(strcmp({geom3.vias.name}, 'VRET'), 1);
+geom3.vias(idxRet).role = 'OUTER_TRANSITION';
+brokenSingle = CircularFpc.Quality.Result_Validation('validate_result', ...
+    res41.config, res41.effectiveDimensions, geom3);
+verifyFalse(testCase, brokenSingle.outerViaContactsMeasured);
+verifyFalse(testCase, brokenSingle.passed);
 end
 
 function testFourLayerWindingSuperpositionIsVerifiedAndNotVacuous(testCase)

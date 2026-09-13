@@ -271,7 +271,9 @@ expectedOuterNames = arrayfun(@(p) sprintf('V%d%d', ...
     geom.activeLayers(p), geom.activeLayers(p + 1)), ...
     1:2:(numel(geom.activeLayers) - 1), 'UniformOutput', false);
 if isempty(expectedOuterNames)
-    v.outerViaContactsMeasured = true;
+    % 2/1、4/1 没有层间外端过孔：期望集合为空时，实际集合也必须为空——
+    % 否则任何被误标为 OUTER_TRANSITION 的过孔（如 VRET）都会绕过接触闸门。
+    v.outerViaContactsMeasured = isempty(outerVias);
 else
     namesMatched = isempty(setdiff(expectedOuterNames, {outerVias.name})) && ...
         isempty(setdiff({outerVias.name}, expectedOuterNames));
