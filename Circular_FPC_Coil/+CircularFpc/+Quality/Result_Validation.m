@@ -46,6 +46,14 @@ end
 if cfg.turnsPerCoilLayer < 2
     error('CircularFPC:InvalidConfig', 'turnsPerCoilLayer must be at least 2.');
 end
+% 采样密度下限：更粗的折线无法表征螺旋，且端子切向的旋向判定要求相邻
+% 采样点的极角差严格小于半圈（更粗时判据退化，几何本身也无意义）。
+if cfg.samplePointsPerTurn < 8
+    error('CircularFPC:InvalidConfig', ...
+        ['samplePointsPerTurn must be at least 8: a coarser polyline cannot ', ...
+         'represent the spiral and the terminal-tangent winding detection ', ...
+         'needs neighbouring samples closer than half a turn.']);
+end
 supported = {[2 1], [2 2], [4 1], [4 2], [4 4], [6 6]};
 ok = false;
 for k = 1:numel(supported)

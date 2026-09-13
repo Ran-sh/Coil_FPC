@@ -98,6 +98,18 @@ verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg
 verifyError(testCase, @() circular_fpc_default_config(struct('connectionAngleDeg', [0 1])), 'CircularFPC:InvalidConfig');
 end
 
+function testSamplePointsPerTurnMinimumIsEnforced(testCase)
+% 采样密度下限（审查建议）：更粗的折线无法表征螺旋，且端子切向的旋向判定
+% 要求相邻采样点极角差严格小于半圈；下限 8 在配置阶段 fail-fast，
+% 且边界值本身必须仍然合法（不误伤）。
+verifyError(testCase, @() circular_fpc_default_config(struct( ...
+    'samplePointsPerTurn', 7)), 'CircularFPC:InvalidConfig');
+verifyError(testCase, @() circular_fpc_default_config(struct( ...
+    'samplePointsPerTurn', 4)), 'CircularFPC:InvalidConfig');
+cfg = circular_fpc_default_config(struct('samplePointsPerTurn', 8));
+verifyEqual(testCase, cfg.samplePointsPerTurn, 8);
+end
+
 function testRejectsUnsupportedLayerMatrix(testCase)
 verifyError(testCase, @() circular_fpc_default_config(struct('unknownField', 1)), 'CircularFPC:UnknownConfigField');
 verifyError(testCase, @() circular_fpc_default_config(struct('boardLayerCount', 3)), 'CircularFPC:UnsupportedLayerCombination');
