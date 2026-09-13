@@ -368,12 +368,13 @@ if ~isempty(viaFailCode)
     error('RectangularFPC:ViaPlanningFailed', viaFailReason);
 end
 
-% JLC FPC does not qualify blind/buried vias for the supported 2/4-layer
-% profile. Those series interconnects are therefore plated through holes:
-% copper pads exist only on their two connected layers and every other
-% layer receives an antipad keepout. The unsupported 6/8-layer modes retain
-% their adjacent-layer interconnect model and are explicitly unverified.
-qualifiedLayerCount = ismember(cfg.layerCount, [2, 4]);
+% JLC FPC does not qualify blind/buried vias, so every series interconnect is
+% modeled as a plated through hole at every layer count: copper pads exist
+% only on the two connected layers and every other layer receives an antipad
+% keepout. JLCPCB's FPC capability list covers 1/2/4 layers only, so the
+% 6/8-layer exports use the identical, fully checked through-hole model but
+% stay UNVERIFIED_LAYER_COUNT in the manufacturing report until a fabricator
+% that offers 6/8-layer FPC is selected.
 for k = 1:numel(vias)
     vias(k).connectedLayers = [k, k+1];
     vias(k).role = 'series_interconnect';

@@ -201,6 +201,13 @@ if outerCount > 0
     [okTab, tabXY, tabReason] = planTabVias(cfg, outerIndices, outerCount, spiralInfo);
     if ~okTab
         failureCode = tabReason;
+        if strcmp(failureCode, 'TAB_VIA_CAPACITY')
+            failureReason = sprintf( ...
+                ['无法在右侧尾板放置 %d 个层间过孔：可用长度不足，或（6/8 层贯穿通孔模型的）', ...
+                 '反焊盘引线通道在该侧容不下行偏移 %.3f mm 的最小值。', ...
+                 '建议增大 tabLength / tabWidth、减小过孔数量，或调整 outerViaPitch / outerViaRowOffsetY。'], ...
+                outerCount, cfg.outerViaRowOffsetY);
+        end
         return;
     end
     for m = 1:outerCount
@@ -230,7 +237,12 @@ rowOffsetY = cfg.outerViaRowOffsetY;
 if cfg.layerCount > 4
     requiredRowOffset = cfg.viaPadDiameter/2 + cfg.viaToCopperClearance + ...
         cfg.traceWidth/2 + cfg.viaOuterBendRadius;
-    rowOffsetY = max(rowOffsetY, requiredRowOffset);
+    % 保留用户偏好的方向（负偏移 = 板中线另一侧），只把幅值抬到下限。
+    if rowOffsetY < 0
+        rowOffsetY = min(rowOffsetY, -requiredRowOffset);
+    else
+        rowOffsetY = max(rowOffsetY, requiredRowOffset);
+    end
 end
 
 bodyRightX = cfg.plateLength/2;
@@ -282,6 +294,20 @@ if step > 0
         yy - step*(1:ceil((yLim+yy)/step))]);
 end
 yList = yList(yList >= -yLim - tol & yList <= yLim + tol);
+if cfg.layerCount > 4
+    % 硬下界（不是偏好值）：6/8 层的候选必须为跨越反焊盘场的引线让出通道，
+    % 否则引线布不通；同时严格保留用户选定的一侧（负偏移 = 板中线另一侧），
+    % 不静默镜像。若该侧容不下下界，视为尾板容量不足 fail closed。
+    if rowOffsetY < 0
+        yList = yList(yList <= -requiredRowOffset + tol);
+    else
+        yList = yList(yList >= requiredRowOffset - tol);
+    end
+    if isempty(yList)
+        failureCode = 'TAB_VIA_CAPACITY';
+        return;
+    end
+end
 
 bestMargin = -inf;
 bestDistance = inf;

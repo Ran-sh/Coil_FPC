@@ -83,7 +83,7 @@ cfg.viaClearanceSeverity = 'warning';                      % 字符串，过孔�
 
 % Via placement planning.
 % 过孔自动规划参数
-cfg.viaPlacementMode = 'hybrid_auto';                      % 字符串，'legacy_auto'（旧版自动）或 'hybrid_auto'（推荐自动）
+cfg.viaPlacementMode = 'hybrid_auto';                      % 字符串，'legacy_auto'（旧版自动，仅 2 层可用）或 'hybrid_auto'（推荐自动）
 cfg.innerViaLayout = 'horizontal';                         % 字符串，内圈过孔排列方向，当前支持 'horizontal'（沿 X 方向）
 cfg.innerViaPitch = 2.00;                                  % mm，内圈过孔期望中心间距（实际取 max(该值, viaPadDiameter+viaToViaClearance)）
 cfg.innerViaRowOffsetY = 0.00;                             % mm，内圈过孔排相对主体中线的 Y 方向偏移
