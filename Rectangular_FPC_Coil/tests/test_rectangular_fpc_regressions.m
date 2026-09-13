@@ -484,69 +484,20 @@ verifyTrue(testCase, all(widths == widths(1)));
 
 end
 
-function testManualViaCoordinatesMatchInput(testCase)
-% 任务十七.3：手动过孔坐标与输入一致（误差 < connectionTolerance）
-cfg = rectangular_fpc_default_config(struct( ...
-    'analysisOnly', true, ...
-    'layerCount', 4, ...
-    'viaPlacementMode', 'manual', ...
-    'manualSeriesViaXY', [25.0, 6.0; 82.0, 6.0; 55.0, 6.0], ...
-    'outputViaPlacementMode', 'manual', ...
-    'manualOutputViaXY', [87.0, 4.7], ...
-    'outputRoot', testCase.TestData.outputRoot, ...
-    'designName', 'manual_roundtrip', ...
-    'enablePreview', false, ...
-    'enableDxfReadbackCheck', false));
-
-try
-    result = rectangular_fpc_main(cfg);
-    tol = cfg.connectionTolerance;
-    seriesNames = {'V12', 'V23', 'V34'};
-    for k = 1:3
-        v = result.vias(strcmp({result.vias.name}, seriesNames{k}));
-        verifyNumElements(testCase, v, 1);
-        uv = localInternalToUserXY(v.xy, cfg);
-        verifyLessThan(testCase, norm(uv - cfg.manualSeriesViaXY(k, :)), tol);
-    end
-    vout = result.vias(strcmp({result.vias.name}, 'VOUT'));
-    verifyNumElements(testCase, vout, 1);
-    uvout = localInternalToUserXY(vout.xy, cfg);
-    verifyLessThan(testCase, norm(uvout - cfg.manualOutputViaXY), tol);
-catch ME
-    verifyFail(testCase, sprintf('手动坐标生成失败：%s', ME.message));
+function testRemovedManualViaConfigFieldsAreRejected(testCase)
+% 手动端子模式删除后的契约（参照圆形模块做法）：已删除的人工坐标字段必须被
+% 拒绝为未知配置字段；仍存在的 viaPlacementMode 只接受两个自动值，'manual'
+% 必须被明确拒绝。防止契约悄悄回潮。
+for f = {'manualSeriesViaXY', 'manualOutputViaXY', 'outputViaPlacementMode'}
+    overrides = struct();
+    overrides.(f{1}) = [];
+    verifyError(testCase, @() rectangular_fpc_default_config(overrides), ...
+        'RectangularFPC:UnknownConfigField');
 end
-
-end
-
-function testManualViaRowCountRejected(testCase)
-% 任务十七.4：手动过孔行数错误必须明确拒绝
-cfg = rectangular_fpc_default_config(struct( ...
-    'layerCount', 4, ...
-    'viaPlacementMode', 'manual', ...
-    'manualSeriesViaXY', [25.0, 6.0; 82.0, 6.0], ...   % 只有 2 行，需要 3 行
-    'outputRoot', testCase.TestData.outputRoot, ...
-    'designName', 'manual_bad_rows'));
-
-verifyError(testCase, @() rectangular_fpc_main(cfg), ...
-    'RectangularFPC:InvalidManualVias');
-
-end
-
-function testManualViaOutsideBoardRejected(testCase)
-% 任务十七.4：过孔在板外必须报出具体失败
-cfg = rectangular_fpc_default_config(struct( ...
-    'layerCount', 4, ...
-    'viaPlacementMode', 'manual', ...
-    'manualSeriesViaXY', [25.0, 6.0; 82.0, 60.0; 55.0, 6.0], ... % V23 在板外
-    'outputRoot', testCase.TestData.outputRoot, ...
-    'designName', 'manual_outside_board', ...
-    'enablePreview', false, ...
-    'enableDxfReadbackCheck', false, ...
-    'enableViaClearanceCheck', false));
-
-verifyError(testCase, @() rectangular_fpc_main(cfg), ...
-    'RectangularFPC:ViaPlanningFailed');
-
+% 枚举校验发生在生成阶段（Validate_Config），配置函数本身只做未知字段拒绝。
+verifyError(testCase, @() rectangular_fpc_main(struct( ...
+    'analysisOnly', true, 'viaPlacementMode', 'manual')), ...
+    'RectangularFPC:InvalidConfigValue');
 end
 
 function testStrictConcentricRadiusNoClamp(testCase)
@@ -1135,11 +1086,5 @@ if isempty(cachedResult) || ~strcmp(cachedOutputRoot, outputRoot)
     cachedOutputRoot = outputRoot;
 end
 result = cachedResult;
-
-end
-
-function xyUser = localInternalToUserXY(xyInternal, cfg)
-
-xyUser = xyInternal + [cfg.plateLength/2, cfg.plateWidth/2];
 
 end
