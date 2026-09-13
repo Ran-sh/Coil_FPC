@@ -17,6 +17,10 @@
 - 发布与读取共用提交证据门禁，核验状态模式、必需文件、角色、大小、SHA-256 与磁盘文件集合。
 - 加工说明记录请求档案、基础档案、规则分类、基础/生效规则及全部覆盖项，并在发布前语义回读。
 
+### Removed
+
+- 手动端子放置模式整体删除（公开契约变更）：`manualSeriesViaXY`、`manualOutputViaXY`、`outputViaPlacementMode` 三个配置项不再存在；`viaPlacementMode` 仅保留 `legacy_auto` / `hybrid_auto` 两个自动值。自动放置与制造资格检查不变，共线串联过孔仍由 `VIA_STAGGER` 规则拒绝。
+
 ### Changed
 
 - 项目目录由 `FPC_Coil` 更名为 `Rectangular_FPC_Coil`，正式实现统一使用 `rectangular_fpc_*`。

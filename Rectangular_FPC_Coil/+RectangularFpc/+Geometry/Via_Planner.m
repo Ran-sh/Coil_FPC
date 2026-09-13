@@ -6,8 +6,6 @@ switch operation
         [varargout{1:nargout}] = planVias(varargin{:});
     case 'auto_output_via'
         [varargout{1:nargout}] = calculateAutoOutputVia(varargin{:});
-    case 'validate_board_location'
-        [varargout{1:nargout}] = validateViaBoardLocation(varargin{:});
     otherwise
         error('RectangularFPC:UnknownViaPlannerOperation', ...
             'Unknown via planner operation: %s', operation);
@@ -30,11 +28,11 @@ function [vias, failureCode, failureReason] = planVias(cfg, spiralInfo)
 %     VIAS          (layerCount-1) 行结构数组，字段：
 %                   name, xy（内部坐标）, fromLayer, toLayer,
 %                   placementRegion（'INNER_BLANK'/'RIGHT_TAB'）,
-%                   placementMode（'legacy_auto'/'hybrid_auto'/'manual'）,
+%                   placementMode（'legacy_auto'/'hybrid_auto'）,
 %                   padDiameter, drillDiameter,
 %                   fromLeadLength, toLeadLength（后续布线填充，初始 NaN）,
 %                   fromLeadPath, toLeadPath（后续布线填充，初始 []）
-%     FAILURECODE   '' 或 'MANUAL_VIA_INVALID'/'TAB_VIA_CAPACITY'/
+%     FAILURECODE   '' 或 'TAB_VIA_CAPACITY'/
 %                   'INNER_VIA_CAPACITY'/'VIA_TO_COPPER_CLEARANCE'/
 %                   'VIA_TO_BOARD_CLEARANCE'/'VIA_TO_PAD_CLEARANCE'
 %     FAILUREREASON 人类可读的中文原因（'' 表示成功）
@@ -76,9 +74,6 @@ switch cfg.viaPlacementMode
 
     case 'hybrid_auto'
         [vias, failureCode, failureReason] = planHybridAuto(cfg, vias, spiralInfo);
-
-    case 'manual'
-        [vias, failureCode, failureReason] = planManual(cfg, vias);
 
     otherwise
         failureCode = 'UNKNOWN';
@@ -357,90 +352,6 @@ if safeX > maxX + cfg.geometryTolerance
 end
 outputVia = [safeX, -cfg.leadYOffset];
 
-end
-
-%% ---------------------------------------------------------------
-
-function [vias, failureCode, failureReason] = planManual(cfg, vias)
-
-failureCode = '';
-failureReason = '';
-
-xyUser = cfg.manualSeriesViaXY;
-manualBoardXY = RectangularFpc.Geometry.Board_Outline('board_outline', cfg);
-closedManualBoardXY = [manualBoardXY; manualBoardXY(1, :)];
-% 防御性行数检查：manualSeriesViaXY 必须恰好 layerCount-1 行（V12、V23……）。
-% 过孔规划可能在配置验证之外被内部复用，因此在此复查。
-if size(xyUser, 1) ~= cfg.layerCount - 1
-    failureCode = 'MANUAL_VIA_INVALID';
-    failureReason = sprintf( ...
-        'manualSeriesViaXY 必须恰好为 layerCount-1=%d 行（依次对应 V12、V23……），当前为 %d 行。', ...
-        cfg.layerCount - 1, size(xyUser, 1));
-    return;
-end
-for k = 1:cfg.layerCount - 1
-    xy = RectangularFpc.Geometry.Path_Geometry('user_to_internal', xyUser(k, :), cfg);
-    [ok, reason] = validateManualVia( ...
-        cfg, k, xy, vias, closedManualBoardXY);
-    if ~ok
-        failureCode = 'MANUAL_VIA_INVALID';
-        failureReason = sprintf( ...
-            '%s 手动坐标 (%.3f, %.3f) mm 无效：%s', ...
-            vias(k).name, xyUser(k,1), xyUser(k,2), reason);
-        return;
-    end
-    vias(k).xy = xy;
-    vias(k).placementMode = 'manual';
-    vias(k).placementRegion = '';
-end
-
-end
-
-%% ---------------------------------------------------------------
-
-function [ok, reason] = validateManualVia(cfg, k, xy, vias, closedBoardXY)
-
-ok = false;
-reason = '';
-tol = cfg.geometryTolerance;
-
-[inBoard, centerToBoard, requiredDistance] = validateViaBoardLocation( ...
-    xy, cfg.viaPadDiameter, cfg.viaToBoardClearance, ...
-    closedBoardXY, tol);
-if ~inBoard
-    reason = sprintf( ...
-        '过孔焊盘未完整位于真实圆角板框内：中心到板框 %.3f mm，要求至少 %.3f mm。', ...
-        centerToBoard, requiredDistance);
-    return;
-end
-
-% 与其他已放置过孔互距
-for j = 1:k - 1
-    if norm(xy - vias(j).xy) < cfg.viaPadDiameter + cfg.viaToViaClearance - tol
-        reason = sprintf('与 %s 中心距 %.3f mm 不足 %.3f mm。', ...
-            vias(j).name, norm(xy - vias(j).xy), ...
-            cfg.viaPadDiameter + cfg.viaToViaClearance);
-        return;
-    end
-end
-
-ok = true;
-end
-
-function [ok, centerToBoard, requiredDistance] = validateViaBoardLocation( ...
-    xy, padDiameter, clearance, closedBoardXY, tol)
-
-[inside, onBoundary] = inpolygon( ...
-    xy(1), xy(2), closedBoardXY(:, 1), closedBoardXY(:, 2));
-centerToBoard = inf;
-for segmentIndex = 1:size(closedBoardXY, 1) - 1
-    centerToBoard = min(centerToBoard, distancePointToSegment( ...
-        xy, closedBoardXY(segmentIndex, :), ...
-        closedBoardXY(segmentIndex + 1, :)));
-end
-requiredDistance = padDiameter / 2 + clearance;
-ok = (inside || onBoundary) && ...
-    centerToBoard >= requiredDistance - tol;
 end
 
 %% ---------------------------------------------------------------

@@ -83,7 +83,7 @@ cfg.viaClearanceSeverity = 'warning';                      % 字符串，过孔�
 
 % Via placement planning.
 % 过孔自动规划参数
-cfg.viaPlacementMode = 'hybrid_auto';                      % 字符串，'legacy_auto'（旧版自动）、'hybrid_auto'（推荐自动）或 'manual'（人工坐标）
+cfg.viaPlacementMode = 'hybrid_auto';                      % 字符串，'legacy_auto'（旧版自动）或 'hybrid_auto'（推荐自动）
 cfg.innerViaLayout = 'horizontal';                         % 字符串，内圈过孔排列方向，当前支持 'horizontal'（沿 X 方向）
 cfg.innerViaPitch = 2.00;                                  % mm，内圈过孔期望中心间距（实际取 max(该值, viaPadDiameter+viaToViaClearance)）
 cfg.innerViaRowOffsetY = 0.00;                             % mm，内圈过孔排相对主体中线的 Y 方向偏移
@@ -103,12 +103,9 @@ cfg.outputViaAntiPadDiameter = 1.00;                       % mm，VOUT 在中间
 cfg.outputViaToCopperClearance = 0.20;                     % mm，VOUT 到 L1 回路线铜线的最小净距
 cfg.outputViaToBoardClearance = 0.50;                      % mm，VOUT 焊盘边缘到板框的最小净距
 
-% User coordinate origin and manual via coordinates.
-% 用户坐标系与人工过孔坐标参数
+% User coordinate origin.
+% 用户坐标系参数
 cfg.coordinateOrigin = 'body_lower_left';                  % 字符串，用户输入及导出坐标原点，当前支持 'body_lower_left'（主体左下角）
-cfg.manualSeriesViaXY = zeros(0,2);                        % mm，人工层间过孔坐标，每行依次对应 V12、V23、V34……；手动模式下行数必须等于 layerCount-1
-cfg.outputViaPlacementMode = 'auto';                       % 字符串，VOUT 使用 'auto'（自动）或 'manual'（人工坐标）
-cfg.manualOutputViaXY = zeros(0,2);                        % mm，人工 VOUT 坐标，仅 manual 模式使用（1×2 矩阵）
 
 % Material and manufacturing assumptions.
 % 材料与制造假设参数

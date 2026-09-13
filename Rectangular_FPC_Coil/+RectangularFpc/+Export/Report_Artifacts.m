@@ -128,8 +128,6 @@ elseif contains(reason, '内圈空白')
     code = 'INNER_VIA_CAPACITY';
 elseif contains(reason, '尾板')
     code = 'TAB_VIA_CAPACITY';
-elseif contains(reason, '手动')
-    code = 'MANUAL_VIA_INVALID';
 elseif contains(reason, '平滑圆弧') || contains(reason, '转向角') || contains(reason, '圆弧')
     code = 'ROUTING_ARC_FAILURE';
 elseif contains(reason, '自相交')
