@@ -221,6 +221,18 @@ ok = false;
 tabXY = zeros(outerCount, 2);
 tol = cfg.geometryTolerance;
 
+% 6/8 层的串联链要求引线跨越尾板过孔排：through_via 模型下同排过孔在非连接层
+% 上的反焊盘场会压住引线走廊。行偏移须 ≥ 反焊盘半径 + 半线宽 + 外侧逃逸弧
+% 半径（= viaPadDiameter/2 + viaToCopperClearance + traceWidth/2 +
+% viaOuterBendRadius），否则引线布不通（实测 0.8 mm 失败、0.9 mm 通过）。
+% 2/4 层尾板只有一个远离走廊的反焊盘，不构成阻挡，保持用户配置值不变。
+rowOffsetY = cfg.outerViaRowOffsetY;
+if cfg.layerCount > 4
+    requiredRowOffset = cfg.viaPadDiameter/2 + cfg.viaToCopperClearance + ...
+        cfg.traceWidth/2 + cfg.viaOuterBendRadius;
+    rowOffsetY = max(rowOffsetY, requiredRowOffset);
+end
+
 bodyRightX = cfg.plateLength/2;
 tabTipX = bodyRightX + cfg.tabLength;
 tabHalf = cfg.tabWidth/2;
@@ -261,7 +273,7 @@ end
 yLim = max(0, yMax - cfg.viaPadDiameter/2 - cfg.viaKeepoutMargin);
 step = cfg.autoViaGridStep;
 yList = [];
-yy = cfg.outerViaRowOffsetY;
+yy = rowOffsetY;
 if yy >= -yLim && yy <= yLim
     yList = [yList, yy];
 end
@@ -314,7 +326,7 @@ for yi = yList
     end
     if ~conflict
         anchorDistance = sum(vecnorm(cand - anchorXY, 2, 2));
-        offsetDistance = abs(yi - cfg.outerViaRowOffsetY);
+        offsetDistance = abs(yi - rowOffsetY);
         if offsetDistance < bestOffsetDistance - tol || ...
                 (abs(offsetDistance - bestOffsetDistance) <= tol && ...
                 (anchorDistance < bestDistance - tol || ...

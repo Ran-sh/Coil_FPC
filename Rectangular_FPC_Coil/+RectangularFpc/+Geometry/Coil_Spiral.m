@@ -377,14 +377,9 @@ qualifiedLayerCount = ismember(cfg.layerCount, [2, 4]);
 for k = 1:numel(vias)
     vias(k).connectedLayers = [k, k+1];
     vias(k).role = 'series_interconnect';
-    if qualifiedLayerCount
-        vias(k).type = 'through_via';
-        vias(k).antipadDiameter = cfg.viaPadDiameter + ...
-            2 * cfg.viaToCopperClearance;
-    else
-        vias(k).type = 'adjacent_layer_via';
-        vias(k).antipadDiameter = 0;
-    end
+    vias(k).type = 'through_via';
+    vias(k).antipadDiameter = cfg.viaPadDiameter + ...
+        2 * cfg.viaToCopperClearance;
 end
 
 % ---- 3) 逃逸引线与焊盘引线（通用平滑布线）----

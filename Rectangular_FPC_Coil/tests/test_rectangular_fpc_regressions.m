@@ -414,10 +414,39 @@ verifyGreaterThan(testCase, result.totalResistanceOhm, 0);
 vout = result.vias(strcmp({result.vias.name}, 'VOUT'));
 seriesVias = result.vias(~strcmp({result.vias.name}, 'VOUT'));
 verifyEqual(testCase, vout.antipadDiameter, 1.00, 'AbsTol', 1e-12);
+% 8 层与 2/4 层同款贯穿通孔模型：连接层焊盘 + 非连接层反焊盘。
 verifyEqual(testCase, {seriesVias.type}, ...
-    repmat({'adjacent_layer_via'}, 1, 7));
-verifyEqual(testCase, [seriesVias.antipadDiameter], zeros(1, 7));
+    repmat({'through_via'}, 1, 7));
+expectedAntipad = result.config.viaPadDiameter + ...
+    2 * result.config.viaToCopperClearance;
+verifyEqual(testCase, [seriesVias.antipadDiameter], ...
+    repmat(expectedAntipad, 1, 7), 'AbsTol', 1e-12);
 
+end
+
+function testSixEightLayerTabRowClearsAntipadLeadLanes(testCase)
+% 6/8 层贯穿通孔模型下，同排过孔在非连接层上的反焊盘会压住引线走廊：尾板
+% 过孔行与锚点线必须保持足够间距（反焊盘半径 + 半线宽 + 外侧逃逸弧半径），
+% 否则引线布不通（实测 0.8 mm 失败 / 0.9 mm 通过）。默认配置 0.5 mm，规划器
+% 必须自动抬到下限，且不得影响 2/4 层的既有几何。
+for layerCount = [6, 8]
+    result = rectangular_fpc_main(struct( ...
+        'layerCount', layerCount, ...
+        'turnsPerLayer', 1, ...
+        'analysisOnly', true, ...
+        'enablePreview', false, ...
+        'enableFigure', false));
+    verifyTrue(testCase, result.passed);
+    required = result.config.viaPadDiameter/2 + result.config.viaToCopperClearance + ...
+        result.config.traceWidth/2 + result.config.viaOuterBendRadius;
+    verifyGreaterThan(testCase, required, result.config.outerViaRowOffsetY, ...
+        'Default row offset must be below the derived minimum for this test to be meaningful.');
+    tabVias = result.vias(strcmp({result.vias.placementRegion}, 'RIGHT_TAB'));
+    verifyNotEmpty(testCase, tabVias);
+    tabRow = vertcat(tabVias.xy);
+    verifyGreaterThanOrEqual(testCase, min(abs(tabRow(:, 2))), required - 1e-9, ...
+        sprintf('L%d tab via row must clear the antipad lead lanes.', layerCount));
+end
 end
 
 function testOutputViaSpecificBoardClearanceIsEnforced(testCase)

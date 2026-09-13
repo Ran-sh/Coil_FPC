@@ -74,13 +74,19 @@ verifyEqual(testCase, result.manufacturing.applicability, ...
 verifyTrue(testCase, result.manufacturing.exportAllowed);
 verifyNotEmpty(testCase, result.manufacturing.warnings);
 verifyEqual(testCase, result.manufacturing.status, 'UNVERIFIED');
+% 6/8 层与 2/4 层使用同一套贯穿通孔模型（连接层焊盘 + 非连接层反焊盘）；
+% 未验证状态只剩"厂家能力清单不含 6/8 层"这一条，而不是过孔模型不完整。
 seriesVias = result.vias(~strcmp({result.vias.name}, 'VOUT'));
 verifyEqual(testCase, {seriesVias.type}, ...
-    repmat({'adjacent_layer_via'}, 1, numel(seriesVias)));
+    repmat({'through_via'}, 1, numel(seriesVias)));
+expectedAntipad = result.config.viaPadDiameter + ...
+    2 * result.config.viaToCopperClearance;
+verifyEqual(testCase, [seriesVias.antipadDiameter], ...
+    repmat(expectedAntipad, 1, numel(seriesVias)), 'AbsTol', 1e-12);
 viaTechnology = result.manufacturing.checks( ...
     strcmp({result.manufacturing.checks.id}, 'VIA_TECHNOLOGY'));
-verifyEqual(testCase, viaTechnology.status, 'WARN');
-verifyEqual(testCase, viaTechnology.code, 'UNVERIFIED_VIA_TECHNOLOGY');
+verifyEqual(testCase, viaTechnology.status, 'PASS');
+verifyEqual(testCase, viaTechnology.code, 'PASS');
 end
 
 function testRecommendedTurnsUseEffectiveConfigInResultAndReports(testCase)
