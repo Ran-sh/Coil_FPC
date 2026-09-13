@@ -93,10 +93,6 @@ if fullyValidatedMaxTurns < 1
     else
         scanReason = turnScan(end).failureReason;
     end
-    % 手动过孔无效：直接以具体失败抛出（不降级为 NoValidTurnCount）
-    if ~isempty(strfind(scanReason, '手动坐标')) %#ok<STREMP>
-        error('RectangularFPC:ViaPlanningFailed', scanReason);
-    end
     error('RectangularFPC:NoValidTurnCount', ...
         '当前层数与制造约束下没有能够通过全部几何检查的匝数。最后失败原因：%s', ...
         scanReason);
@@ -142,7 +138,7 @@ if cfg.turnsPerLayer > limits.innerViaRegion
 end
 if ~limits.tabCapacityPass
     error('RectangularFPC:TabViaCapacityExceeded', ...
-        '右侧尾板可用长度不足，无法容纳全部偶数编号层间过孔；\n建议增大 tabLength、减小过孔数量、改变过孔布局或使用手动坐标。');
+        '右侧尾板可用长度不足，无法容纳全部偶数编号层间过孔；\n建议增大 tabLength、减小过孔数量或调整自动过孔参数（outerViaPitch / outerViaRowOffsetY）。');
 end
 
 innerCenterInset = d.outerCenterInset + cfg.turnsPerLayer*d.pitch;
