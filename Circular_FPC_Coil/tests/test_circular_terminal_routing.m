@@ -88,6 +88,33 @@ for boardLayers = [2, 4]
 end
 end
 
+function testSingleCoilReturnViaClearanceAcrossSamplingDensities(testCase)
+for boardLayers = [2, 4]
+    for samples = [360, 719, 720, 721, 1000]
+        r = analyzeInternal(struct('boardLayerCount', boardLayers, ...
+            'coilLayerCount', 1, 'samplePointsPerTurn', samples));
+        verifyTrue(testCase, r.validation.passed);
+        verifyTrue(testCase, r.manufacturing.passed);
+        verifyEqual(testCase, r.returnLayer, boardLayers);
+        vret = r.vias(strcmp({r.vias.name}, 'VRET'));
+        xy = r.layerPaths(1).coilXY;
+        verifyEqual(testCase, xy(end, :), vret.xy, 'AbsTol', 1e-12);
+        % Independently measure every segment before the final half-turn,
+        % including the whole adjacent turn, without the validator's zone mask.
+        last = floor((r.config.turnsPerCoilLayer - 0.5) * samples) + 1;
+        a = xy(1:last-1, :);
+        b = xy(2:last, :);
+        ab = b - a;
+        fraction = max(0, min(1, sum((vret.xy - a) .* ab, 2) ./ sum(ab.^2, 2)));
+        clearance = min(vecnorm(a + fraction .* ab - vret.xy, 2, 2)) - ...
+            vret.padDiameter / 2 - r.config.traceWidth / 2;
+        verifyGreaterThanOrEqual(testCase, clearance, r.config.viaCoilSpacing - 1e-9);
+        verifyGreaterThanOrEqual(testCase, r.validation.minViaCoilSpacingMm, ...
+            r.config.viaCoilSpacing - 1e-9);
+    end
+end
+end
+
 function testTerminalBendSweepsStrictlyExceedNinety(testCase)
 % Measure the complete single bend, not the small heading increment between
 % adjacent sampled arc segments.

@@ -18,7 +18,8 @@ directions(2:2:end) = -1;                   % 奇数序号层 CCW、偶数层 CW
 % 活动线圈没有这条跨活动层的约束。
 crossLayerSizing = cfg.boardLayerCount >= 4 && cfg.coilLayerCount == cfg.boardLayerCount;
 contactArcSizing = cfg.coilLayerCount > 1;
-autoOuterSizing = crossLayerSizing || contactArcSizing;
+returnViaSizing = cfg.coilLayerCount == 1;
+autoOuterSizing = crossLayerSizing || contactArcSizing || returnViaSizing;
 maxOuterSizingPasses = 20;
 for sizingPass = 1:maxOuterSizingPasses
     if sizingPass > 1 && strcmp(cfg.boardSizingMode, 'auto')
@@ -73,7 +74,15 @@ for sizingPass = 1:maxOuterSizingPasses
         deltaRadius = min(0.5, 0.05 + ...
             0.5 * (cfg.traceWidth - validation.minOuterViaContactRadiusMm));
     end
-    requiredExtension = max([0, deltaDrill, deltaContact, deltaRadius]);
+    % The radial estimate for VRET is only an initial bound: at finer
+    % sampling the closest point on the adjacent spiral segment lies between
+    % vertices and can be slightly nearer. Close sizing over measured copper
+    % clearance, retaining the same threshold and convergence epsilon.
+    deltaReturn = 0;
+    if returnViaSizing
+        deltaReturn = cfg.viaCoilSpacing - validation.minViaCoilSpacingMm;
+    end
+    requiredExtension = max([0, deltaDrill, deltaContact, deltaRadius, deltaReturn]);
     if requiredExtension <= 1e-9
         break;
     end
