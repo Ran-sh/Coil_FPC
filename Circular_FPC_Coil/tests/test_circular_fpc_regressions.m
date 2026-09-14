@@ -1664,6 +1664,7 @@ function testFigurePlotContract(testCase)
 % CircularFpc.Export.Figure_Plot 已移入 +CircularFpc/+Export/（内部函数，仅由 circular_fpc_main 调用，
 % 对 tests/ 不可见）；此处校验 enableFigure 配置契约与无头环境跳过行为。
 outRoot = tempname;
+cleanup = onCleanup(@() removeTempOutput(outRoot)); %#ok<NASGU>
 result = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'plot_contract', ...
     'boardLayerCount', 4, 'coilLayerCount', 4));
 verifyTrue(testCase, result.validation.passed);
