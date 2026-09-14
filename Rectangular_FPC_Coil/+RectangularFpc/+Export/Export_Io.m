@@ -197,6 +197,10 @@ if strcmp(relativePath, 'dxf/00_board_outline.dxf')
     role = 'board_outline';
 elseif strcmp(relativePath, 'dxf/00_drill_map.dxf')
     role = 'drill_reference';
+elseif contains(relativePath, '_copper_solid_with_terminals_')
+    role = 'copper_solid_with_terminals';
+elseif contains(relativePath, '_copper_solid_')
+    role = 'copper_solid';
 elseif contains(relativePath, '_copper_physical_')
     role = 'physical_copper';
 elseif contains(relativePath, '_antipad_keepout_')

@@ -375,6 +375,21 @@ if ~isequal(actualSources(:), manufacturing.sourceUrls(:))
     readbackError(filename, 'manufacturing rule source chain mismatch');
 end
 
+% The COMSOL handoff must stay documented next to the manufacturing rules:
+% a reader who only opens the notes has to learn that the solid DXFs exist,
+% what they contain, and that layer heights are not part of this export.
+comsolFragments = { ...
+    'dxf/Ln/NN_copper_solid_Ln.dxf', ...
+    'dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf', ...
+    'COMSOL layer height', ...
+    'neither solid file contains electrode pads'};
+for fragmentIndex = 1:numel(comsolFragments)
+    if ~contains(content, comsolFragments{fragmentIndex})
+        readbackError(filename, sprintf( ...
+            'missing COMSOL export note "%s"', comsolFragments{fragmentIndex}));
+    end
+end
+
 end
 
 %% =========================================================

@@ -13,6 +13,10 @@ switch operation
             @(via) via.drillDiameter > 0, @(via) via.drillDiameter);
     case 'write_physical_copper'
         writePhysicalCopperDxf(varargin{:});
+    case 'write_solid_copper'
+        writeSolidCopperDxf(varargin{:});
+    case 'write_terminal_solid_copper'
+        writeTerminalSolidCopperDxf(varargin{:});
     case 'write_antipad'
         filename = varargin{1};
         layerName = varargin{2};
@@ -56,7 +60,32 @@ for layerIndex = 1:cfg.layerCount
         '%02d_antipad_keepout_L%d.dxf', layerIndex, layerIndex)), ...
         sprintf('ANTIPAD_KEEP_OUT_L%d', layerIndex), ...
         antipadCircles, cfg.geometryTolerance);
+
+    verifySolidRingsDxf(fullfile(layerFolder, sprintf( ...
+        '%02d_copper_solid_L%d.dxf', layerIndex, layerIndex)), ...
+        expectedCoilRings(cfg, result, layerIndex), ...
+        sprintf('COPPER_SOLID_L%d', layerIndex), cfg.geometryTolerance);
+    verifySolidRingsDxf(fullfile(layerFolder, sprintf( ...
+        '%02d_copper_solid_with_terminals_L%d.dxf', layerIndex, layerIndex)), ...
+        expectedConductorRings(cfg, result, layerIndex), ...
+        sprintf('COPPER_SOLID_TERMINALS_L%d', layerIndex), cfg.geometryTolerance);
 end
+
+end
+
+%% =========================================================
+function rings = expectedCoilRings(cfg, result, layerIndex)
+
+rings = RectangularFpc.Geometry.Copper_Outline('coil_rings', ...
+    result.layers(layerIndex).spiralXY, cfg.traceWidth);
+
+end
+
+%% =========================================================
+function rings = expectedConductorRings(cfg, result, layerIndex)
+
+rings = RectangularFpc.Geometry.Copper_Outline('conductor_rings', ...
+    result.layerPaths{layerIndex}, cfg.traceWidth);
 
 end
 
@@ -261,6 +290,75 @@ if isnumeric(value)
     end
 else
     fprintf(fid, '%s\n', char(value));
+end
+
+end
+
+%% =========================================================
+function writeSolidCopperDxf(filename, rings, layerName)
+% COMSOL-oriented "coil only" copper: every main spiral becomes one closed,
+% widthless LWPOLYLINE so a 2D DXF import can select it as a domain or
+% boundary. Leads, pads, vias, drills, and layer transitions are intentionally
+% omitted for COMSOL users to connect in their own model.
+
+writeRingDxf(filename, rings, layerName);
+
+end
+
+%% =========================================================
+function writeTerminalSolidCopperDxf(filename, rings, layerName)
+% Additive COMSOL variant: each stored centerline of the layer (spiral plus
+% that layer's escape, via, and terminal leads) becomes one closed widthless
+% ring, so every conducting island of the layer is a selectable 2D domain.
+% Pads, via pads, drills, and antipads stay out of this file; the terminal
+% ends are plain straight caps at the pad/via centres.
+
+writeRingDxf(filename, rings, layerName);
+
+end
+
+%% =========================================================
+function writeRingDxf(filename, rings, layerName)
+% Closed rings are written one entity each and are never split at
+% cfg.maxVerticesPerDxfEntity: a split ring stops being a closed boundary, so
+% the vertex cap that governs the centerline and physical DXFs cannot apply
+% here. Ring outlines are already reduced to a few hundred vertices by the
+% 5 µm RDP pass; the readback compares every vertex.
+
+fid = RectangularFpc.Export.Export_Io('open_ascii_file', filename, 'DXF');
+cleanup = onCleanup(@() fclose(fid));
+writeDxfHeader(fid, layerName);
+for ringIndex = 1:numel(rings)
+    writePolylineEntity(fid, rings{ringIndex}, layerName, true, NaN);
+end
+writeDxfFooter(fid);
+clear cleanup;
+
+end
+
+%% =========================================================
+function verifySolidRingsDxf(filename, expectedRings, layerName, tolerance)
+% Closed-ring readback: only widthless, explicitly closed LWPOLYLINEs, one
+% entity per ring, every vertex reproduced. Circles are rejected so that no
+% pad, via pad, drill, or antipad can leak into a COMSOL solid file.
+
+entities = readDxfEntities(filename);
+if any(~strcmp({entities.type}, 'LWPOLYLINE')) || ...
+        numel(entities) ~= numel(expectedRings)
+    readbackError(filename, 'closed-ring entity contract');
+end
+for ringIndex = 1:numel(entities)
+    entity = entities(ringIndex);
+    if ~strcmp(entity.layer, layerName) || entity.closed ~= 1 || ...
+            isfinite(entity.width)
+        readbackError(filename, 'closed widthless polyline contract');
+    end
+    ring = expectedRings{ringIndex};
+    if size(entity.xy, 1) ~= size(ring, 1) || size(ring, 1) < 4 || ...
+            norm(ring(1, :) - ring(end, :)) > 1e-9
+        readbackError(filename, 'ring vertex closure');
+    end
+    verifyCoordinates(filename, entity.xy, ring, tolerance);
 end
 
 end
