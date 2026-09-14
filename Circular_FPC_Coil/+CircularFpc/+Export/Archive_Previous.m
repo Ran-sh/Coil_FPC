@@ -1,9 +1,12 @@
 function archived = Archive_Previous(cfg, currentOutputPath)
-%ARCHIVE_PREVIOUS 把同一输出根下的旧正式产物移入 archive/ 并更新 LATEST.txt。
+%ARCHIVE_PREVIOUS 把同一输出根下、与当前产物同类型的旧正式产物移入 archive/。
 %
 %   ARCHIVED = ARCHIVE_PREVIOUS(CFG, CURRENTOUTPUTPATH)
 %
 %   规则（生成一次新产物后自动整理输出根）：
+%     - **按类型各自保留最新一份**：类型 = 设计名词干（去掉 auto 命名的
+%       `__yyyyMMdd_HHmmss` 时间戳后缀），只归档与当前产物同词干的旧产物；
+%       其他类型的产物无论新旧都留在原处；
 %     - 只归档“完整产物”目录：含 reports/08_file_manifest.csv 的目录；
 %     - 跳过当前产物自身、archive/ 与非目录条目（如 LATEST.txt、临时目录）；
 %     - 归档目标已存在时追加 _2、_3…… 后缀，绝不覆盖既有归档；
@@ -41,12 +44,16 @@ if ~isfolder(archiveRoot)
     end
 end
 
+currentStem = artifactStem(cfg.designName);
 entries = dir(outputRoot);
 for k = 1:numel(entries)
     name = entries(k).name;
     if ~entries(k).isdir || any(strcmp(name, {'.', '..', 'archive'})) || ...
             strcmp(name, cfg.designName)
         continue;
+    end
+    if ~strcmp(artifactStem(name), currentStem)
+        continue;   % 其他类型的产物保持原位（每类各留最新一份）
     end
     sourcePath = fullfile(outputRoot, name);
     if ~isfile(fullfile(sourcePath, 'reports', '08_file_manifest.csv'))
@@ -65,6 +72,12 @@ for k = 1:numel(entries)
 end
 
 writeLatestPointer(outputRoot, cfg.designName);
+end
+
+function stem = artifactStem(name)
+% 设计名词干：去掉 auto 命名的时间戳后缀（`__yyyyMMdd_HHmmss`）。
+% 显式命名的产物没有时间戳，词干即名字本身。
+stem = regexprep(name, '__\d{8}_\d{6}$', '');
 end
 
 function target = uniqueArchiveTarget(archiveRoot, name)
