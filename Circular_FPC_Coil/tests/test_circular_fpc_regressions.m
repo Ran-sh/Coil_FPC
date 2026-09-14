@@ -123,12 +123,15 @@ function testBoardSizingMode(testCase)
 verifyError(testCase, @() circular_fpc_default_config(struct('boardSizingMode', 'weird')), ...
     'CircularFPC:InvalidConfig');
 outRoot = createTempOutput(testCase);
-rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board'));
+% 本测试并排对比多个产物（含回读先生成产物的报告），故关闭自动归档。
+rAuto = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board', ...
+    'archivePreviousArtifacts', false));
 verifyGreaterThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 24.6);
 verifyLessThan(testCase, rAuto.effectiveDimensions.boardOuterDiameter, 25.1);
 verifyGreaterThan(testCase, rAuto.layoutRegions.boardExtent, ...
     rAuto.effectiveDimensions.boardOuterDiameter / 2 + 4.0);
 rTwo = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'auto_board_2l', ...
+    'archivePreviousArtifacts', false, ...
     'boardLayerCount', 2, 'coilLayerCount', 2));
 verifyGreaterThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 24.5);
 verifyLessThan(testCase, rTwo.effectiveDimensions.boardOuterDiameter, 25.0);
@@ -142,11 +145,13 @@ verifyNotEmpty(testCase, regexp(turnTxt, '(?m)^2,', 'once'));
 % fixed 24.5 小于默认线圈主体所需尺寸，在可行性阶段明确拒绝，
 % 原子导出不留正式目录。
 verifyError(testCase, @() circular_fpc_main(struct('outputRoot', outRoot, ...
-    'designName', 'fixed_board', 'boardSizingMode', 'fixed', 'boardOuterDiameter', 24.5)), ...
+    'designName', 'fixed_board', 'archivePreviousArtifacts', false, ...
+    'boardSizingMode', 'fixed', 'boardOuterDiameter', 24.5)), ...
     'CircularFPC:GeometryInfeasible');
 verifyFalse(testCase, isfolder(fullfile(outRoot, 'fixed_board')));
 % fixed 25.0 大于默认紧凑主体圆：成功，板径/制造报告/扫描契约保持。
 rFixed = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'fixed_board_265', ...
+    'archivePreviousArtifacts', false, ...
     'boardSizingMode', 'fixed', 'boardOuterDiameter', 25.0));
 verifyEqual(testCase, rFixed.effectiveDimensions.boardOuterDiameter, 25.0, 'AbsTol', 1e-9);
 verifyTrue(testCase, rFixed.manufacturing.passed);
@@ -1601,6 +1606,45 @@ if isfolder(outRoot)
     entries = dir(outRoot);
     verifyEqual(testCase, numel(entries), 2);
 end
+end
+
+function testAutomaticArchivingKeepsOutputRootClean(testCase)
+% 自动归档契约（archivePreviousArtifacts 默认开启）：每次成功发布新产物后，同
+% 输出根下的旧"完整产物"（含 reports/08_file_manifest.csv）移入 archive/，
+% LATEST.txt 指向最新；归档重名追加后缀不覆盖；非完整目录保持原位；关闭开关时
+% 不移动也不更新 LATEST。
+outRoot = createTempOutput(testCase);
+first = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_first', ...
+    'boardLayerCount', 2, 'coilLayerCount', 1));
+verifyTrue(testCase, isfolder(first.outputPath));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
+partialDir = fullfile(outRoot, 'partial_dir');
+mkdir(partialDir);
+% 预置同名归档目标：归档必须追加后缀而不是覆盖既有目录。
+decoy = fullfile(outRoot, 'archive', 'archive_first');
+mkdir(decoy);
+second = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_second', ...
+    'boardLayerCount', 2, 'coilLayerCount', 1));
+verifyFalse(testCase, isfolder(fullfile(outRoot, 'archive_first')));
+verifyTrue(testCase, isfolder(decoy), '既有归档目录不得被覆盖');
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive', 'archive_first_2')));
+verifyTrue(testCase, isfile(fullfile(outRoot, 'archive', 'archive_first_2', ...
+    'reports', '08_file_manifest.csv')), '被归档的产物必须完整移入后缀目录');
+verifyTrue(testCase, isfolder(second.outputPath));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_second');
+verifyTrue(testCase, isfolder(partialDir), '非完整目录必须保持原位');
+third = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_first', ...
+    'boardLayerCount', 2, 'coilLayerCount', 1));
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive', 'archive_second')));
+verifyTrue(testCase, isfolder(third.outputPath));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
+% 关闭开关：不再移动旧产物，也不更新 LATEST。
+fourth = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_fourth', ...
+    'archivePreviousArtifacts', false, 'boardLayerCount', 2, 'coilLayerCount', 1));
+verifyTrue(testCase, isfolder(fourth.outputPath));
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive_first')));
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive_fourth')));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
 end
 
 function testFigurePlotContract(testCase)
