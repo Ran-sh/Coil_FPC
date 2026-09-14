@@ -96,6 +96,9 @@ end
 if ~islogical(cfg.analysisOnly) || ~isscalar(cfg.analysisOnly)
     error('CircularFPC:InvalidConfig', 'analysisOnly must be a logical scalar.');
 end
+if ~islogical(cfg.archivePreviousArtifacts) || ~isscalar(cfg.archivePreviousArtifacts)
+    error('CircularFPC:InvalidConfig', 'archivePreviousArtifacts must be a logical scalar.');
+end
 if ~ischar(cfg.designName) || isempty(regexp(cfg.designName, '^[A-Za-z0-9_-]+$', 'once'))
     error('CircularFPC:InvalidConfig', 'designName must match [A-Za-z0-9_-]+.');
 end

@@ -21,6 +21,11 @@ if cfg.analysisOnly
 end
 outputPath = CircularFpc.Export.Dxf_Svg_Reports('write_all', cfg, result); % 原子写入 DXF/SVG/CSV/TXT
 result.outputPath = outputPath;
+% 自动整理输出根：把同根下的旧完整产物移入 archive/ 并把 LATEST.txt 指向新产物。
+% 批量并排生成多个变体时可在 overrides 里设 archivePreviousArtifacts=false 关闭。
+if cfg.archivePreviousArtifacts
+    CircularFpc.Export.Archive_Previous(cfg, outputPath);
+end
 for k = 1:numel(result.validation.advisories)
     fprintf('ADVISORY: %s\n', result.validation.advisories{k});
 end

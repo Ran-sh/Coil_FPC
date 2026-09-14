@@ -7,6 +7,8 @@
 % 说明：
 %   - 若调用者工作区已有 outputRoot 则使用该值，否则默认 <project>/outputs；
 %   - 不覆盖已有正式输出目录（circular_fpc_main 在目录已存在时报错）；
+%   - 本脚本并排保留全部变体，因此关闭自动归档（默认开启时每次生成会把同根下的
+%     旧完整产物移入 archive/ 并更新 LATEST.txt）；
 %   - 不删除任何目录、不捕获错误。
 projectRoot = fileparts(fileparts(mfilename('fullpath')));
 addpath(projectRoot);
@@ -23,7 +25,8 @@ for k = 1:6
         'boardLayerCount', combos(k, 1), ...
         'coilLayerCount', combos(k, 2), ...
         'outputRoot', outputRoot, ...
-        'designName', designNames{k}));
+        'designName', designNames{k}, ...
+        'archivePreviousArtifacts', false));
 end
 for k = 1:6
     fprintf('%s -> %s\n', designNames{k}, variantResults{k}.outputPath);
