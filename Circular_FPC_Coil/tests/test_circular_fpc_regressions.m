@@ -1609,42 +1609,55 @@ end
 end
 
 function testAutomaticArchivingKeepsOutputRootClean(testCase)
-% 自动归档契约（archivePreviousArtifacts 默认开启）：每次成功发布新产物后，同
-% 输出根下的旧"完整产物"（含 reports/08_file_manifest.csv）移入 archive/，
-% LATEST.txt 指向最新；归档重名追加后缀不覆盖；非完整目录保持原位；关闭开关时
-% 不移动也不更新 LATEST。
+% 自动归档契约（archivePreviousArtifacts 默认开启，**按类型各自保留最新一份**）：
+% 同一词干（去掉 __yyyyMMdd_HHmmss 后的设计名）的新产物发布后，旧的同词干
+% 完整产物移入 archive/；不同词干（如 2L/1C 与 4L/1C）互不影响；LATEST.txt
+% 指向最新产物；归档重名追加后缀不覆盖；非完整目录保持原位；关闭开关时不移动
+% 也不改 LATEST。
 outRoot = createTempOutput(testCase);
-first = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_first', ...
+first = circular_fpc_main(struct('outputRoot', outRoot, ...
+    'designName', 'Circular_FPC_2L_1C__20260101_000001', ...
     'boardLayerCount', 2, 'coilLayerCount', 1));
 verifyTrue(testCase, isfolder(first.outputPath));
-verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), ...
+    'Circular_FPC_2L_1C__20260101_000001');
+otherStem = circular_fpc_main(struct('outputRoot', outRoot, ...
+    'designName', 'Circular_FPC_4L_1C__20260101_000002', ...
+    'boardLayerCount', 4, 'coilLayerCount', 1));
+% 不同词干的产物不受归档影响。
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'Circular_FPC_2L_1C__20260101_000001')));
+verifyTrue(testCase, isfolder(otherStem.outputPath));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), ...
+    'Circular_FPC_4L_1C__20260101_000002');
 partialDir = fullfile(outRoot, 'partial_dir');
 mkdir(partialDir);
 % 预置同名归档目标：归档必须追加后缀而不是覆盖既有目录。
-decoy = fullfile(outRoot, 'archive', 'archive_first');
+decoy = fullfile(outRoot, 'archive', 'Circular_FPC_2L_1C__20260101_000001');
 mkdir(decoy);
-second = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_second', ...
+third = circular_fpc_main(struct('outputRoot', outRoot, ...
+    'designName', 'Circular_FPC_2L_1C__20260101_000003', ...
     'boardLayerCount', 2, 'coilLayerCount', 1));
-verifyFalse(testCase, isfolder(fullfile(outRoot, 'archive_first')));
+verifyFalse(testCase, isfolder(fullfile(outRoot, 'Circular_FPC_2L_1C__20260101_000001')));
 verifyTrue(testCase, isfolder(decoy), '既有归档目录不得被覆盖');
-verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive', 'archive_first_2')));
-verifyTrue(testCase, isfile(fullfile(outRoot, 'archive', 'archive_first_2', ...
-    'reports', '08_file_manifest.csv')), '被归档的产物必须完整移入后缀目录');
-verifyTrue(testCase, isfolder(second.outputPath));
-verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_second');
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive', ...
+    'Circular_FPC_2L_1C__20260101_000001_2')));
+verifyTrue(testCase, isfile(fullfile(outRoot, 'archive', ...
+    'Circular_FPC_2L_1C__20260101_000001_2', 'reports', '08_file_manifest.csv')), ...
+    '被归档的产物必须完整移入后缀目录');
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'Circular_FPC_4L_1C__20260101_000002')), ...
+    '不同词干的产物必须保持原位');
 verifyTrue(testCase, isfolder(partialDir), '非完整目录必须保持原位');
-third = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_first', ...
-    'boardLayerCount', 2, 'coilLayerCount', 1));
-verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive', 'archive_second')));
 verifyTrue(testCase, isfolder(third.outputPath));
-verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
-% 关闭开关：不再移动旧产物，也不更新 LATEST。
-fourth = circular_fpc_main(struct('outputRoot', outRoot, 'designName', 'archive_fourth', ...
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), ...
+    'Circular_FPC_2L_1C__20260101_000003');
+% 关闭开关：不再移动同词干旧产物，也不更新 LATEST。
+fourth = circular_fpc_main(struct('outputRoot', outRoot, ...
+    'designName', 'Circular_FPC_2L_1C__20260101_000004', ...
     'archivePreviousArtifacts', false, 'boardLayerCount', 2, 'coilLayerCount', 1));
 verifyTrue(testCase, isfolder(fourth.outputPath));
-verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive_first')));
-verifyTrue(testCase, isfolder(fullfile(outRoot, 'archive_fourth')));
-verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), 'archive_first');
+verifyTrue(testCase, isfolder(fullfile(outRoot, 'Circular_FPC_2L_1C__20260101_000003')));
+verifyEqual(testCase, strtrim(fileread(fullfile(outRoot, 'LATEST.txt'))), ...
+    'Circular_FPC_2L_1C__20260101_000003');
 end
 
 function testFigurePlotContract(testCase)
