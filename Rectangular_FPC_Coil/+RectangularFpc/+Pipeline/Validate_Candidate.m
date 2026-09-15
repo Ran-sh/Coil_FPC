@@ -18,16 +18,18 @@ geometryCache = struct();
 geometryCache.turns = NaN;
 geometryCache.layerXY = cell(0, 1);
 geometryCache.layerPaths = cell(0, 1);
+geometryCache.spiralXY = cell(0, 1);
 geometryCache.vias = struct([]);
 geometryCache.connectionErrors = [];
 geometryCache.escapeArcFallback = false;
 tol = cfg.geometryTolerance;
 
 try
-    [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
+    [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback, spiralXY] = ...
         RectangularFpc.Geometry.Board_And_Coil('build_layers', cfg, d, limits, boardXY);
     geometryCache.layerXY = layerXY;
     geometryCache.layerPaths = layerPaths;
+    geometryCache.spiralXY = spiralXY;
     geometryCache.vias = vias;
     geometryCache.connectionErrors = connectionErrors;
     geometryCache.escapeArcFallback = escapeArcFallback;

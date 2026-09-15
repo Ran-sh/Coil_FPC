@@ -284,8 +284,8 @@ end
 
 %% =========================================================
 
-function [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback] = ...
-    buildLayerGeometry(cfg, d, limits, boardXY)
+function [layerXY, layerPaths, vias, connectionErrors, escapeArcFallback, ...
+    spiralXY] = buildLayerGeometry(cfg, d, limits, boardXY)
 
 tol = cfg.geometryTolerance;
 escapeArcFallback = false;
@@ -498,6 +498,11 @@ end
 connectionErrors(cfg.layerCount) = ...
     norm(layerXY{cfg.layerCount}(end,:) - d.outputVia);
 connectionErrors(cfg.layerCount+1) = norm(topOutputLeadXY(1,:) - d.outputVia);
+
+% 纯螺旋（不含任何引线）单独返回：COMSOL 闭合铜实体需要"只含线圈"的轮廓，
+% 而 layerXY 已经把逃逸引线、过孔引线和端子引线拼进同一条折线，导出层无法
+% 再可靠地切回去。这里返回生成时的原始螺旋，保证几何只有一处来源。
+spiralXY = rawLayerXY;
 
 end
 

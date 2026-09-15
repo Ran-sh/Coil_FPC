@@ -47,7 +47,36 @@ summary = RectangularFpc.Publish.Read_Committed(result.outputPath, ...
     @(p) fileread(fullfile(p, 'reports', '03_design_summary.txt')));
 ```
 
-输出包括板框、钻孔、逐层中心线/物理铜/反焊盘 DXF，CSV/TXT 报告及 SHA-256 文件清单；默认生成 SVG 预览，`enablePreview=false` 时省略。
+输出包括板框、钻孔、逐层中心线/物理铜/反焊盘 DXF、逐层 COMSOL 闭合铜实体 DXF，CSV/TXT 报告及 SHA-256 文件清单；默认生成 SVG 预览，`enablePreview=false` 时省略。
+
+## COMSOL 闭合铜实体
+
+每层除制造用 DXF 外，另输出两份**只服务于仿真**的闭合轮廓，DXF 图层分别为
+`COPPER_SOLID_L<n>` 与 `COPPER_SOLID_TERMINALS_L<n>`：
+
+- `dxf/Ln/NN_copper_solid_Ln.dxf`：只含该层**主螺旋**。适合在线圈上直接加激励、
+  自己画端子的模型。
+- `dxf/Ln/NN_copper_solid_with_terminals_Ln.dxf`：该层**完整导体**（主螺旋 + 逃逸引线 +
+  过孔引线 + 端子引线），每条连通体一个环，COMSOL 2D 里选中即是一个域。
+
+矩形线圈层内导体本来就是一条连续折线（螺旋与引线共用端点），因此不需要圆形模块那样的
+并集合并；**L1 有两个环**——从 PAD_A 出发的主链，以及 VOUT → PAD_B 的回程引线，
+两者只在过孔处相连——其余层各一个环。文件内实体顺序与 `result.layerPaths{layer}` 一致：
+L1 的第 1 条是主链、第 2 条是回程，据此可以给两层分别加激励方向。两份文件都**不含**
+电极焊盘、过孔焊盘、钻孔和反焊盘：端点用垂直于走线的直短边封口（不是圆头端弧），
+落在焊盘/过孔中心，如何终止交给求解器。
+
+几何契约：中线按半个线宽（`traceWidth/2`）偏置，折角处是半径等于半个线宽的圆角
+（与蚀刻铜箔的实际圆角一致，不是制造参考轮廓——制造参考仍是 `NN_copper_physical_Ln.dxf`）；
+轮廓顶点经 5 µm 容差的 RDP 简化，可保持在缓冲几何的 5 µm 以内。每条中线必须缓冲出
+**恰好一个单连通、无孔的环**，否则导出直接失败（`RectangularFPC:ExportWriteFailed`），
+不会写出几何上不成立的轮廓。闭合环一律整条写出，**不按 `maxVerticesPerDxfEntity` 拆分**：
+拆开的环不再是闭合边界。导出后逐顶点回读校验，实体类型只能是闭合且无 group-43 宽度的
+LWPOLYLINE，出现 CIRCLE 即判失败。
+
+层高（Z）不在这份导出里：本模块只给 XY 几何，6/8 层在所选嘉立创档案下始终是
+`UNVERIFIED_LAYER_COUNT`，层叠位置须以厂家档案为准，不要由成品厚度反推。这些是工程几何，
+不是 Gerber，也不代表已通过 COMSOL 实际导入或求解验证。
 
 ## 制造检查
 

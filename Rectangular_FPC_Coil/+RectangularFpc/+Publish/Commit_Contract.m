@@ -204,6 +204,11 @@ for layerIndex = 1:layerCount
         '%02d_copper_physical_L%d.dxf', layerIndex, layerIndex)]); %#ok<AGROW>
     requiredPaths(end+1, 1) = string([layerRoot sprintf( ...
         '%02d_antipad_keepout_L%d.dxf', layerIndex, layerIndex)]); %#ok<AGROW>
+    requiredPaths(end+1, 1) = string([layerRoot sprintf( ...
+        '%02d_copper_solid_L%d.dxf', layerIndex, layerIndex)]); %#ok<AGROW>
+    requiredPaths(end+1, 1) = string([layerRoot sprintf( ...
+        '%02d_copper_solid_with_terminals_L%d.dxf', ...
+        layerIndex, layerIndex)]); %#ok<AGROW>
 end
 
 listed = string(manifest.relativePath);
@@ -256,6 +261,10 @@ if strcmp(relativePath, 'dxf/00_board_outline.dxf')
     role = 'board_outline';
 elseif strcmp(relativePath, 'dxf/00_drill_map.dxf')
     role = 'drill_reference';
+elseif contains(relativePath, '_copper_solid_with_terminals_')
+    role = 'copper_solid_with_terminals';
+elseif contains(relativePath, '_copper_solid_')
+    role = 'copper_solid';
 elseif contains(relativePath, '_copper_physical_')
     role = 'physical_copper';
 elseif contains(relativePath, '_antipad_keepout_')
